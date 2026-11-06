@@ -16,9 +16,12 @@ test('actual app navigation keeps background streams, drafts and independent sen
   Object.assign(scroll,{scrollHeight:1000,clientHeight:400,scrollTop:600,scrollTo({top}){this.scrollTop=top;}});
   const modal=document.querySelector('#modal');modal.showModal=()=>{modal.open=true;};modal.close=()=>{modal.open=false;};
   const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务'};
-  const model={id:'model',name:'测试模型',source:'desktop',live:true,
+  const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
     context:{tables:{事实表:[{name:'金额',dtype:'double'}]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
   const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0;
+  let semanticProfile={model_id:'model',status:'inventory',stage:'本地事实已整理',error:'',coverage:0,entries:[{
+    id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'candidate',business_name:'金额',
+    meaning:'业务口径待确认',role:'数值',unit:'',aliases:[]}]};
   const fieldProfile={model_id:'model',table:'事实表',column:'金额',dtype:'double',scope:'全模型范围，未应用报表筛选',
     statistics:{row_count:10,distinct_count:3,blank_count:1,empty_string_count:null,matched_distinct_count:3},
     values:[{value:125,count:7,value_truncated:false},{value:500,count:2,value_truncated:false},{value:null,count:1,value_truncated:false}],
@@ -31,6 +34,11 @@ test('actual app navigation keeps background streams, drafts and independent sen
     if(path==='/api/settings')return json(settings);
     if(path==='/api/models')return json([model]);
     if(path==='/api/models/model')return json(model);
+    if(path==='/api/models/model/semantics')return json(semanticProfile);
+    if(path==='/api/models/model/semantics/build'){
+      semanticProfile={...semanticProfile,status:'ready',stage:'测试语义完成',coverage:1};
+      model.semantics={...model.semantics,status:'ready',coverage:1};return json(semanticProfile);
+    }
     if(path==='/api/models/model/fields/preview'){
       previewCalls.push(JSON.parse(opts.body));return json(fieldProfile);
     }
@@ -72,6 +80,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
   async function send(text){draft(text);$('#composer-form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();}
   try {
     await import('../frontend/app.js?navigation-test');await tick();await tick();
+    await send('先建立词典再生成');
+    assert.equal(streams.size,0);assert.equal($('#prompt').value,'先建立词典再生成');
+    assert.ok($('#semantic-workbench'));
+    assert.ok($('#semantic-workbench').textContent.includes('业务口径待确认'));
+    await click('[data-build-semantics]');
+    assert.ok($('#semantic-workbench').textContent.includes('测试语义完成'));
+    await click('#modal-close');
     draft('预览不改动这段草稿');
     await click('[data-preview-column="金额"]');
     assert.equal(previewCalls.length,1);

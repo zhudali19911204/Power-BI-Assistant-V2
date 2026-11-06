@@ -8,11 +8,13 @@ import {mountModelManager} from './models.js';
 import {createWorkspaces, createGenerationManager} from './workspaces.js';
 import {clarificationCard, clarificationReply} from './clarification.js';
 import {fieldEvidence, mountFieldPreview} from './fields.js';
+import {mountSemanticWorkbench, semanticSummary} from './semantics.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const workspace=createWorkspaces();
 const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
+let modalCleanup=null;
 hydrateIcons();
 const messageRenderer=createMessageRenderer({
   root:$('#messages'),scroll:$('#message-scroll'),
@@ -60,10 +62,12 @@ function renderBusy() {
   document.body.classList.toggle('busy',state.view.busy);
 }
 function showModal(title,eyebrow,html) {
+  modalCleanup?.();modalCleanup=null;
   $('#modal-title').textContent=title;$('#modal-eyebrow').textContent=eyebrow;$('#modal-body').innerHTML=html;
   if(!$('#modal').open) $('#modal').showModal();
 }
 $('#modal-close').onclick=()=>$('#modal').close();
+$('#modal').addEventListener('close',()=>{modalCleanup?.();modalCleanup=null;});
 $('#modal').addEventListener('click', e=>{if(e.target===$('#modal')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)e.target.close();}});
 
 function welcome() {
@@ -115,6 +119,7 @@ function renderContext() {
   $('.status-dot').classList.toggle('connected',!!model?.live);
   $('#composer-context').textContent=model?model.name+' · '+(model.live?'实时模型':model.source==='demo'?'仅示例结构，无法实跑':'离线快照，需重新连接才能实跑'):'连接模型，让回答基于真实字段';
   $('#model-summary').innerHTML=model?`<div class="model-name">${esc(model.name)}</div><div class="model-state">${model.live?'● 本机实时连接':model.source==='demo'?'○ 示例数据结构 · 仅供体验':'○ 离线模型快照'}</div><div class="model-counts"><span><b>${Object.keys(ctx.tables).length}</b>表</span><span><b>${Object.values(ctx.tables).flat().length}</b>字段</span><span><b>${ctx.measures.length}</b>度量值</span></div>`:'<div class="model-name">尚未连接模型</div><div class="model-state">在 Power BI Desktop 打开报表后连接</div>';
+  if(model?.source==='desktop')$('#model-summary').insertAdjacentHTML('beforeend',`<button class="text-link semantic-open-button" data-open-semantics="${esc(model.id)}">${icon('book')}模型语义层 <small>${model.semantics?.status==='ready'?'已梳理 · 可审阅定义':model.semantics?.status==='building'?'正在后台梳理':'需要先梳理语义'}</small></button>`);
   if(!model) {$('#model-tree').innerHTML=`<div class="model-empty"><div class="empty-model-icon">${icon('database')}</div><strong>让模型成为对话的上下文</strong><p>表、字段、关系与度量值<br>连接后将显示在这里</p><button class="text-link" id="empty-connect">连接 Power BI ${icon('arrow-right')}</button></div>`;return;}
   const needle=$('#field-search').value.toLowerCase();
   if(state.contextTab==='tables') {
@@ -163,7 +168,7 @@ function showView() {
 }
 function newChat(mode=state.view.mode) {saveDraft();workspace.newChat(mode);showView();$('#prompt').focus();}
 function switchMode(mode) {saveDraft();workspace.switchMode(mode);showView();}
-function useModel(model) {saveDraft();workspace.newChat(state.view.mode,model);$('#modal').close();showView();}
+function useModel(model) {saveDraft();workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready')void openSemantics(model.id).catch(error=>toast(error.message,true));}
 let historyRequest=0;
 async function reloadHistory() {
   const request=++historyRequest,conversations=await api('/conversations');if(request!==historyRequest)return;
@@ -209,6 +214,18 @@ async function openFieldPreview(table,column,modelId=state.view.model?.id) {
   await mountFieldPreview($('#field-preview'),{api,modelId,table,column});
 }
 
+async function openSemantics(modelId=state.view.model?.id) {
+  if(!modelId)return;
+  showModal('模型语义层 · 业务词典','MODEL SEMANTICS','<section id="semantic-workbench"></section>');
+  const root=$('#semantic-workbench');
+  const manager=await mountSemanticWorkbench(root,{api,modelId,
+    onUpdate:summary=>{
+      for(const view of workspace.all())if(view.model?.id===modelId)view.model.semantics=summary;
+      if(state.view.model?.id===modelId)renderContext();
+    },onPreview:openFieldPreview});
+  if(root.isConnected)modalCleanup=()=>manager.dispose();else manager.dispose();
+}
+
 function openCalibration() {
   if(!available())return;if(!state.view.model?.live){toast('校准生成需要先连接本机 Desktop 的实时模型',true);return;}
   showModal('用已知结果校准','CALIBRATION','<p class="notice">可添加多个筛选条件，所有条件同时生效，共同对应一个已知正确结果。将对回复中的最后一个度量值实跑校准，失败时最多自动修复两轮。</p><form id="calibration-form"></form>');
@@ -229,6 +246,13 @@ async function send(e) {
   if(!state.settings.ready){await openSettings();return;}
   if(state.view.mode==='mquery'&&!$('#query-select').value){toast('此模型没有可用的 Power Query 查询',true);return;}
   const view=state.view;
+  if(view.model.source==='desktop'&&view.mode!=='mquery'&&view.model.semantics?.status!=='ready'){
+    try {
+      const dictionary=await api(`/models/${view.model.id}/semantics`);view.model.semantics=semanticSummary(dictionary);
+      if(state.view!==view)return;
+      if(dictionary.status!=='ready'){await openSemantics(view.model.id);toast('先完成模型语义梳理，再继续这条需求');return;}
+    } catch(error){toast(error.message,true);return;}
+  }
   const payload={content,points:view.mode==='dax'?view.points:[],
     query_name:view.mode==='mquery'?$('#query-select').value:'',llm_profile_id:state.settings.active_profile_id||null};
   $('#prompt').value='';
@@ -273,6 +297,7 @@ $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.v
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{
   const el=e.target.closest('button');if(!el)return;
+  if(el.dataset.openSemantics){await openSemantics(el.dataset.openSemantics);return;}
   if(el.dataset.previewColumn!==undefined){await openFieldPreview(el.dataset.previewTable,el.dataset.previewColumn,el.dataset.previewModel||state.view.model?.id);return;}
   if(el.dataset.confirmClarification){
     if(!available())return;

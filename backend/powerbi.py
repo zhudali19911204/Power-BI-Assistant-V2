@@ -36,6 +36,7 @@ class PowerBIService:
             raise HTTPException(404, "模型不存在")
         row["context"] = json.loads(row["context"])
         row["live"] = model_id in self.live_ids
+        if getattr(self,'semantics',None):row['semantics']=self.semantics.summary(model_id,row['fingerprint'])
         return row
 
     def save(self, name, source, port, ctx):

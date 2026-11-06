@@ -1,0 +1,28 @@
+.semantic-progress{padding:13px 15px;background:#f6f7f9;border:1px solid #e6e9ed;border-radius:7px;margin:16px 0;color:#7e8b97}
+.semantic-progress strong{display:block;font-size:12px;font-weight:500;line-height:1.8}
+.semantic-progress span{display:block;font-size:10px;color:#9ca5af;margin-top:5px}
+.semantic-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}
+.semantic-tools>span{font-size:10px;line-height:1.8;color:#a0a7ae;flex:1;min-width:140px}
+.semantic-filter{display:flex;align-items:center;gap:10px;margin:20px 0 12px;flex-wrap:wrap}
+.semantic-filter>input{flex:1;min-width:160px;padding:10px;border:1px solid #e1e5e9;border-radius:6px;font-size:11px}
+.semantic-filter>label{display:flex;align-items:center;gap:5px;font-size:10px;color:#939da7}
+.semantic-entry{border:1px solid #e5e9ed;border-radius:8px;padding:15px;margin:10px 0;background:#fff}
+.semantic-entry-heading{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.semantic-entry-heading strong{font-size:12px;font-weight:550;overflow-wrap:anywhere;line-height:1.8}
+.semantic-state{font-size:9px;white-space:nowrap;padding:4px 6px;border-radius:4px;background:#f7efcf;color:#a18b40}
+.semantic-state.confirmed{background:#e9f3ed;color:#5a8b6c}
+.semantic-state.unresolved{background:#f0f2f5;color:#939eaa}
+.semantic-business-name,.semantic-unit{font-size:10px;color:#98a2ac;line-height:1.9;overflow-wrap:anywhere}
+.semantic-meaning{font-size:11px;line-height:1.9;color:#75818e;white-space:pre-wrap;overflow-wrap:anywhere}
+.semantic-facts{font-size:10px;line-height:1.9;color:#9ca5ae;margin:12px 0}
+.semantic-facts>summary{cursor:pointer;color:#a18e4f}
+.semantic-facts p{display:flex;flex-direction:column;gap:3px;overflow-wrap:anywhere}
+.semantic-facts b{font-size:9px;font-weight:500;color:#a2acb5}
+.semantic-facts p>span{white-space:pre-wrap}
+.semantic-entry-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.semantic-entry-actions .secondary-button{font-size:10px;padding:7px 11px}
+.semantic-error,.semantic-feedback.error{color:#ab796a;background:#fcf4f1}
+.semantic-error,.semantic-feedback{font-size:11px;line-height:1.9;padding:10px 12px;border-radius:6px;overflow-wrap:anywhere}
+.semantic-feedback{color:#648b72;background:#f2f8f4}
+.semantic-open-button{font-size:10px;margin-top:13px;line-height:1.7;max-width:100%;text-align:left}
+.semantic-open-button small{font-size:9px;color:#a3aab1}

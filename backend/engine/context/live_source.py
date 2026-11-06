@@ -346,6 +346,34 @@ class LiveDesktopSource(ContextSource):
             rows = session.query(dax)
         return [next(iter(r.values()), None) for r in rows]
 
+    def semantic_metadata(self):
+        """Extra metadata stays outside the model structure fingerprint."""
+        if not self.dll:raise RuntimeError('未找到 Desktop ADOMD 客户端')
+        with _LiveSession(self.port,self.dll) as session:
+            tables=session.query('SELECT * FROM $SYSTEM.TMSCHEMA_TABLES',timeout_seconds=20)
+            columns=session.query('SELECT * FROM $SYSTEM.TMSCHEMA_COLUMNS',timeout_seconds=20)
+            measures=session.query('SELECT * FROM $SYSTEM.TMSCHEMA_MEASURES',timeout_seconds=20)
+        names={row['ID']:row['Name'] for row in tables if not _AUTO_DATE.match(row['Name'])}
+        metadata={}
+        for table in tables:
+            if table['ID'] in names:
+                metadata[('table',table['Name'],table['Name'])]={
+                    'description':str(table.get('Description') or ''),'data_category':str(table.get('DataCategory') or '')}
+        for column in columns:
+            table=names.get(column['TableID'])
+            if not table or column.get('Type')==_COL_ROWNUMBER:continue
+            name=column.get('ExplicitName') or column.get('InferredName') or '?'
+            dtype=column.get('ExplicitDataType')
+            if dtype in (None,1):dtype=column.get('InferredDataType') or dtype
+            metadata[('column',table,name)]={'description':str(column.get('Description') or ''),
+                'actual_dtype':_dtype(dtype),'format_string':str(column.get('FormatString') or ''),
+                'source_column':str(column.get('SourceColumn') or ''),'expression':str(column.get('Expression') or '')}
+        for measure in measures:
+            table=names.get(measure['TableID'])
+            if table:metadata[('measure',table,measure['Name'])]={
+                'description':str(measure.get('Description') or ''),'format_string':str(measure.get('FormatString') or '')}
+        return metadata
+
     def describe(self) -> str:
         """A short, human label for an instance picker: table count + first few real table names."""
         if not self.dll:

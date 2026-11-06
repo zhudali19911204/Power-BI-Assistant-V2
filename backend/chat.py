@@ -28,6 +28,7 @@ class ChatService:
         self.progress = {}
         self.active_messages = {}
         self.analysis=AnalysisService(self)
+        self.semantics=getattr(powerbi,'semantics',None)
 
     def conversation(self, conversation_id):
         row = self.db.one("SELECT * FROM conversations WHERE id=?", (conversation_id,))
@@ -94,7 +95,12 @@ class ChatService:
         try:
             if body.clarification_reply:
                 content=resolve_answer(self.db,conversation_id,body.clarification_reply)
+                if self.semantics:self.semantics.capture_answer(conv,body,ctx)
                 body=body.model_copy(update={'content':content})
+            if self.semantics and model['source']=='desktop' and conv['mode'] in ('dax','analysis'):
+                self.semantics.require_ready(model,ctx)
+                question=self.semantics.unresolved_code(conv,body,ctx)
+                if question:return self.semantics.confirmation_stream(conv,model,body,question,lock)
             provider = settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
         except BaseException:
             lock.release()
@@ -157,6 +163,9 @@ class ChatService:
             system += ('\n任务范围：用户只要求评价或分析现有模型时，优先给出结构分析、证据、问题和建议。'
                        '只有明确要求编写、修改或优化代码时才生成新的完整 DAX/M 脚本。')
             system += '\n'+QUESTION_RULES
+            if self.semantics:
+                system += '\n'+self.semantics.prompt(model['id'])
+                system += '\n用户确认的本会话编号映射（不沿用助手自己的猜测）：'+encode(self.semantics.bindings(conv['id']))
             yield encode({"type": "start", "message_id": assistant_id}) + "\n"
             yield encode({'type':'model','model_id':model['id'],'live':model['live']})+'\n'
             logger.info('Chat %s stream started', assistant_id)

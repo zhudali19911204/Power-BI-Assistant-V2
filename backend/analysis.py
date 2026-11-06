@@ -258,6 +258,9 @@ class AnalysisService:
             yield encode({'type':'model','model_id':model['id'],'live':True})+'\n'
             messages=[ChatMessage(m['role'],m['content']) for m in history]+[ChatMessage('user',body.content)]
             planner=plan_system(ctx)
+            if self.chat.semantics:
+                planner+='\n'+self.chat.semantics.prompt(model['id'])
+                planner+='\n本会话用户确认的编号映射：'+encode(self.chat.semantics.bindings(conv['id']))
             yield status('正在根据真实模型规划分析查询')
             planning_messages=messages[:];seen=set()
             user_text='\n'.join(m.content for m in messages if m.role=='user')

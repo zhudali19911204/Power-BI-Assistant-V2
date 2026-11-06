@@ -23,6 +23,7 @@ from .powerbi import PowerBIService, context_from_dict
 from .schemas import ApplyInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, SettingsInput
 from .settings import SettingsService
 from .fields import FieldPreviewInput
+from .semantics import SemanticBuildInput, SemanticEdit, SemanticService
 from .streaming import BackgroundStream
 from .validation import validate
 
@@ -42,9 +43,12 @@ def create_app(directory=None):
     db = Database(directory / "assistant.sqlite3")
     settings = SettingsService(db, directory)
     powerbi = PowerBIService(db)
+    semantics=SemanticService(db,powerbi)
+    powerbi.semantics=semantics
     chat = ChatService(db, powerbi)
     app = FastAPI(title="Power BI Assistant", version="2.0.0", docs_url="/api/docs", redoc_url=None)
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
+    app.state.semantics=semantics
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.middleware("http")
@@ -129,7 +133,9 @@ def create_app(directory=None):
 
     @app.post("/api/models/connect")
     def connect(body: ConnectInput):
-        return powerbi.connect(body.port)
+        model=powerbi.connect(body.port)
+        semantics.on_connect(model,settings)
+        return powerbi.get(model['id'])
 
     @app.post("/api/models/demo")
     def demo():
@@ -147,12 +153,26 @@ def create_app(directory=None):
     def preview_field(model_id: str, body: FieldPreviewInput):
         return chat.analysis.fields.preview(model_id, body)
 
+    @app.get('/api/models/{model_id}/semantics')
+    def get_semantics(model_id:str):
+        return semantics.get(model_id)
+
+    @app.post('/api/models/{model_id}/semantics/build')
+    def build_semantics(model_id:str,body:SemanticBuildInput):
+        return semantics.start(model_id,settings,body.llm_profile_id)
+
+    @app.put('/api/models/{model_id}/semantics/{entry_id}')
+    def edit_semantics(model_id:str,entry_id:str,body:SemanticEdit):
+        return semantics.edit(model_id,entry_id,body)
+
     @app.post("/api/models/{model_id}/refresh")
     def refresh(model_id: str):
         row = powerbi.get(model_id)
         if row["source"] != "desktop":
             raise HTTPException(409, "示例模型无需同步")
-        return powerbi.connect(row["port"])
+        model=powerbi.connect(row['port'])
+        semantics.on_connect(model,settings)
+        return powerbi.get(model['id'])
 
     @app.get("/api/conversations")
     def conversations():

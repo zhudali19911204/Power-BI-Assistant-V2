@@ -33,6 +33,12 @@ def setup(tmp_path,monkeypatch):
     app=create_app(tmp_path)
     ctx=context_from_dict(app.state.powerbi.demo()['context'])
     model=app.state.powerbi.save('测试 Desktop','desktop',51413,ctx)
+    dictionary=app.state.semantics.ensure(model,ctx)
+    dictionary.update(status='ready',coverage=len(dictionary['entries']))
+    app.state.semantics._store(model['id'],dictionary)
+    # Analysis transport/format tests isolate their earlier prerequisites. Semantic guards have
+    # dedicated integration tests with actual code candidates and confirmed definitions.
+    monkeypatch.setattr(app.state.semantics,'unresolved_code',lambda *a:None)
     monkeypatch.setattr(app.state.powerbi,'require_live',lambda *a,**k:(model,ctx))
     with TestClient(app) as client:
         conv=client.post('/api/conversations',json={'model_id':model['id'],'mode':'analysis'}).json()
