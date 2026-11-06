@@ -61,10 +61,22 @@ class Database:
                 CREATE TABLE IF NOT EXISTS model_semantics (
                     model_id TEXT PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
                     fingerprint TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS model_reports (
+                    model_id TEXT PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
+                    payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS conversation_bindings (
                     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
                     literal TEXT NOT NULL, table_name TEXT, column_name TEXT, created_at TEXT NOT NULL,
                     PRIMARY KEY(conversation_id,literal));
+                CREATE TABLE IF NOT EXISTS field_value_profiles (
+                    model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+                    table_name TEXT NOT NULL, column_name TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                    payload TEXT NOT NULL, checked_at TEXT NOT NULL,
+                    PRIMARY KEY(model_id,table_name,column_name));
+                CREATE TABLE IF NOT EXISTS model_value_lookups (
+                    model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+                    literal TEXT NOT NULL, fingerprint TEXT NOT NULL, payload TEXT NOT NULL,
+                    checked_at TEXT NOT NULL, PRIMARY KEY(model_id,literal));
                 CREATE INDEX IF NOT EXISTS field_observations_message ON field_observations(message_id);
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
                 CREATE INDEX IF NOT EXISTS artifacts_message ON artifacts(message_id);

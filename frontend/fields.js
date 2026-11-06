@@ -41,13 +41,14 @@ export function fieldEvidence(records=[]) {
     </div></details>`).join('');
 }
 
-export async function mountFieldPreview(root,{api,modelId,table,column}) {
-  root.innerHTML=`<p class="notice">读取当前模型中的字段实际内容。空值按模型中的 BLANK() 统计，空字符串单独列出可识别的数量。</p>
+export async function mountFieldPreview(root,{api,modelId,table,column,onBack=null}) {
+  root.innerHTML=`${onBack?`<button type="button" class="text-link field-preview-back" data-field-back>${icon('arrow-left')}返回业务字典</button>`:''}<p class="notice">读取当前模型中的字段实际内容。空值按模型中的 BLANK() 统计，空字符串单独列出可识别的数量。</p>
     <form class="field-preview-search" data-field-search><input name="search" type="search" maxlength="120" placeholder="搜索取值，可尝试人员、personnel 等同义词" aria-label="搜索字段取值"><button class="primary-button" type="submit">搜索取值</button><button class="secondary-button" type="button" data-field-clear>清空</button></form>
     <div data-field-result aria-live="polite"></div>`;
-  let sequence=0;
+  let sequence=0,disposed=false;
   const form=root.querySelector('form'),result=root.querySelector('[data-field-result]');
   async function load() {
+    if(disposed)return;
     const request=++sequence;
     const search=form.querySelector('input').value.trim();
     form.querySelectorAll('button').forEach(button=>button.disabled=true);
@@ -63,8 +64,10 @@ export async function mountFieldPreview(root,{api,modelId,table,column}) {
   }
   form.onsubmit=event=>{event.preventDefault();void load();};
   root.onclick=event=>{
+    if(event.target.closest('[data-field-back]')){onBack?.();return;}
     if(event.target.closest('[data-field-clear]')){form.querySelector('input').value='';void load();}
     if(event.target.closest('[data-field-retry]'))void load();
   };
   await load();
+  return {dispose(){disposed=true;sequence++;root.onclick=null;form.onsubmit=null;}};
 }

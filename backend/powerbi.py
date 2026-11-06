@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from .database import encode, now, uid
 from .engine.context.base import Column, Measure, ModelContext, Relationship
 from .engine.context.live_source import LiveDesktopSource, find_instances
+from .reports import reports_for_instances
 
 
 def context_from_dict(raw):
@@ -36,6 +37,8 @@ class PowerBIService:
             raise HTTPException(404, "模型不存在")
         row["context"] = json.loads(row["context"])
         row["live"] = model_id in self.live_ids
+        report=self.db.one('SELECT payload FROM model_reports WHERE model_id=?',(model_id,))
+        row['report']=json.loads(report['payload']) if report else {}
         if getattr(self,'semantics',None):row['semantics']=self.semantics.summary(model_id,row['fingerprint'])
         return row
 
@@ -51,13 +54,22 @@ class PowerBIService:
             self.live_ids.update(row['id'] for row in matches)
         return self.get(model_id)
 
-    def connect(self, port):
-        if port not in {i.port for i in find_instances()}:
+    def connect(self, port, report_name=''):
+        instances=find_instances()
+        instance=next((i for i in instances if i.port==port),None)
+        if not instance:
             raise HTTPException(409, "该端口不是当前 Power BI Desktop 实例，请重新扫描")
         try:
             with self.lock:
                 ctx = LiveDesktopSource(port).load()
-            return self.save(f"Desktop · {port}", "desktop", port, ctx)
+            report=reports_for_instances([instance]).get(getattr(instance,'pid',None),{})
+            if not report.get('name') and report_name.strip():
+                report={'name':report_name.strip(),'path':'','source':'manual'}
+            model=self.save(report.get('name') or f"Desktop · {port}", "desktop", port, ctx)
+            if report:
+                self.db.execute('INSERT OR REPLACE INTO model_reports VALUES (?,?,?)',
+                                (model['id'],encode(report),now()))
+            return self.get(model['id'])
         except Exception as exc:
             raise HTTPException(422, f"读取模型失败：{str(exc).splitlines()[0][:240]}") from exc
 

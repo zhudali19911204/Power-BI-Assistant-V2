@@ -22,6 +22,7 @@ async function fixture(initial=profile()) {
       return structuredClone(current);
     }
     if(path.endsWith('/build')){current={...current,status:'building',stage:'正在梳理'};return structuredClone(current);}
+    if(path.endsWith('/reuse')){current={...current,status:'ready',stage:'已复用本地词典',coverage:current.entries.length};return structuredClone(current);}
     return structuredClone(current);
   };
   const manager=await mountSemanticWorkbench(root,{api,modelId:'model',onUpdate:p=>updates.push(p),onPreview:(...a)=>previews.push(a)});
@@ -93,4 +94,31 @@ test('real values remain accessible and dictionary text cannot create executable
 
 test('summary never conflates inferred entries with user-confirmed definitions',()=>{
   assert.deepEqual(semanticSummary(profile()),{status:'ready',stage:'语义梳理完成',coverage:2,total:2,confirmed:0});
+});
+
+test('a matched report displays its saved name and path without starting another build',async()=>{
+  const f=await fixture(profile({report_identity:{name:'采购费用',path:'E:\\Reports\\采购费用.pbix'},
+    stage:'已复用报表“采购费用”的语义词典 · 2 项'}));
+  try {
+    assert.ok(f.root.textContent.includes('采购费用.pbix'));
+    assert.ok(f.root.textContent.includes('已复用报表'));
+    assert.equal(f.root.querySelector('[data-semantic-history]'),null);
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/build')).length,0);
+  } finally {f.manager.dispose();}
+});
+
+test('legacy dictionary selection reuses a concrete saved model without calling build',async()=>{
+  const f=await fixture(profile({status:'inventory',coverage:0,reuse_candidates:[
+    {model_id:'saved-dictionary',name:'采购费用',path:'E:\\Reports\\采购费用.pbix',coverage:2,total:2}]}));
+  try {
+    f.root.querySelector('[data-semantic-history] option').setAttribute('selected','');
+    await f.click('[data-reuse-semantics]');
+    const call=f.calls.find(c=>c.path.endsWith('/reuse'));
+    assert.equal(call.path,'/models/model/semantics/reuse');
+    assert.deepEqual(JSON.parse(call.body),{source_model_id:'saved-dictionary'});
+    assert.equal(f.updates.at(-1).status,'ready');
+    assert.ok(f.root.textContent.includes('已关联本地历史词典'));
+    assert.equal(f.root.querySelector('[data-semantic-history]'),null);
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/build')).length,0);
+  } finally {f.manager.dispose();}
 });

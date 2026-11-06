@@ -28,6 +28,7 @@ class LLMProfileInput(SettingsInput):
 
 class ConnectInput(BaseModel):
     port: int = Field(ge=1, le=65535)
+    report_name: str = Field(default='', max_length=260)
 
 
 class ConversationInput(BaseModel):

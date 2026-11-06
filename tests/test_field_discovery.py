@@ -110,13 +110,48 @@ def test_duplicate_checks_cannot_loop_forever(setup,monkeypatch):
     assert len(calls)==1 and len(provider.calls)==2 and events[-1]['type']=='error'
 
 
-def test_discovery_has_four_check_budget_and_does_not_query_unverified_metrics(setup,monkeypatch):
+def test_more_than_four_checks_run_in_one_request_across_two_rounds(setup,monkeypatch):
     app,client,conv=setup
-    checks=[{'table':'产品','column':name} for name in ('类别','产品名称','产品ID','额外字段')]
-    provider=Provider([json.dumps({'field_checks':checks}),json.dumps({'field_checks':[{'table':'客户','column':'地区'}]})]);calls=[]
+    checks=[{'table':'产品','column':name} for name in ('类别','产品名称','产品ID')]
+    checks += [{'table':'客户','column':name} for name in ('客户名称','地区','客户ID')]
+    more=[{'table':'销售明细','column':name} for name in ('订单日期','销售额')]
+    provider=Provider([json.dumps({'field_checks':checks}),json.dumps({'field_checks':more}),clarify(matching_question())]);calls=[]
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    monkeypatch.setattr(app.state.chat.analysis.fields,'preview',lambda model,body,**k:(calls.append((body.table,body.column)),profile())[1])
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:pytest.fail('No metrics before confirmation'))
+    events=send(client,conv)
+    assert calls==[(c['table'],c['column']) for c in checks+more] and events[-1]['type']=='done'
+    assert len(provider.calls)==3 and '没有固定项数上限' in provider.calls[1][1][-1].content
+    saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert saved['status']=='complete' and len(saved['field_previews'])==8
+    assert saved['clarification'] and not saved['analysis']
+
+
+def test_plan_accepts_more_than_four_field_checks_but_business_queries_are_still_bounded():
+    from backend.analysis import parse_plan
+    checks=[{'table':'产品','column':f'Field{i}'} for i in range(20)]
+    assert len(parse_plan(json.dumps({'field_checks':checks})).field_checks)==20
+    with pytest.raises(ValueError):
+        parse_plan(json.dumps({'queries':[{'title':'查询','dax':'EVALUATE ROW("x",1)'}]*5}))
+
+
+def test_implicit_checks_are_not_truncated_to_four_fields():
+    from backend.analysis import AnalysisService,parse_plan
+    from backend.engine.context.base import Column,ModelContext
+    ctx=ModelContext(tables={'分类表':[Column(f'分类{i}','string','分类表') for i in range(7)]})
+    card=matching_question();card['context']=' '.join(f"'分类表'[分类{i}]" for i in range(7))
+    plan=parse_plan(clarify(card))
+    assert len(AnalysisService.implicit_checks(plan,ctx,'分析费用'))==7
+
+
+def test_discovery_round_limit_is_independent_of_the_number_of_checked_fields(setup,monkeypatch):
+    app,client,conv=setup
+    batches=[[{'table':'产品','column':f'Field{i}'} for i in range(6)],
+             [{'table':'客户','column':'地区'}],[{'table':'日期','column':'年份'}]]
+    provider=Provider([json.dumps({'field_checks':batch}) for batch in batches]);calls=[]
     monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     monkeypatch.setattr(app.state.chat.analysis.fields,'preview',lambda *a,**k:(calls.append(1),profile())[1])
     monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:pytest.fail('Unverified metrics must not run'))
     events=send(client,conv)
-    assert len(calls)==4 and events[-1]['type']=='error'
-    assert '上限' in events[-1]['text']
+    assert len(calls)==7 and events[-1]['type']=='error'
+    assert '已完成两轮' in events[-1]['text']

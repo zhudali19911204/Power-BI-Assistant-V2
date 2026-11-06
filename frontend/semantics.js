@@ -33,7 +33,7 @@ function editMarkup(entry) {
 }
 
 export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},onPreview=()=>{}}) {
-  let profile,service,editing=null,filter='',onlyPending=false,busy=false,timer=null,disposed=false;
+  let profile,service,editing=null,filter='',onlyPending=false,busy=false,timer=null,disposed=false,paused=false;
   function feedback(text,error=false) {const el=$('[data-semantic-feedback]',root);if(el){el.textContent=text;el.hidden=false;el.classList.toggle('error',error);}}
   function list() {
     const entries=profile.entries.filter(e=>(!onlyPending||e.state!=='confirmed')&&
@@ -42,26 +42,30 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
   }
   function render() {
     const summary=semanticSummary(profile);
-    root.innerHTML=`<p class="notice">先梳理模型，再进行 DAX 与数据分析。字段名称和取值属于模型事实；自动解释是候选建议，需要你审阅。编号出现在哪个字段与本次要筛选哪个字段分别确认。</p>
+    root.innerHTML=`<p class="notice">语义词典保存在本机，重新打开同一报表时自动匹配并核对模型。字段名称和取值属于模型事实；自动解释是候选建议，需要你审阅。编号归属以实际查值为依据，有歧义时再确认。</p>
       <p data-semantic-feedback class="semantic-feedback" role="status" hidden></p>
+      ${profile.report_identity?.name?`<p class="notice">当前报表：<strong>${esc(profile.report_identity.name)}</strong>${profile.report_identity.path?`<br>${esc(profile.report_identity.path)}`:''}</p>`:''}
       <div class="semantic-progress"><strong>${esc(profile.stage)}</strong><span>已梳理 ${profile.coverage}/${profile.entries.length} 项 · 用户确认 ${summary.confirmed} 项</span></div>
       ${profile.error?`<p class="semantic-error">${esc(profile.error)}</p>`:''}
-      <div class="semantic-tools"><button type="button" class="primary-button" data-build-semantics ${profile.status==='building'?'disabled':''}>${icon('sparkles')}${profile.status==='building'?'正在后台梳理…':profile.status==='ready'?'重新梳理候选含义':profile.status==='error'&&profile.coverage>0?`继续梳理（已完成 ${profile.coverage} 项）`:'开始梳理模型语义'}</button><span>点击后将模型结构、公式和描述发送至 ${esc(service?.name||service?.model||'当前模型服务')}（${esc(service?.base_url||'Anthropic 官方服务')}）解释字段含义；不修改 Desktop。</span></div>
+      <div class="semantic-tools"><button type="button" class="primary-button" data-build-semantics ${profile.status==='building'?'disabled':''}>${icon('sparkles')}${profile.status==='building'?'正在后台梳理…':profile.status==='ready'?'重新梳理候选含义':profile.coverage>0?`继续梳理（已完成 ${profile.coverage} 项）`:'开始梳理模型语义'}</button><span>点击后将模型结构、公式和描述发送至 ${esc(service?.name||service?.model||'当前模型服务')}（${esc(service?.base_url||'Anthropic 官方服务')}）解释字段含义；不修改 Desktop。</span></div>
+      ${profile.status!=='ready'&&profile.status!=='building'&&profile.reuse_candidates?.length?`<div class="semantic-tools"><label class="form-field">关联已有词典（模型结构相同）<select data-semantic-history>${profile.reuse_candidates.map(c=>`<option value="${esc(c.model_id)}">${esc(c.name)}${c.path?' · '+esc(c.path):''} · ${c.coverage}/${c.total} 项</option>`).join('')}</select></label><button type="button" class="secondary-button" data-reuse-semantics>关联并复用</button><span>旧版未记录报表名称，或存在多个可能的词典时，选择已保存的词典；关联只读取本机记录，不调用大模型。</span></div>`:''}
       <section data-semantic-content>${editing?editMarkup(editing):`<div class="semantic-filter"><input type="search" data-semantic-search value="${esc(filter)}" placeholder="搜索表、字段、业务名称或含义" aria-label="搜索语义词典"><label><input type="checkbox" data-semantic-pending ${onlyPending?'checked':''}>只看待确认项</label></div><div data-semantic-entries></div>`}</section>`;
     if(!editing)list();
   }
   function schedule() {
     clearTimeout(timer);
-    if(!disposed&&root.isConnected&&profile?.status==='building')timer=setTimeout(()=>void refresh(),1800);
+    if(!disposed&&!paused&&root.isConnected&&profile?.status==='building')timer=setTimeout(()=>void refresh(),1800);
   }
   async function refresh() {
     try {
-      profile=await api(`/models/${modelId}/semantics`);onUpdate(semanticSummary(profile));
+      const next=await api(`/models/${modelId}/semantics`);
+      if(disposed||paused)return;
+      profile=next;onUpdate(semanticSummary(profile));
       // Do not rebuild an editor the user is currently typing in.
       if(!editing)render();else {
         const el=$('.semantic-progress',root);el.innerHTML=`<strong>${esc(profile.stage)}</strong><span>已梳理 ${profile.coverage}/${profile.entries.length} 项</span>`;
       }
-    } catch(error){if(!profile)root.innerHTML=`<p class="semantic-error">${esc(error.message)}</p>`;else feedback(error.message,true);}
+    } catch(error){if(disposed||paused)return;if(!profile)root.innerHTML=`<p class="semantic-error">${esc(error.message)}</p>`;else feedback(error.message,true);}
     schedule();
   }
   async function save(confirmed) {
@@ -86,6 +90,11 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
     if(button.hasAttribute('data-build-semantics'))void run(async()=>{
       profile=await api(`/models/${modelId}/semantics/build`,{method:'POST',body:JSON.stringify({llm_profile_id:service?.active_profile_id||null})});onUpdate(semanticSummary(profile));render();schedule();
     });
+    if(button.hasAttribute('data-reuse-semantics'))void run(async()=>{
+      const sourceModelId=$('[data-semantic-history]',root).value;
+      profile=await api(`/models/${modelId}/semantics/reuse`,{method:'POST',body:JSON.stringify({source_model_id:sourceModelId})});
+      editing=null;onUpdate(semanticSummary(profile));render();feedback('已关联本地历史词典；未变化的定义已保留');schedule();
+    });
     if(button.dataset.semanticPreview){const entry=profile.entries.find(e=>e.id===button.dataset.semanticPreview);onPreview(entry.table,entry.name,modelId);}
   };
   root.oninput=event=>{if(event.target.matches('[data-semantic-search]')){filter=event.target.value;list();}};
@@ -94,5 +103,6 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
   root.innerHTML='<p class="notice">正在读取模型语义词典…</p>';
   service=await api('/settings');
   await refresh();
-  return {dispose(){disposed=true;clearTimeout(timer);}};
+  return {pause(){paused=true;clearTimeout(timer);},resume(){if(!disposed){paused=false;schedule();}},
+    dispose(){disposed=true;clearTimeout(timer);}};
 }

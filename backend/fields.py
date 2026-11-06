@@ -122,7 +122,7 @@ class FieldService:
                 break
             values.append(entry)
             used += size
-        return {'model_id': model_id, 'table': body.table, 'column': body.column, 'dtype': column.dtype,
+        profile = {'model_id': model_id, 'table': body.table, 'column': body.column, 'dtype': column.dtype,
                 'statistics': statistics, 'values': values, 'samples': [_value(_row(row)['__value'],120) for row in samples],
                 'search_terms': terms, 'limit': body.limit,
                 'truncated': len(data) > len(values) or statistics['matched_distinct_count'] > len(values)
@@ -130,3 +130,7 @@ class FieldService:
                 'scope': '当前用户可读取的全模型范围，未应用报表页面筛选',
                 'checked_at': now(), 'seconds': round(time.monotonic() - started, 3),
                 'dax_queries': [q for q in queries if q], 'run_verified': True}
+        semantics = getattr(self.powerbi, 'semantics', None)
+        if semantics:
+            semantics.values.remember(model, profile)
+        return profile

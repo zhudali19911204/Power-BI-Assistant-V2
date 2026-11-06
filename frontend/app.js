@@ -14,7 +14,7 @@ const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const workspace=createWorkspaces();
 const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
-let modalCleanup=null;
+let modalCleanup=null,modalReturn=null;
 hydrateIcons();
 const messageRenderer=createMessageRenderer({
   root:$('#messages'),scroll:$('#message-scroll'),
@@ -62,13 +62,17 @@ function renderBusy() {
   document.body.classList.toggle('busy',state.view.busy);
 }
 function showModal(title,eyebrow,html) {
+  modalReturn=null;
   modalCleanup?.();modalCleanup=null;
+  $('#modal-close').setAttribute('aria-label','关闭弹窗');
   $('#modal-title').textContent=title;$('#modal-eyebrow').textContent=eyebrow;$('#modal-body').innerHTML=html;
   if(!$('#modal').open) $('#modal').showModal();
 }
-$('#modal-close').onclick=()=>$('#modal').close();
-$('#modal').addEventListener('close',()=>{modalCleanup?.();modalCleanup=null;});
-$('#modal').addEventListener('click', e=>{if(e.target===$('#modal')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)e.target.close();}});
+function closeModalLayer(){if(modalReturn)modalReturn();else $('#modal').close();}
+$('#modal-close').onclick=closeModalLayer;
+$('#modal').addEventListener('close',()=>{modalReturn=null;modalCleanup?.();modalCleanup=null;});
+$('#modal').addEventListener('cancel',event=>{if(modalReturn){event.preventDefault();modalReturn();}});
+$('#modal').addEventListener('click', e=>{if(e.target===$('#modal')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModalLayer();}});
 
 function welcome() {
   const mode=MODES[state.view.mode]||MODES.dax;
@@ -198,7 +202,7 @@ async function openConversation(id) {
 async function openConnections() {
   showModal('连接 Power BI','LOCAL MODEL','<p class="notice">正在查找本机 Power BI Desktop 实例…</p>');
   const [instances,models]=await Promise.all([api('/desktop/instances'),api('/models')]);state.models=models;
-  $('#modal-body').innerHTML=`<p class="notice">先在本机 Power BI Desktop 打开报表。连接后读取表、字段、关系、度量值与 M 查询；不会在连接时修改报表。</p>${instances.length?instances.map(i=>`<button class="instance-button" data-port="${i.port}">${icon('monitor')}<span>Power BI Desktop · ${i.port}<small>本地实例 · PID ${i.pid}</small></span></button>`).join(''):'<p class="field-help">未找到已打开的实例。请打开报表后重新扫描。</p>'}<div class="modal-actions"><button class="secondary-button" id="demo-load">体验示例模型</button><button class="primary-button" id="rescan">${icon('refresh')}重新扫描</button></div>${models.length?`<div class="snapshot-section"><div class="section-label">本地保存的模型结构</div>${models.slice(0,8).map(m=>`<button class="snapshot-button" data-snapshot="${m.id}">${icon('database')}<span>${esc(m.name)}<small>${m.live?'实时连接':m.source==='demo'?'示例模型':'离线快照 · 无法实跑'}</small></span></button>`).join('')}</div>`:''}`;
+  $('#modal-body').innerHTML=`<p class="notice">先在本机 Power BI Desktop 打开报表。连接后按报表名称与文件路径匹配本地语义词典，并核对字段、关系和公式；不会修改报表。</p>${instances.length?instances.map(i=>`<button class="instance-button" data-port="${i.port}">${icon('monitor')}<span>${esc(i.report?.name||'Power BI Desktop')} · ${i.port}<small>${esc(i.report?.path||'本地实例 · PID '+i.pid)}</small></span></button>`).join(''):'<p class="field-help">未找到已打开的实例。请打开报表后重新扫描。</p>'}${instances.some(i=>!i.report?.name)?'<label class="form-field">未识别报表名称时，可填写用于后续匹配的名称<input id="connection-report-name" maxlength="260" placeholder="例如：采购费用分析；以后打开同一报表填写相同名称"></label>':''}<div class="modal-actions"><button class="secondary-button" id="demo-load">体验示例模型</button><button class="primary-button" id="rescan">${icon('refresh')}重新扫描</button></div>${models.length?`<div class="snapshot-section"><div class="section-label">本地保存的模型结构</div>${models.slice(0,8).map(m=>`<button class="snapshot-button" data-snapshot="${m.id}">${icon('database')}<span>${esc(m.name)}<small>${m.live?'实时连接':m.source==='demo'?'示例模型':'离线快照 · 无法实跑'}</small></span></button>`).join('')}</div>`:''}`;
 }
 
 async function openSettings() {
@@ -211,19 +215,43 @@ async function openSettings() {
 async function openFieldPreview(table,column,modelId=state.view.model?.id) {
   if(!modelId){toast('请先连接本机 Power BI Desktop');return;}
   showModal(`${table}[${column}]`,'FIELD VALUES','<section id="field-preview"></section>');
-  await mountFieldPreview($('#field-preview'),{api,modelId,table,column});
+  const root=$('#field-preview'),manager=await mountFieldPreview(root,{api,modelId,table,column});
+  if(root.isConnected&&$('#modal').open)modalCleanup=()=>manager.dispose();else manager.dispose();
 }
 
 async function openSemantics(modelId=state.view.model?.id) {
   if(!modelId)return;
   showModal('模型语义层 · 业务词典','MODEL SEMANTICS','<section id="semantic-workbench"></section>');
   const root=$('#semantic-workbench');
-  const manager=await mountSemanticWorkbench(root,{api,modelId,
+  let manager,previewCleanup=null;
+  async function preview(table,column,sourceModelId) {
+    if(root.hidden||!root.isConnected||!$('#modal').open)return;
+    manager?.pause();
+    const dialog=$('#modal'),title=$('#modal-title').textContent,eyebrow=$('#modal-eyebrow').textContent;
+    const scrollTop=dialog.scrollTop;
+    const child=document.createElement('section');child.id='field-preview';
+    let active=true,childManager;
+    function cleanup(){active=false;childManager?.dispose();child.remove();if(modalReturn===back)modalReturn=null;}
+    function back(){
+      if(!active)return;
+      cleanup();previewCleanup=null;root.hidden=false;
+      $('#modal-title').textContent=title;$('#modal-eyebrow').textContent=eyebrow;
+      $('#modal-close').setAttribute('aria-label','关闭弹窗');dialog.scrollTop=scrollTop;
+      manager?.resume();
+    }
+    previewCleanup=cleanup;modalReturn=back;root.hidden=true;root.after(child);
+    $('#modal-title').textContent=`${table}[${column}]`;$('#modal-eyebrow').textContent='FIELD VALUES';
+    $('#modal-close').setAttribute('aria-label','返回业务字典');dialog.scrollTop=0;
+    const mounted=await mountFieldPreview(child,{api,modelId:sourceModelId,table,column,onBack:back});
+    if(active&&child.isConnected)childManager=mounted;else mounted.dispose();
+  }
+  manager=await mountSemanticWorkbench(root,{api,modelId,
     onUpdate:summary=>{
       for(const view of workspace.all())if(view.model?.id===modelId)view.model.semantics=summary;
       if(state.view.model?.id===modelId)renderContext();
-    },onPreview:openFieldPreview});
-  if(root.isConnected)modalCleanup=()=>manager.dispose();else manager.dispose();
+    },onPreview:(...args)=>void preview(...args)});
+  if(root.isConnected&&$('#modal').open)modalCleanup=()=>{previewCleanup?.();manager.dispose();};
+  else {previewCleanup?.();manager.dispose();}
 }
 
 function openCalibration() {
@@ -315,7 +343,7 @@ document.addEventListener('click',guard(async e=>{
   if(el.dataset.ref){const input=$('#prompt'),start=input.selectionStart;input.setRangeText(el.dataset.ref,start,input.selectionEnd,'end');input.focus();}
   if(el.id==='empty-connect'||el.id==='rescan')await openConnections();
   if(el.id==='demo-load')useModel(await post('/models/demo'));
-  if(el.dataset.port){el.disabled=true;el.textContent='正在读取模型…';try{useModel(await post('/models/connect',{port:Number(el.dataset.port)}));toast('已读取 Desktop 模型');}catch(err){await openConnections();throw err;}}
+  if(el.dataset.port){const reportName=$('#connection-report-name')?.value.trim()||'';el.disabled=true;el.textContent='正在读取模型…';try{const model=await post('/models/connect',{port:Number(el.dataset.port),report_name:reportName});useModel(model);toast(model.semantics?.status==='ready'?model.semantics.stage:'已读取 Desktop 模型');}catch(err){await openConnections();throw err;}}
   if(el.dataset.snapshot)useModel(await api(`/models/${el.dataset.snapshot}`));
   if(el.dataset.query){const ctx=state.view.model.context,code=ctx.table_queries[el.dataset.query]??ctx.shared_expressions[el.dataset.query];showModal(el.dataset.query,'POWER QUERY',`<div class="code-block"><div class="code-heading"><span>POWERQUERY</span><button class="copy-code">${icon('copy')}复制</button></div><pre><code>${esc(code)}</code></pre></div><div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">在清洗助手中使用</button></div>`);}
   if(el.dataset.useQuery){newChat('mquery');state.view.queryName=el.dataset.useQuery;$('#query-select').value=el.dataset.useQuery;$('#modal').close();}

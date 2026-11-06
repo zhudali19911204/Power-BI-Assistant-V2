@@ -24,6 +24,8 @@ def setup(tmp_path,monkeypatch):
                      relationships=[])
     model=app.state.powerbi.save('真实模型测试','desktop',50001,ctx)
     monkeypatch.setattr(app.state.powerbi,'require_live',lambda *a,**k:(model,ctx))
+    monkeypatch.setattr('backend.semantics.LiveDesktopSource',lambda *a:SimpleNamespace(semantic_metadata=lambda:{}))
+    monkeypatch.setattr('backend.values.find_adomd_dll',lambda *a:None)
     with TestClient(app) as client:
         conv=client.post('/api/conversations',json={'model_id':model['id'],'mode':'analysis'}).json()
         yield app,client,model,ctx,conv
@@ -32,6 +34,7 @@ def setup(tmp_path,monkeypatch):
 def ready(app,model,ctx):
     p=app.state.semantics.ensure(model,ctx)
     p.update(status='ready',coverage=len(p['entries']))
+    for entry in p['entries']:entry['state']='candidate'
     app.state.semantics._store(model['id'],p)
     return p
 
@@ -135,6 +138,12 @@ def test_bare_0257_is_confirmed_before_any_provider_or_data_query(setup,monkeypa
 def test_number_mapping_only_becomes_authoritative_after_the_user_selects_a_field(setup,monkeypatch):
     app,client,model,ctx,conv=setup
     ready(app,model,ctx)
+    # Both fields really contain the code; this test exercises choosing an ambiguous
+    # mapping, rather than recommending fields solely because of their names.
+    monkeypatch.setattr(app.state.semantics.values,'locate',lambda *a:{'literal':'0257',
+        'matches':[{'table':'Dim Cost Center','column':'CC Number'},
+                   {'table':'Dim Material','column':'Material Code'}],
+        'complete':True,'searched_fields':2,'total_fields':2,'errors':[]})
     initial=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':'2026年0257人员费用'})
     assert initial.status_code==200
     messages=client.get(f"/api/conversations/{conv['id']}/messages").json();question=messages[-1]

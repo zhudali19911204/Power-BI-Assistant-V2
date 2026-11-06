@@ -37,18 +37,28 @@ def verify(app,source,port,resume=False):
     assert profile['status']=='ready',profile['error']
     assert profile['coverage']==len(profile['entries'])
     assert all(e['state'] in ('candidate','confirmed') for e in profile['entries'])
+    provider_factory=app.state.settings.provider
+    def no_remote_generation(*a,**k):
+        raise AssertionError('编号归属解释应使用本地真实取值，不请求大模型或运行业务聚合')
+    app.state.settings.provider=no_remote_generation
     with TestClient(app) as client:
-        for mode in ('dax','analysis'):
-            conv=client.post('/api/conversations',json={'model_id':model['id'],'mode':mode,'title':'编号语义确认测试'}).json()
-            response=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':'2026年0257人员费用最高的月份'})
-            assert response.status_code==200,response.text
-            events=[json.loads(line) for line in response.text.splitlines()]
-            assert any(e['type']=='clarification' and e['clarification']['topic']=='编号归属' for e in events)
-            assert not app.state.db.all('SELECT * FROM analysis_queries WHERE message_id IN (SELECT id FROM messages WHERE conversation_id=?)',(conv['id'],))
-            client.delete(f"/api/conversations/{conv['id']}")
+        created=[]
+        try:
+            for mode in ('dax','analysis'):
+                conv=client.post('/api/conversations',json={'model_id':model['id'],'mode':mode,'title':'编号语义解释测试'}).json()
+                created.append(conv['id'])
+                response=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':'0257是什么意思'})
+                assert response.status_code==200,response.text
+                events=[json.loads(line) for line in response.text.splitlines()]
+                assert events[-1]['type']=='done' and not any(e['type']=='clarification' for e in events)
+                saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+                assert '0257' in saved['content'] and not saved['analysis'] and not saved['artifacts']
+        finally:
+            app.state.settings.provider=provider_factory
+            for cid in created:client.delete(f'/api/conversations/{cid}')
     report={'semantic_build':'pass','llm':cfg['model'],'entries':len(profile['entries']),
         'confirmed':sum(e['state']=='confirmed' for e in profile['entries']),'all_objects_covered':True,
-        'dax_and_analysis_code_guard':True,'model_writes':0,'business_values_logged':False,
+        'dax_and_analysis_local_code_explanations':True,'model_writes':0,'business_values_logged':False,
         'seconds':round(time.monotonic()-started,2)}
     target=Path(__file__).resolve().parents[1]/'artifacts';target.mkdir(exist_ok=True)
     (target/'semantic-layer-report.json').write_text(json.dumps(report,ensure_ascii=False),encoding='utf-8')

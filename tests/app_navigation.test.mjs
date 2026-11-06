@@ -14,11 +14,11 @@ test('actual app navigation keeps background streams, drafts and independent sen
     set(value){for(const option of this.options)option.selected=option.value===value;}});
   const scroll=document.querySelector('#message-scroll');
   Object.assign(scroll,{scrollHeight:1000,clientHeight:400,scrollTop:600,scrollTo({top}){this.scrollTop=top;}});
-  const modal=document.querySelector('#modal');modal.showModal=()=>{modal.open=true;};modal.close=()=>{modal.open=false;};
+  const modal=document.querySelector('#modal');modal.showModal=()=>{modal.open=true;};modal.close=()=>{modal.open=false;modal.dispatchEvent(new window.Event('close'));};
   const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务'};
   const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
     context:{tables:{事实表:[{name:'金额',dtype:'double'}]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
-  const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0;
+  const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
   let semanticProfile={model_id:'model',status:'inventory',stage:'本地事实已整理',error:'',coverage:0,entries:[{
     id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'candidate',business_name:'金额',
     meaning:'业务口径待确认',role:'数值',unit:'',aliases:[]}]};
@@ -40,7 +40,9 @@ test('actual app navigation keeps background streams, drafts and independent sen
       model.semantics={...model.semantics,status:'ready',coverage:1};return json(semanticProfile);
     }
     if(path==='/api/models/model/fields/preview'){
-      previewCalls.push(JSON.parse(opts.body));return json(fieldProfile);
+      previewCalls.push(JSON.parse(opts.body));
+      if(pendingPreview){const waiting=pendingPreview;pendingPreview=null;await waiting;}
+      return json(fieldProfile);
     }
     if(path==='/api/conversations'&&opts.method==='POST') {
       const body=JSON.parse(opts.body),conversation={...body,id:'c'+(++nextId),generating:false};
@@ -86,11 +88,38 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.ok($('#semantic-workbench').textContent.includes('业务口径待确认'));
     await click('[data-build-semantics]');
     assert.ok($('#semantic-workbench').textContent.includes('测试语义完成'));
+    const dictionary=$('#semantic-workbench'),dictionarySearch=$('[data-semantic-search]'),pendingOnly=$('[data-semantic-pending]');
+    dictionarySearch.value='金额';dictionarySearch.dispatchEvent(new window.Event('input',{bubbles:true}));
+    pendingOnly.checked=true;pendingOnly.dispatchEvent(new window.Event('change',{bubbles:true}));
+    modal.scrollTop=275;
+    await click('[data-semantic-preview="amount"]');
+    assert.ok(dictionary.hidden);assert.ok($('#field-preview').textContent.includes('返回业务字典'));
+    assert.equal($('#modal-title').textContent,'事实表[金额]');
+    await click('[data-field-back]');
+    assert.equal($('#semantic-workbench'),dictionary);assert.equal(dictionary.hidden,false);
+    assert.equal($('[data-semantic-search]'),dictionarySearch);assert.equal(dictionarySearch.value,'金额');
+    assert.equal($('[data-semantic-pending]'),pendingOnly);assert.equal(pendingOnly.checked,true);
+    assert.equal(modal.scrollTop,275);assert.equal($('#modal-title').textContent,'模型语义层 · 业务词典');
+    assert.equal($('#field-preview'),null);assert.ok(modal.open);
+    await click('[data-semantic-preview="amount"]');
     await click('#modal-close');
+    assert.ok(modal.open);assert.equal(dictionary.hidden,false);assert.equal(modal.scrollTop,275);
+    let finishPreview;pendingPreview=new Promise(resolve=>{finishPreview=resolve;});
+    await click('[data-semantic-preview="amount"]');
+    assert.equal($('[data-field-back]').disabled,false);
+    const cancel=new window.Event('cancel',{cancelable:true});modal.dispatchEvent(cancel);
+    assert.ok(cancel.defaultPrevented);assert.ok(modal.open);assert.equal(dictionary.hidden,false);
+    finishPreview();await tick();await tick();
+    assert.equal($('#semantic-workbench'),dictionary);assert.equal($('#field-preview'),null);
+    assert.equal($('#modal-title').textContent,'模型语义层 · 业务词典');
+    const dictionaryPreviewCount=previewCalls.length;
+    await click('#modal-close');
+    assert.equal(modal.open,false);
     draft('预览不改动这段草稿');
     await click('[data-preview-column="金额"]');
-    assert.equal(previewCalls.length,1);
-    assert.deepEqual(previewCalls[0],{table:'事实表',column:'金额',search:'',limit:50});
+    assert.equal(previewCalls.length,dictionaryPreviewCount+1);
+    assert.deepEqual(previewCalls.at(-1),{table:'事实表',column:'金额',search:'',limit:50});
+    assert.equal($('[data-field-back]'),null);
     assert.ok($('#modal-body').textContent.includes('125'));
     assert.ok($('#modal-title').textContent.includes('事实表[金额]'));
     assert.equal($('#prompt').value,'预览不改动这段草稿');
@@ -136,7 +165,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal(document.querySelectorAll('[data-clarification] h3').length,1);
     assert.ok(!$('#messages').textContent.includes('存储用的问题'));
     assert.ok($('#messages').querySelector('[data-field-evidence]'));
-    await click('[data-field-evidence] [data-preview-column]');assert.equal(previewCalls.length,2);
+    await click('[data-field-evidence] [data-preview-column]');assert.equal(previewCalls.length,dictionaryPreviewCount+2);
     await click('#modal-close');
     const choice=$('[data-clarification-choice][value="B"]');choice.checked=true;
     choice.dispatchEvent(new window.Event('change',{bubbles:true}));await tick();await tick();

@@ -33,3 +33,4 @@
 .field-query-details{margin-top:13px;color:#9ca6af;font-size:10px}
 .field-query-details>summary{cursor:pointer}
 @media(max-width:700px){.field-evidence{margin-left:0}.field-evidence>summary{gap:5px}.field-preview-search input{width:100%}}
+.field-preview-back{margin-bottom:14px}

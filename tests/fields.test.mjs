@@ -87,6 +87,16 @@ test('failed reads offer retry without claiming that the column is empty',async(
   assert.equal(calls,2);assert.equal(root.querySelectorAll('tbody tr').length,4);
 });
 
+test('dictionary previews can return immediately while field values are still loading',async()=>{
+  const root=element('');let finish,returned=0;
+  const mounting=mountFieldPreview(root,{api:()=>new Promise(resolve=>{finish=resolve;}),
+    modelId:'model',table:'分类表',column:'类别',onBack:()=>{returned++;}});
+  const back=root.querySelector('[data-field-back]');
+  assert.ok(back);assert.equal(back.disabled,false);
+  back.click();assert.equal(returned,1);
+  finish(profile());const manager=await mounting;manager.dispose();
+});
+
 test('new field results keep the message, prior prose, and expanded evidence nodes',()=>{
   const {document}=parseHTML('<html><body><div id="scroll"><section></section></div></body></html>');
   const root=document.querySelector('section'),scroll=document.querySelector('#scroll');

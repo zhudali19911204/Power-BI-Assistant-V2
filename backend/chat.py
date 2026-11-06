@@ -13,7 +13,7 @@ from .engine.llm.base import ChatMessage
 from .engine.mquery.prompts import build_chat_system_prompt as m_system
 from .powerbi import context_from_dict
 from .validation import candidates, validate
-from .streaming import completion_events
+from .streaming import completion_events, task_events
 from .analysis import AnalysisService
 from .clarifications import QUESTION_RULES, resolve_answer
 
@@ -99,8 +99,7 @@ class ChatService:
                 body=body.model_copy(update={'content':content})
             if self.semantics and model['source']=='desktop' and conv['mode'] in ('dax','analysis'):
                 self.semantics.require_ready(model,ctx)
-                question=self.semantics.unresolved_code(conv,body,ctx)
-                if question:return self.semantics.confirmation_stream(conv,model,body,question,lock)
+                return self.grounded_stream(conv,model,ctx,body,home,settings,lock)
             provider = settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
         except BaseException:
             lock.release()
@@ -108,6 +107,33 @@ class ChatService:
         if conv['mode']=='analysis':
             return self.analysis.stream(conv,model,ctx,body,provider,lock)
         return self.stream(conv, model, ctx, body, home, provider, lock)
+
+    def grounded_stream(self,conv,model,ctx,body,home,settings,lock):
+        delegated=False
+        try:
+            # Value lookup can need several bounded Desktop queries. Publish progress and
+            # keep-alives immediately, before either a local explanation or LLM generation.
+            yield encode({'type':'status','text':'正在核对语义与字段实际取值'})+'\n'
+            question=None
+            for event in task_events(lambda:self.semantics.unresolved_code(conv,body,ctx),timeout=35):
+                if event['type']=='heartbeat':yield encode(event)+'\n'
+                else:question=event['result']
+            if question:
+                delegated=True
+                yield from self.semantics.confirmation_stream(conv,model,body,question,lock)
+                return
+            provider=settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
+            delegated=True
+            if conv['mode']=='analysis':
+                yield from self.analysis.stream(conv,model,ctx,body,provider,lock)
+            else:
+                yield from self.stream(conv,model,ctx,body,home,provider,lock)
+        except GeneratorExit:raise
+        except Exception as exc:
+            detail=exc.detail if isinstance(exc,HTTPException) else f'语义与取值检查未完成（{type(exc).__name__}），请重试'
+            yield encode({'type':'error','text':detail})+'\n'
+        finally:
+            if not delegated:lock.release()
 
     def revalidate(self, message_id):
         message=self.db.one('SELECT * FROM messages WHERE id=? AND role=\'assistant\'',(message_id,))
@@ -165,6 +191,7 @@ class ChatService:
             system += '\n'+QUESTION_RULES
             if self.semantics:
                 system += '\n'+self.semantics.prompt(model['id'])
+                system += self.semantics.value_context(conv,body.content)
                 system += '\n用户确认的本会话编号映射（不沿用助手自己的猜测）：'+encode(self.semantics.bindings(conv['id']))
             yield encode({"type": "start", "message_id": assistant_id}) + "\n"
             yield encode({'type':'model','model_id':model['id'],'live':model['live']})+'\n'

@@ -23,7 +23,8 @@ from .powerbi import PowerBIService, context_from_dict
 from .schemas import ApplyInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, SettingsInput
 from .settings import SettingsService
 from .fields import FieldPreviewInput
-from .semantics import SemanticBuildInput, SemanticEdit, SemanticService
+from .reports import reports_for_instances
+from .semantics import SemanticBuildInput, SemanticEdit, SemanticReuseInput, SemanticService
 from .streaming import BackgroundStream
 from .validation import validate
 
@@ -129,11 +130,13 @@ def create_app(directory=None):
 
     @app.get("/api/desktop/instances")
     def instances():
-        return [{"port": i.port, "pid": i.pid} for i in find_instances()]
+        engines=find_instances()
+        reports=reports_for_instances(engines)
+        return [{"port":i.port,"pid":i.pid,"report":reports.get(i.pid,{})} for i in engines]
 
     @app.post("/api/models/connect")
     def connect(body: ConnectInput):
-        model=powerbi.connect(body.port)
+        model=powerbi.connect(body.port,body.report_name)
         semantics.on_connect(model,settings)
         return powerbi.get(model['id'])
 
@@ -161,6 +164,10 @@ def create_app(directory=None):
     def build_semantics(model_id:str,body:SemanticBuildInput):
         return semantics.start(model_id,settings,body.llm_profile_id)
 
+    @app.post('/api/models/{model_id}/semantics/reuse')
+    def reuse_semantics(model_id:str,body:SemanticReuseInput):
+        return semantics.reuse(model_id,body.source_model_id)
+
     @app.put('/api/models/{model_id}/semantics/{entry_id}')
     def edit_semantics(model_id:str,entry_id:str,body:SemanticEdit):
         return semantics.edit(model_id,entry_id,body)
@@ -170,7 +177,7 @@ def create_app(directory=None):
         row = powerbi.get(model_id)
         if row["source"] != "desktop":
             raise HTTPException(409, "示例模型无需同步")
-        model=powerbi.connect(row['port'])
+        model=powerbi.connect(row['port'],row.get('report',{}).get('name',''))
         semantics.on_connect(model,settings)
         return powerbi.get(model['id'])
 
