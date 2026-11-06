@@ -1,0 +1,12 @@
+.history-name>span{flex:1;min-width:0}
+.history-task{flex-shrink:0;font-size:9px;font-weight:400;padding:3px 5px;border-radius:4px;line-height:1.3;white-space:nowrap}
+.history-task.running{background:#f7edca;color:#a28a34}
+.history-task.complete{background:#e7f1eb;color:#57876c}
+.history-task.error{background:#f7e9e5;color:#aa796b}
+.history-task.clarification{background:#f7edca;color:#a28a34}
+.history-item>.icon-button:disabled{cursor:default}
+.background-generations{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 28px 0;padding:9px 12px;border:1px solid #eee5c8;border-radius:7px;background:#fffdf5;color:#9b8951;font-size:10px;flex-shrink:0}
+.background-generations button{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:transparent;border-left:1px solid #e9dfc4;padding:0 0 0 9px;color:#9a7d2b;font-size:10px}
+.background-generations button:hover{text-decoration:underline}
+.background-dot{width:5px;height:5px;border-radius:50%;background:#ba9e42;flex-shrink:0}
+@media(max-width:700px){.background-generations{margin-left:18px;margin-right:18px}.background-generations button{max-width:160px}}

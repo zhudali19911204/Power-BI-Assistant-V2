@@ -1,0 +1,23 @@
+.model-manager-fields{border:0;margin:0;padding:0;min-width:0}
+.model-manager-fields:disabled{opacity:.65}
+.model-list-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:20px 0 12px;color:#89939d;font-size:11px}
+.llm-profile-list{display:grid;gap:12px}
+.llm-profile{padding:16px;border:1px solid var(--border);border-radius:9px;background:#fcfcfd;min-width:0}
+.llm-profile.active{border-color:#e4d39a;background:#fffdf5}
+.llm-profile-heading{display:flex;align-items:flex-start;gap:10px;justify-content:space-between}
+.llm-profile-heading strong{font-size:12px;font-weight:600;line-height:1.7;overflow-wrap:anywhere}
+.llm-badge{font-size:9px;color:#987c27;background:#f9efcb;border-radius:4px;padding:4px 7px;white-space:nowrap;flex-shrink:0}
+.llm-model-id,.llm-endpoint{margin:7px 0;color:#7c8793;font-size:10px;line-height:1.7;overflow-wrap:anywhere}
+.llm-model-id{font-family:Consolas,"Cascadia Code",monospace}
+.llm-profile-meta{font-size:10px;color:#9ba4ae;margin-top:9px}
+.llm-profile-actions{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.llm-profile-actions .secondary-button,.llm-profile-actions .primary-button{padding:7px 11px;font-size:10px}
+.llm-profile-actions .icon-button{margin-left:auto}
+.llm-delete-confirm{margin-top:12px;border-top:1px solid #ecdfda;padding-top:6px;color:#9b7269;font-size:11px;line-height:1.8}
+.llm-delete-confirm .secondary-button{padding:6px 10px;margin-right:7px;font-size:10px}
+.danger-button{color:#ad6b60;border-color:#e6ccc6}
+.model-feedback{font-size:11px;line-height:1.8;color:#49836b;padding:10px 12px;background:#f2f8f4;border:1px solid #deebe2;border-radius:6px;overflow-wrap:anywhere}
+.model-feedback.error{color:#a06e63;background:#fdf5f3;border-color:#ecd9d2}
+.model-editor-actions{flex-wrap:wrap}
+.model-manager [data-back]{margin-top:16px}
+@media(max-width:500px){.model-editor-actions{gap:7px}.model-editor-actions button{padding:9px 10px;font-size:10px}}

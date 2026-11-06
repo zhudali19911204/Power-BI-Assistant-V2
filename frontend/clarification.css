@@ -1,0 +1,26 @@
+.clarification-card{margin:12px 0 18px 34px;padding:20px;border:1px solid #e9dfbf;border-radius:10px;background:#fffdf7;color:#56616e}
+.clarification-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#a08737;font-size:10px}
+.clarification-heading>span{display:flex;align-items:center;gap:6px}
+.clarification-heading .icon{width:14px;height:14px}
+.clarification-heading small{color:#aaa18a;font-size:10px}
+.clarification-card h3{font-size:14px;line-height:1.8;font-weight:600;margin:14px 0 10px;overflow-wrap:anywhere}
+.clarification-context{font-size:11px;line-height:1.9;color:#969c9f;margin:0 0 15px;overflow-wrap:anywhere}
+.clarification-fields{border:0;padding:0;margin:0;min-width:0}
+.clarification-options{display:grid;gap:8px;margin:14px 0}
+.clarification-option{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border:1px solid #e6e7e8;border-radius:7px;background:#fff;cursor:pointer;min-width:0}
+.clarification-option:hover{border-color:#d4bd6c;background:#fffdf3}
+.clarification-option.selected{border-color:#d2b858;background:#fff8de}
+.clarification-option input{margin:3px 0 0;accent-color:#bd9b2d;flex-shrink:0}
+.clarification-option strong{display:block;font-size:12px;line-height:1.7;font-weight:500;overflow-wrap:anywhere}
+.clarification-option-value{display:block;font-size:11px;line-height:1.8;margin-top:3px;color:#7b858e;overflow-wrap:anywhere}
+.clarification-option small{display:block;font-size:10px;color:#949da6;line-height:1.8;margin-top:3px;overflow-wrap:anywhere}
+.clarification-supplement{display:flex;flex-direction:column;gap:8px;font-size:11px;color:#8b949e;margin-top:18px}
+.clarification-supplement textarea{resize:vertical;min-height:72px;max-height:220px;padding:10px 12px;border:1px solid #dfe4e8;border-radius:6px;background:white;font-size:12px;line-height:1.8;color:#56616e;width:100%}
+.clarification-supplement textarea::placeholder{color:#a7adb4}
+.clarification-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}
+.clarification-actions>span{font-size:10px;color:#a8a18c;line-height:1.7}
+.clarification-actions .primary-button{flex-shrink:0}
+.clarification-actions .icon{width:13px;height:13px}
+.clarification-fields:disabled .clarification-option{cursor:default}
+.clarification-fields:disabled{opacity:.75}
+@media(max-width:700px){.clarification-card{margin-left:0;padding:15px}.clarification-actions{flex-wrap:wrap}}

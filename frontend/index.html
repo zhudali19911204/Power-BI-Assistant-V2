@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5c542">
+  <title>Power BI Assistant</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/messages.css">
+  <link rel="stylesheet" href="/assets/models.css">
+  <link rel="stylesheet" href="/assets/background.css">
+  <link rel="stylesheet" href="/assets/clarification.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Power BI Assistant 首页"><span class="brand-mark"><i></i><i></i><i></i></span><span>Power BI<span class="brand-sub">ASSISTANT</span></span><span class="version">V2</span></a>
+      <button class="new-chat" id="new-chat"><span data-icon="plus"></span> 新建对话 <kbd>Ctrl K</kbd></button>
+      <div class="section-label">工作空间</div>
+      <nav class="workspace-nav" aria-label="助手能力">
+        <button class="nav-item active" data-mode="dax"><span data-icon="code"></span>DAX 助手<span class="nav-dot"></span></button>
+        <button class="nav-item" data-mode="mquery"><span data-icon="clean"></span>Power Query<span class="small-tag">M</span></button>
+        <button class="nav-item" data-mode="analysis"><span data-icon="chart"></span>数据分析助手</button>
+      </nav>
+      <div class="history-heading"><span class="section-label">最近对话</span><button class="icon-button" id="search-toggle" aria-label="搜索会话"><span data-icon="search"></span></button></div>
+      <input id="history-search" class="history-search" placeholder="搜索对话…" aria-label="搜索会话" hidden>
+      <div class="history-list" id="history-list"><p class="muted history-empty">还没有对话<br>从一个数据问题开始吧</p></div>
+      <div class="sidebar-bottom">
+        <div class="local-note"><span data-icon="shield"></span><span>本地工作区<small>会话与模型记录保存在本机</small></span></div>
+        <button class="settings-entry" id="settings-open"><span class="user-avatar">P</span><span>模型服务设置<small id="sidebar-model">连接你的大模型服务器</small></span><span data-icon="settings"></span></button>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="slash">/</span><strong id="page-title">DAX 助手</strong></div><div class="topbar-actions"><span class="desktop-tag"><span data-icon="monitor"></span>桌面工作台</span><button class="connection-button" id="connect-open"><span class="status-dot"></span><span id="connection-label">连接 Power BI</span><span data-icon="chevron-down"></span></button></div></header>
+      <div class="workspace">
+        <section class="conversation-panel">
+          <div class="conversation-toolbar"><span class="workspace-caption" id="conversation-caption">从想法到可靠的数据逻辑</span><div><button class="icon-button" id="export-chat" aria-label="导出当前对话" title="导出对话"><span data-icon="download"></span></button><button class="icon-button" id="toggle-context" aria-label="切换模型面板" title="模型面板"><span data-icon="panel"></span></button></div></div>
+          <div id="background-generations" class="background-generations" role="status" aria-live="polite" hidden></div>
+          <div class="message-scroll" id="message-scroll"><div id="messages"></div></div>
+          <div class="composer-area">
+            <div class="context-strip" id="context-strip"><span data-icon="database"></span><span id="composer-context">连接模型，让回答基于真实字段</span><button id="calibration-open" title="用已知结果校准最后一个度量值"><span data-icon="target"></span><span id="calibration-label">校准</span></button></div>
+            <form class="composer" id="composer-form">
+              <label for="prompt" class="sr-only">描述你的数据问题</label>
+              <textarea id="prompt" rows="3" aria-describedby="composer-shortcuts" placeholder="描述你想计算的业务指标，或粘贴一段 DAX…"></textarea>
+              <div class="composer-footer"><div class="composer-controls"><button type="button" class="model-chip" id="model-settings-chip"><span data-icon="sparkles"></span><span id="active-llm">配置大模型</span><span data-icon="chevron-down"></span></button><select id="query-select" title="目标 Power Query 查询" aria-label="目标查询" hidden></select></div><div class="send-group"><span class="keyboard-hint" id="composer-shortcuts">Enter 发送 · Shift+Enter 换行</span><button type="submit" id="send-button" class="send-button" aria-label="发送消息"><span data-icon="arrow-up"></span></button></div></div>
+            </form>
+            <p class="composer-note"><span class="tiny-dot"></span>模型在本机读取 · AI 在服务器推理 · 写入前由你确认</p>
+          </div>
+        </section>
+        <aside class="context-panel" id="context-panel"><div class="context-header"><span><span data-icon="layers"></span>模型上下文</span><button class="icon-button" id="refresh-model" title="同步模型" aria-label="同步模型"><span data-icon="refresh"></span></button></div><div id="model-summary"></div><div class="context-tabs" role="tablist" aria-label="模型内容"><button class="active" data-context-tab="tables" role="tab" aria-selected="true">结构</button><button data-context-tab="relations" role="tab" aria-selected="false">关系</button><button data-context-tab="queries" role="tab" aria-selected="false">查询</button></div><input class="field-search" id="field-search" placeholder="搜索表、字段或度量值" aria-label="搜索模型字段"><div id="model-tree" class="model-tree"></div><div class="context-bottom"><span data-icon="info"></span><span>点击字段，插入引用<br>生成内容会自动检查模型引用</span></div></aside>
+      </div>
+    </main>
+  </div>
+  <dialog id="modal"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow"></span><h2 id="modal-title"></h2></div><button class="icon-button" id="modal-close" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div id="modal-body"></div></dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "powerbi-assistant-desktop-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-isolation=none tests/stream.test.mjs tests/messages.test.mjs tests/markdown.test.mjs tests/calibration.test.mjs tests/analysis.test.mjs tests/models.test.mjs tests/workspaces.test.mjs tests/app_navigation.test.mjs tests/clarification.test.mjs"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.12",
+    "markdown-it": "15.0.3"
+  }
+}
