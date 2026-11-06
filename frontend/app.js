@@ -7,6 +7,7 @@ import {analysisEvidence} from './analysis.js';
 import {mountModelManager} from './models.js';
 import {createWorkspaces, createGenerationManager} from './workspaces.js';
 import {clarificationCard, clarificationReply} from './clarification.js';
+import {fieldEvidence, mountFieldPreview} from './fields.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
@@ -17,7 +18,7 @@ const messageRenderer=createMessageRenderer({
   root:$('#messages'),scroll:$('#message-scroll'),
   label:m=>`<span class="message-avatar">${m.role==='user'?'你':icon('sparkles')}</span><span>${m.role==='user'?'你':'Power BI Assistant'}</span>`,
   content:m=>m.role==='user'?'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'?'':markdown(m.content),
-  artifacts:m=>clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join(''),
+  artifacts:m=>fieldEvidence(m.field_previews||[])+clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join(''),
   status:streamStatus,
 });
 const messagePaint=createRenderScheduler(renderMessages);
@@ -121,7 +122,7 @@ function renderContext() {
       const measures=ctx.measures.filter(m=>m.table===name);const match=name.toLowerCase().includes(needle);
       const fields=cols.filter(c=>match||c.name.toLowerCase().includes(needle));const ms=measures.filter(m=>match||m.name.toLowerCase().includes(needle));
       if(!fields.length&&!ms.length&&!match)return '';
-      return `<details class="table-group" ${needle?'open':''}><summary>${icon('chevron-right')}${icon('table')}${esc(name)}<small>${cols.length}</small></summary>${fields.map(c=>`<button class="field-button" data-ref="${esc("'"+name.replaceAll("'","''")+"'["+c.name.replaceAll(']',']]')+"]")}" title="${esc(c.dtype)}"><span class="field-type">${/int|double|decimal/.test(c.dtype)?'#':c.dtype==='datetime'?'◷':'Aa'}</span>${esc(c.name)}</button>`).join('')}${ms.map(m=>`<button class="field-button" data-ref="${esc('['+m.name.replaceAll(']',']]')+']')}">${icon('formula')}${esc(m.name)}</button>`).join('')}</details>`;
+      return `<details class="table-group" ${needle?'open':''}><summary>${icon('chevron-right')}${icon('table')}${esc(name)}<small>${cols.length}</small></summary>${fields.map(c=>`<div class="field-row"><button class="field-button" data-ref="${esc("'"+name.replaceAll("'","''")+"'["+c.name.replaceAll(']',']]')+"]")}" title="${esc(c.dtype)}"><span class="field-type">${/int|double|decimal/.test(c.dtype)?'#':c.dtype==='datetime'?'◷':'Aa'}</span>${esc(c.name)}</button><button class="icon-button field-preview-button" data-preview-table="${esc(name)}" data-preview-column="${esc(c.name)}" title="查看字段取值" aria-label="查看 ${esc(name)}[${esc(c.name)}] 的取值">${icon('eye')}</button></div>`).join('')}${ms.map(m=>`<button class="field-button" data-ref="${esc('['+m.name.replaceAll(']',']]')+']')}">${icon('formula')}${esc(m.name)}</button>`).join('')}</details>`;
     }).join('')||'<p class="history-empty muted">没有匹配的字段</p>';
   } else if(state.contextTab==='relations') {
     $('#model-tree').innerHTML=ctx.relationships.filter(r=>(r.from_table+r.to_table+r.from_column+r.to_column).toLowerCase().includes(needle)).map(r=>`<div class="relation-item">${esc(r.from_table)}[${esc(r.from_column)}]${icon('arrow-right')}${esc(r.to_table)}[${esc(r.to_column)}]<span>${r.cross_filter==='both'?'双向筛选':'单向筛选'} · ${r.is_active?'活动关系':'非活动关系'}</span></div>`).join('')||'<p class="history-empty muted">暂无匹配的关系</p>';
@@ -202,6 +203,12 @@ async function openSettings() {
   });
 }
 
+async function openFieldPreview(table,column,modelId=state.view.model?.id) {
+  if(!modelId){toast('请先连接本机 Power BI Desktop');return;}
+  showModal(`${table}[${column}]`,'FIELD VALUES','<section id="field-preview"></section>');
+  await mountFieldPreview($('#field-preview'),{api,modelId,table,column});
+}
+
 function openCalibration() {
   if(!available())return;if(!state.view.model?.live){toast('校准生成需要先连接本机 Desktop 的实时模型',true);return;}
   showModal('用已知结果校准','CALIBRATION','<p class="notice">可添加多个筛选条件，所有条件同时生效，共同对应一个已知正确结果。将对回复中的最后一个度量值实跑校准，失败时最多自动修复两轮。</p><form id="calibration-form"></form>');
@@ -266,6 +273,7 @@ $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.v
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{
   const el=e.target.closest('button');if(!el)return;
+  if(el.dataset.previewColumn!==undefined){await openFieldPreview(el.dataset.previewTable,el.dataset.previewColumn,el.dataset.previewModel||state.view.model?.id);return;}
   if(el.dataset.confirmClarification){
     if(!available())return;
     const view=state.view,message=view.messages.find(m=>m.id===el.dataset.confirmClarification);

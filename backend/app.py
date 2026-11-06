@@ -22,6 +22,7 @@ from .engine.llm.base import user
 from .powerbi import PowerBIService, context_from_dict
 from .schemas import ApplyInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, SettingsInput
 from .settings import SettingsService
+from .fields import FieldPreviewInput
 from .streaming import BackgroundStream
 from .validation import validate
 
@@ -142,6 +143,10 @@ def create_app(directory=None):
     def model(model_id: str):
         return powerbi.get(model_id)
 
+    @app.post('/api/models/{model_id}/fields/preview')
+    def preview_field(model_id: str, body: FieldPreviewInput):
+        return chat.analysis.fields.preview(model_id, body)
+
     @app.post("/api/models/{model_id}/refresh")
     def refresh(model_id: str):
         row = powerbi.get(model_id)
@@ -203,6 +208,21 @@ def create_app(directory=None):
             for artifact in message["artifacts"]:
                 vr = artifact["validation"]
                 text += f"验证：{'通过' if vr['ok'] else '未通过'}；{'已实跑' if vr['run_verified'] else '未经实跑'}\n\n"
+            for record in message.get('field_previews',[]):
+                text+=f"### 字段取值检查 {record['label']} · {record['table']}[{record['column']}]\n\n"
+                if not record['ok']:
+                    text+='检查未完成：'+record['error']+'\n\n';continue
+                profile=record['profile'];stats=profile['statistics']
+                text+=profile['scope']+'。\n\n'
+                text+=f"总行数：{stats['row_count']}；不同取值（含空值）：{stats['distinct_count']}；空值行数：{stats['blank_count']}；空字符串：{stats['empty_string_count']}。\n\n"
+                text+='取值样例：'+encode(profile['samples'])+'\n\n'
+                if profile['search_terms']:text+='搜索词：'+encode(profile['search_terms'])+'\n\n'
+                text+='| 取值 | 出现行数 |\n| --- | --- |\n'
+                for entry in profile['values']:
+                    value=encode(entry['value']).replace('|','\\|').replace('<','&lt;')
+                    text+=f"| {value}{'（值已截断）' if entry['value_truncated'] else ''} | {entry['count']} |\n"
+                text+='\n'+('结果已截断，不能代表全部取值。\n\n' if profile['truncated'] else '')
+                for query in profile['dax_queries']:text+='```dax\n'+query+'\n```\n\n'
             for result in message.get('analysis',[]):
                 text+=f"### {result['label']} · {result['title']}（第 {result['attempt']} 次执行）\n\n"
                 text+='```dax\n'+result['dax']+'\n```\n\n'

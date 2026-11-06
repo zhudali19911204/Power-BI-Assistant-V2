@@ -18,12 +18,22 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务'};
   const model={id:'model',name:'测试模型',source:'desktop',live:true,
     context:{tables:{事实表:[{name:'金额',dtype:'double'}]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
-  const conversations=[],messages=new Map(),streams=new Map();let nextId=0;
+  const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0;
+  const fieldProfile={model_id:'model',table:'事实表',column:'金额',dtype:'double',scope:'全模型范围，未应用报表筛选',
+    statistics:{row_count:10,distinct_count:3,blank_count:1,empty_string_count:null,matched_distinct_count:3},
+    values:[{value:125,count:7,value_truncated:false},{value:500,count:2,value_truncated:false},{value:null,count:1,value_truncated:false}],
+    samples:[{value:125,value_truncated:false}],search_terms:[],truncated:false,limit:50,run_verified:true,
+    checked_at:'2026-11-06T08:00:00Z',seconds:0.1,dax_queries:['EVALUATE ROW("x",1)']};
+  const fieldRecord={id:'field-check',model_id:'model',table:'事实表',column:'金额',label:'F1',reason:'识别口径',
+    ok:true,error:'',profile:fieldProfile};
   const json=value=>new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
   async function fetchMock(path,opts={}) {
     if(path==='/api/settings')return json(settings);
     if(path==='/api/models')return json([model]);
     if(path==='/api/models/model')return json(model);
+    if(path==='/api/models/model/fields/preview'){
+      previewCalls.push(JSON.parse(opts.body));return json(fieldProfile);
+    }
     if(path==='/api/conversations'&&opts.method==='POST') {
       const body=JSON.parse(opts.body),conversation={...body,id:'c'+(++nextId),generating:false};
       conversations.unshift(conversation);return json(conversation);
@@ -37,12 +47,14 @@ test('actual app navigation keeps background streams, drafts and independent sen
       const record={body,text:'',controller,emit(event){
         if(event.type==='start')this.messageId=event.message_id;
         if(event.type==='clarification')this.clarification=event.clarification;
+        if(event.type==='field_previews')this.field_previews=event.records;
         if(event.type==='delta')this.text+=event.text;
         if(event.type==='done'){
           const previous=messages.get(id)||[];
           previous.forEach(m=>{if(m.clarification)m.clarification.answered=true;});
           messages.set(id,[...previous,{role:'user',status:'complete',content:body.content,artifacts:[]},
-            {id:this.messageId||'answer-'+id,role:'assistant',status:'complete',content:this.text,artifacts:[],analysis:[],clarification:this.clarification||null}]);
+            {id:this.messageId||'answer-'+id,role:'assistant',status:'complete',content:this.text,artifacts:[],analysis:[],
+              clarification:this.clarification||null,field_previews:this.field_previews||[]}]);
         }
         controller.enqueue(new TextEncoder().encode(JSON.stringify(event)+'\n'));
       }};
@@ -60,6 +72,14 @@ test('actual app navigation keeps background streams, drafts and independent sen
   async function send(text){draft(text);$('#composer-form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();}
   try {
     await import('../frontend/app.js?navigation-test');await tick();await tick();
+    draft('预览不改动这段草稿');
+    await click('[data-preview-column="金额"]');
+    assert.equal(previewCalls.length,1);
+    assert.deepEqual(previewCalls[0],{table:'事实表',column:'金额',search:'',limit:50});
+    assert.ok($('#modal-body').textContent.includes('125'));
+    assert.ok($('#modal-title').textContent.includes('事实表[金额]'));
+    assert.equal($('#prompt').value,'预览不改动这段草稿');
+    await click('#modal-close');
     await click('[data-mode="analysis"]');assert.equal($('#page-title').textContent,'数据分析助手');
     await send('分析请求');const analysis=streams.get('c1');assert.ok(analysis);
     analysis.emit({type:'start',message_id:'answer-c1'});analysis.emit({type:'delta',text:'第一段分析。'});await tick();await tick();
@@ -93,11 +113,16 @@ test('actual app navigation keeps background streams, drafts and independent sen
       options:[{id:'A',label:'费用类别',value:'按 CE Category 筛选',detail:'费用类别字段'},
         {id:'B',label:'一级分类',value:'按 Class 1 筛选',detail:'一级分类字段'}]};
     firstQuestion.emit({type:'start',message_id:'card-1'});
+    firstQuestion.emit({type:'field_previews',records:[fieldRecord]});await tick();await tick();
+    assert.ok($('#messages').querySelector('[data-field-evidence]'));
     firstQuestion.emit({type:'clarification',clarification:card});
     firstQuestion.emit({type:'delta',text:'存储用的问题及选项，不应在卡片上方重复显示。'});
     firstQuestion.emit({type:'done'});firstQuestion.controller.close();await tick();await tick();await tick();
     assert.equal(document.querySelectorAll('[data-clarification] h3').length,1);
     assert.ok(!$('#messages').textContent.includes('存储用的问题'));
+    assert.ok($('#messages').querySelector('[data-field-evidence]'));
+    await click('[data-field-evidence] [data-preview-column]');assert.equal(previewCalls.length,2);
+    await click('#modal-close');
     const choice=$('[data-clarification-choice][value="B"]');choice.checked=true;
     choice.dispatchEvent(new window.Event('change',{bubbles:true}));await tick();await tick();
     $('[data-clarification-supplement]').value='personnel，保留 0257';

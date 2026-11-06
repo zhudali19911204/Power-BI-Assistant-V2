@@ -35,6 +35,7 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
       const prior=view.messages.find(m=>m.id&&m.id===message.id);
       if(message.status==='streaming'&&prior?.content.startsWith(message.content)) {
         return {...message,content:prior.content,artifacts:prior.artifacts?.length?prior.artifacts:message.artifacts,
+          field_previews:prior.field_previews?.length>message.field_previews?.length?prior.field_previews:message.field_previews,
           analysis:prior.analysis?.length>message.analysis?.length?prior.analysis:message.analysis};
       }
       return message;
@@ -121,6 +122,7 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
             if(event.type==='status')view.status=event.text;
             if(event.type==='artifacts')answer.artifacts=event.artifacts;
             if(event.type==='analysis')answer.analysis=event.queries;
+            if(event.type==='field_previews')answer.field_previews=event.records;
             if(event.type==='clarification')answer.clarification=event.clarification;
             if(event.type==='done')answer.status='complete';
             if(event.type==='error'){view.failed=true;answer.status='error';answer.content+='\n\n'+event.text;onError(event.text,view);}

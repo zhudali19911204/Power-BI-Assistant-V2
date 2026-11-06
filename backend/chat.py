@@ -60,6 +60,7 @@ class ChatService:
             for artifact in message["artifacts"]:
                 artifact["validation"] = json.loads(artifact["validation"])
             message['analysis']=self.analysis.records(message['id'])
+            message['field_previews']=self.analysis.field_records(message['id'])
             record=self.db.one('SELECT payload FROM message_clarifications WHERE message_id=?',(message['id'],))
             message['clarification']=(json.loads(record['payload']) | {'answered':index<last_user}) if record else None
         return rows

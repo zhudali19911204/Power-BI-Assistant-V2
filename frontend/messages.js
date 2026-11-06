@@ -87,6 +87,7 @@ export function createMessageRenderer({root, scroll, label, content, artifacts, 
           patchHtml(record.body,content(message));record.bodySource=bodySource;
         }
         const artifactSource=JSON.stringify({artifacts:message.artifacts||[],analysis:message.analysis||[],
+          field_previews:message.field_previews||[],
           clarification:message.clarification,clarificationDraft:message.clarificationDraft,clarificationLocked:message.clarificationLocked});
         if(record.artifactSource!==artifactSource) {
           patchHtml(record.cards,artifacts(message));record.artifactSource=artifactSource;

@@ -55,6 +55,10 @@ class Database:
                     model_id TEXT NOT NULL REFERENCES models(id), title TEXT NOT NULL, dax TEXT NOT NULL,
                     result TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS analysis_message ON analysis_queries(message_id);
+                CREATE TABLE IF NOT EXISTS field_observations (
+                    id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                    result TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS field_observations_message ON field_observations(message_id);
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
                 CREATE INDEX IF NOT EXISTS artifacts_message ON artifacts(message_id);
                 PRAGMA user_version=1;

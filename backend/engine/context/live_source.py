@@ -160,9 +160,9 @@ class _LiveSession:
         except Exception:  # noqa: BLE001 — best-effort close
             pass
 
-    def query(self, dax: str, max_rows: int | None = None) -> list[dict[str, Any]]:
+    def query(self, dax: str, max_rows: int | None = None, timeout_seconds: int = 60) -> list[dict[str, Any]]:
         cmd = self._conn.CreateCommand()
-        cmd.CommandTimeout = 60
+        cmd.CommandTimeout = timeout_seconds
         cmd.CommandText = dax
         rdr = cmd.ExecuteReader()
         try:
