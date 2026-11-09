@@ -7,3 +7,8 @@ data/
 artifacts/
 node_modules/
 *.log
+build/
+dist/
+*.dpapi
+*.private.pem
+*.backup.pem

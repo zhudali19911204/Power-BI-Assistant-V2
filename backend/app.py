@@ -30,6 +30,7 @@ from .semantics import SemanticBuildInput, SemanticEdit, SemanticReuseInput, Sem
 from .streaming import BackgroundStream
 from .validation import validate
 from .images import MAX_UPLOAD_BYTES
+from .licensing import require_runtime_license
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
 
@@ -43,6 +44,7 @@ def data_directory():
 
 
 def create_app(directory=None):
+    require_runtime_license()
     directory = Path(directory) if directory else data_directory()
     db = Database(directory / "assistant.sqlite3")
     settings = SettingsService(db, directory)

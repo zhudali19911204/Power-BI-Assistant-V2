@@ -1,8 +1,14 @@
 # Power BI Assistant V2
 
-本地桌面版 Power BI 助手，包含 DAX 助手、Power Query 助手和基于实际查询的数据分析助手。JavaScript 界面、Python 后端、SQLite 数据库；通过配置连接部署在服务器上的大模型。当前交付为源码运行版，未打包。
+本地桌面版 Power BI 助手，包含 DAX 助手、Power Query 助手和基于实际查询的数据分析助手。JavaScript 界面、Python 后端、SQLite 数据库；通过配置连接部署在服务器上的大模型。支持源码开发运行与 Windows CD-KEY 授权安装包。
 
-## 启动
+## 授权安装包
+
+正式安装版采用离线一机一码、永久授权：客户在安装向导中提供机器码，由发布者签发 CD-KEY，安装和后续启动均校验。只向客户分发 `dist\PowerBIAssistant-Setup-2.0.0.exe`，不要分发源码、发码工具或签发私钥。签发私钥使用当前 Windows 用户的 DPAPI 加密保存在项目外；安装包只内嵌公钥。
+
+发码、私钥备份、打包和部署方法见 [授权安装包与 CD-KEY](docs/LICENSING.md)。源码开发入口不要求授权，公开或分发源码不能依靠安装版授权阻止他人自行运行。此方案是授权控制，不是绝对防破解的加密。
+
+## 源码启动（开发者）
 
 Windows 10/11，Python 3.11+（已用 Python 3.12 验证）。桌面窗口使用 Edge WebView2 Runtime；本机需安装 Power BI Desktop 才能读取和验证真实模型。
 

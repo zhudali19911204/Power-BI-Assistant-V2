@@ -3,12 +3,14 @@ import argparse
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 
 import uvicorn
 
 from backend.app import create_app, data_directory
+from backend.licensing import LicenseError
 
 
 def main():
@@ -22,7 +24,17 @@ def main():
     os.environ.setdefault("PBI_DATA_DIR", str(directory))
     logging.basicConfig(filename=directory / "assistant.log", encoding="utf-8", level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    app = create_app(directory)
+    try:
+        app = create_app(directory)
+    except LicenseError as exc:
+        logging.error("License verification failed: %s", exc)
+        if args.browser:
+            if sys.stderr is not None:
+                print(str(exc), file=sys.stderr)
+        else:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, str(exc), "Power BI Assistant - 授权验证失败", 0x10)
+        return 1
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", args.port))
     sock.listen(128)
@@ -59,4 +71,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
