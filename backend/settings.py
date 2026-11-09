@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import httpx
+
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
 
@@ -12,6 +14,7 @@ from .engine.llm.claude import ClaudeProvider
 from .engine.llm.openai_compat import OpenAICompatProvider
 from .engine.net import enable_os_trust_store
 from .schemas import LLMProfileInput, SettingsInput
+from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
 
 
 class SettingsService:
@@ -35,6 +38,8 @@ class SettingsService:
             "base_url": os.getenv("PBI_LLM_BASE_URL", ""),
             "encrypted_key": "",
             "enable_thinking": None,
+            "idle_timeout": GENERATION_IDLE_TIMEOUT,
+            "generation_timeout": GENERATION_TIMEOUT,
             "use_env_key": True,
         }
 
@@ -83,8 +88,9 @@ class SettingsService:
         return os.getenv("PBI_LLM_API_KEY", "") if cfg.get('use_env_key', True) else ''
 
     def _public_config(self, cfg):
+        cfg = {**self.defaults(), **cfg}
         key = self.key(cfg)
-        return {k: cfg[k] for k in ("provider", "model", "base_url", "enable_thinking")} | {
+        return {k: cfg[k] for k in ("provider", "model", "base_url", "enable_thinking", "idle_timeout", "generation_timeout")} | {
             "has_key": bool(key), "ready": bool(cfg["model"] and key and
                 (cfg["base_url"] or cfg["provider"] == "claude")),
         }
@@ -139,6 +145,12 @@ class SettingsService:
             cfg = json.loads(row['config']) if row else {
                 'encrypted_key': '', 'enable_thinking': None, 'use_env_key': False,
             }
+            cfg = {**self.defaults(), **cfg}
+            for name in ('idle_timeout', 'generation_timeout'):
+                if name in body.model_fields_set:
+                    cfg[name] = getattr(body, name)
+            if cfg['idle_timeout'] > cfg['generation_timeout']:
+                raise HTTPException(422, '无新数据等待时间不能超过生成总时限')
             # Blank means retain only this profile's key. Never borrow from another profile.
             if body.clear_key:
                 cfg['encrypted_key'] = ''
@@ -192,7 +204,7 @@ class SettingsService:
         return self.public()
 
     def provider(self, profile_id=None):
-        cfg = json.loads(self._profile(profile_id)['config']) if profile_id else self.raw()
+        cfg = {**self.defaults(), **json.loads(self._profile(profile_id)['config'])} if profile_id else self.raw()
         key = self.key(cfg)
         if not key or not cfg["model"]:
             raise HTTPException(409, "请先在设置中配置模型名称和 API Key；本地模型可填入 local 作为 Key")
@@ -203,10 +215,14 @@ class SettingsService:
             provider = ClaudeProvider(key, cfg["model"])
             if cfg["base_url"]:
                 from anthropic import Anthropic
-                provider._client = Anthropic(api_key=key, base_url=cfg["base_url"],
-                                             timeout=120, max_retries=1)
+                provider._client = Anthropic(api_key=key, base_url=cfg["base_url"])
         else:
             provider = OpenAICompatProvider(key, cfg["model"], cfg["base_url"],
                                              enable_thinking=cfg['enable_thinking'])
-        provider._client = provider._client.with_options(timeout=120, max_retries=1)
+        provider.idle_timeout = cfg['idle_timeout']
+        provider.generation_timeout = cfg['generation_timeout']
+        # Leave deadline/error reporting to completion_events, including the first response.
+        # A transparent SDK retry must not restart an already timed-out generation.
+        provider._client = provider._client.with_options(
+            timeout=httpx.Timeout(connect=15, read=cfg['idle_timeout']+5, write=30, pool=15), max_retries=0)
         return provider

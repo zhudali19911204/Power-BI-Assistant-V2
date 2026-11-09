@@ -15,7 +15,7 @@ from .clarifications import ClarificationQuestion, QUESTION_RULES, card_markdown
 from .fields import FieldCheck, FieldPreviewInput, FieldService, field_ref
 from .engine.context.live_source import _LiveSession,find_adomd_dll,find_instances
 from .engine.llm.base import ChatMessage
-from .streaming import completion_events,task_events
+from .streaming import completion_events,task_events,generation_timeout
 
 logger=logging.getLogger(__name__)
 ROW_LIMIT=200
@@ -207,12 +207,13 @@ class AnalysisService:
     def stream(self,conv,model,ctx,body,provider,lock):
         message_id=uid();display='';saved=False;error='本次分析已中断，请重新发送'
         started=time.monotonic();evidence=[];field_records=[]
-        deadline=started+600
+        total_timeout=generation_timeout(provider)
+        deadline=started+total_timeout
         self.chat.active_messages[conv['id']]=message_id
 
         def remaining(limit):
             seconds=deadline-time.monotonic()
-            if seconds<=0:raise HTTPException(504,'本轮分析超过 10 分钟，请缩小指标或时间范围后重试')
+            if seconds<=0:raise HTTPException(504,f'已达到本轮分析总时限（{int(total_timeout)} 秒），已保留文字及查询结果；可在模型服务设置中延长总时限后重试')
             self.chat.progress.get(message_id,{})['elapsed']=int(time.monotonic()-started)
             return min(limit,seconds)
 
@@ -233,11 +234,12 @@ class AnalysisService:
         def request_plan(planning_messages):
             for attempt in range(2):
                 raw=''
-                for event in completion_events(provider,planner,planning_messages,max_tokens=6000,timeout=remaining(180)):
+                for event in completion_events(provider,planner,planning_messages,max_tokens=6000,timeout=remaining(total_timeout)):
                     if event['type']=='delta':
                         raw+=event['text']
                         if len(raw)>40000:raise HTTPException(422,'查询计划过长，请缩小分析范围')
                     elif event['type']=='heartbeat':yield encode(event)+'\n'
+                    elif event['type']=='status':yield status(event['text'])
                 try:return parse_plan(raw)
                 except ValueError:
                     if attempt:raise HTTPException(422,'模型未返回有效查询计划，请明确分析指标后重试')
@@ -329,11 +331,12 @@ class AnalysisService:
                         yield status(f'{label} 查询未通过，正在修复查询')
                         repair=[ChatMessage('user',body.content+'\n只修复下面这一个查询，按原 JSON 格式返回一个 queries 项。\n'+encode({'query':dax,'error':result['error']}))]
                         raw=''
-                        for event in completion_events(provider,planner,repair,max_tokens=5000,timeout=remaining(180)):
+                        for event in completion_events(provider,planner,repair,max_tokens=5000,timeout=remaining(total_timeout)):
                             if event['type']=='delta':
                                 raw+=event['text']
                                 if len(raw)>40000:raise HTTPException(422,'修复查询过长，请缩小分析范围')
                             elif event['type']=='heartbeat':yield encode(event)+'\n'
+                            elif event['type']=='status':yield status(event['text'])
                         try:
                             fixed=parse_plan(raw)
                             if not fixed.queries:break
@@ -349,13 +352,14 @@ class AnalysisService:
                     summary=messages[:]+[ChatMessage('user','以下为应用实际执行的查询结果。仅依据这些 evidence 回答原问题。\n'+encode({'scope':plan.scope,'evidence':evidence}))]
                     last_save=0
                     answer=''
-                    for event in completion_events(provider,SUMMARY_SYSTEM,summary,max_tokens=8000,timeout=remaining(180)):
+                    for event in completion_events(provider,SUMMARY_SYSTEM,summary,max_tokens=8000,timeout=remaining(total_timeout)):
                         if event['type']=='delta':
                             answer+=event['text'];display+=event['text']
                             if len(display)>160000:raise HTTPException(422,'分析回复过长，请缩小问题范围')
                             if time.monotonic()-last_save>1:save_partial();last_save=time.monotonic()
                             yield encode(event)+'\n'
                         elif event['type']=='heartbeat':yield encode(event)+'\n'
+                        elif event['type']=='status':yield status(event['text'])
                     if not answer.strip():raise HTTPException(422,'模型没有返回分析结论，已保留实际查询结果')
                     # Sources remain visible even when a compatible model omits inline citations.
                     sources='、'.join('['+q['label']+'] '+' '.join(q['title'].split()) for q in successful)

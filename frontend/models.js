@@ -13,6 +13,8 @@ function editorMarkup(profile={}) {
     <label class="form-field">API Key<input name="api_key" type="password" maxlength="2000" placeholder="${profile.has_key?'已保存，留空保持此模型的 Key':'无鉴权的本地服务可填写 local'}" autocomplete="new-password"><span class="field-help">每个模型的 Key 分别加密保存在本机，界面不回显。</span></label>
     ${profile.has_key?'<label class="check-label"><input name="clear_key" type="checkbox">清除此模型已保存的 Key</label>':''}
     <label class="form-field">回复方式<select name="enable_thinking"><option value="auto" ${profile.enable_thinking==null?'selected':''}>服务器默认</option><option value="off" ${profile.enable_thinking===false?'selected':''}>标准回复 · 关闭深度思考</option><option value="on" ${profile.enable_thinking===true?'selected':''}>深度思考</option></select><span class="field-help">模式切换参数适用于支持 chat_template_kwargs 的自建 Qwen 服务。其他服务选择“服务器默认”。</span></label>
+    <label class="form-field">无新数据等待时间（秒）<input name="idle_timeout" type="number" min="30" max="600" step="1" required value="${esc(String(profile.idle_timeout??90))}"><span class="field-help">默认 90 秒。正文或思考数据持续返回时会重新计时；暂时停滞时先提示继续等待。</span></label>
+    <label class="form-field">单次生成总时限（秒）<input name="generation_timeout" type="number" min="180" max="7200" step="1" required value="${esc(String(profile.generation_timeout??900))}"><span class="field-help">默认 900 秒（15 分钟），可设为 180～7200 秒。超时保留已收到的文字；数据分析整轮任务也遵循此总时限。</span></label>
     <div class="modal-actions model-editor-actions"><button type="button" class="secondary-button" data-save-test>保存并测试</button><button type="submit" class="secondary-button">保存配置</button><button type="button" class="primary-button" data-save-use>保存并使用</button></div>
   </form>`;
 }
@@ -59,7 +61,8 @@ export async function mountModelManager(root,{api,onSettings=()=>{},onNotice=()=
     const thinking=value('enable_thinking');
     const data={name:value('name'),provider:value('provider'),base_url:value('base_url'),model:value('model'),
       api_key:value('api_key'),clear_key:!!$('[name="clear_key"]',form)?.checked,
-      enable_thinking:thinking==='auto'?null:thinking==='on'};
+      enable_thinking:thinking==='auto'?null:thinking==='on',
+      idle_timeout:Number(value('idle_timeout')),generation_timeout:Number(value('generation_timeout'))};
     const profile=await api('/llm/profiles'+(editing.id?'/'+editing.id:''),{
       method:editing.id?'PUT':'POST',body:JSON.stringify(data),
     });

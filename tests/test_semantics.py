@@ -101,6 +101,26 @@ def test_background_build_reads_model_descriptions_and_never_auto_confirms_candi
     assert not app.state.db.all('SELECT * FROM audit')
 
 
+def test_semantic_build_obeys_configured_deadline_and_keeps_dictionary_on_timeout(setup, monkeypatch):
+    app, client, model, ctx, conv = setup
+    entered, resume = threading.Event(), threading.Event()
+    provider = DictionaryProvider(entered, resume)
+    provider.generation_timeout = 0.1
+    provider.idle_timeout = 1
+    original = app.state.semantics.ensure(model, ctx)
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    try:
+        response = client.post(f"/api/models/{model['id']}/semantics/build", json={})
+        assert response.status_code == 200 and entered.wait(2)
+        saved = wait_ready(app, model['id'])
+        assert saved['status'] == 'error' and '总时限' in saved['error']
+        assert [e['id'] for e in saved['entries']] == [e['id'] for e in original['entries']]
+        assert all(e['state'] == 'unresolved' for e in saved['entries'])
+        assert not app.state.db.all('SELECT * FROM audit')
+    finally:
+        resume.set()
+
+
 def test_user_review_wins_over_a_running_inference_and_survives_restart(setup,monkeypatch):
     app,client,model,ctx,conv=setup
     entered,resume=threading.Event(),threading.Event();provider=DictionaryProvider(entered,resume)

@@ -153,6 +153,34 @@ def test_failed_response_saved_and_lock_released(client, app, monkeypatch):
     assert messages[-1]['status'] == 'error'
 
 
+def test_idle_timeout_preserves_streamed_text_history_and_export(client, app, monkeypatch):
+    import threading
+    resume = threading.Event()
+    conv, _ = conversation(client)
+
+    class Provider:
+        idle_timeout = 0.08
+        generation_timeout = 2
+        def stream(self, *args, **kwargs):
+            yield '这段已经生成的回复需要保留。'
+            resume.wait(2)
+            yield '迟到的内容'
+
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: Provider())
+    try:
+        events = send(client, conv['id'], '评价模型')
+        assert events[-1]['type'] == 'error' and '未返回新数据' in events[-1]['text']
+        assert not any(e['type'] == 'reset' for e in events)
+        saved = client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+        assert saved['status'] == 'error'
+        assert saved['content'].startswith('这段已经生成的回复需要保留。')
+        assert '迟到的内容' not in saved['content']
+        assert '这段已经生成的回复需要保留。' in client.get(f"/api/conversations/{conv['id']}/export").text
+        assert not app.state.chat.generation_status(conv['id'])['running']
+    finally:
+        resume.set()
+
+
 def test_orphan_stream_does_not_keep_history_in_connecting_state(client,app):
     conv,_=conversation(client)
     from backend.database import uid,now

@@ -72,6 +72,9 @@ class OpenAICompatProvider:
             yield {'type': 'status', 'text': '模型已连接，正在等待正文回复'}
             reasoning_reported = False
             for chunk in cast(Any, stream):
+                # Mark genuine upstream frames, including reasoning-only output, without
+                # forwarding private reasoning text to the UI or persisting it.
+                yield {'type': 'activity'}
                 # Usage-only frames and reasoning-only frames have no final-answer content.
                 if not chunk.choices:
                     continue

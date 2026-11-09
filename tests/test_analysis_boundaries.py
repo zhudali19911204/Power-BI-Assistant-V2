@@ -1,6 +1,8 @@
 import json
+import threading
 
 from backend.analysis import ROW_LIMIT
+import backend.analysis as analysis_module
 from tests.test_analysis import setup,Provider,plan,result,send
 
 
@@ -22,6 +24,60 @@ def test_summary_interruption_retains_actual_evidence_and_partial_response(setup
     assert saved['status']=='error' and '已经查询到数据' in saved['content']
     assert saved['analysis'][0]['rows']==[{'Value':125}]
     assert not app.state.chat.locks[conv['id']].locked()
+
+
+def test_summary_idle_timeout_retains_query_results_and_partial_text(setup, monkeypatch):
+    app, client, conv = setup
+    resume = threading.Event()
+
+    class Provider:
+        idle_timeout = 0.1
+        generation_timeout = 2
+        calls = 0
+        def stream_events(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {'type': 'status', 'text': '正在生成查询计划'}
+                yield {'type': 'delta', 'text': plan()}
+                return
+            yield {'type': 'delta', 'text': '已经查到实际数据，已生成的分析内容。'}
+            resume.wait(2)
+            yield {'type': 'delta', 'text': '迟到的结论'}
+
+    provider = Provider()
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda *a: result())
+    try:
+        events = send(client, conv)
+        assert any(e.get('text') == '正在生成查询计划' for e in events)
+        assert events[-1]['type'] == 'error' and '未返回新数据' in events[-1]['text']
+        saved = client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+        assert saved['status'] == 'error' and '已生成的分析内容' in saved['content']
+        assert saved['analysis'][0]['rows'] == [{'Value': 125}]
+        assert '迟到的结论' not in saved['content']
+        assert '125' in client.get(f"/api/conversations/{conv['id']}/export").text
+        assert not app.state.chat.locks[conv['id']].locked()
+    finally:
+        resume.set()
+
+
+def test_configured_budget_reaches_planning_repair_and_summary(setup, monkeypatch):
+    app, client, conv = setup
+    provider = Provider([plan('EVALUATE Missing()'), plan(), '最终分析结论。[Q1]'])
+    provider.generation_timeout = 1200
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda model, dax: result(ok='Missing' not in dax))
+    original = analysis_module.completion_events
+    deadlines = []
+
+    def observed(*args, **kwargs):
+        deadlines.append(kwargs['timeout'])
+        yield from original(*args, **kwargs)
+
+    monkeypatch.setattr(analysis_module, 'completion_events', observed)
+    events = send(client, conv)
+    assert events[-1]['type'] == 'done'
+    assert len(deadlines) == 3 and all(1100 < timeout <= 1200 for timeout in deadlines)
 
 
 def test_truncated_data_has_app_generated_caveat_even_if_model_omits_it(setup,monkeypatch):

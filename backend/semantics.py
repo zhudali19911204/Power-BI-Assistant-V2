@@ -335,8 +335,9 @@ class SemanticService:
                 messages=[ChatMessage('user',prompt)]
                 for attempt in range(2):
                     raw=''
-                    for event in completion_events(provider,system,messages,max_tokens=10000,timeout=180):
+                    for event in completion_events(provider,system,messages,max_tokens=10000):
                         if event['type']=='delta':raw+=event['text']
+                        elif event['type']=='status':self._merge(model_id,expected,stage=event['text'])
                         if len(raw)>80000:raise ValueError('语义词典回复过长')
                     try:
                         result=_parse_batch(raw)

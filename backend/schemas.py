@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
+
 
 class SettingsInput(BaseModel):
     provider: Literal["openai_compat", "claude"] = "openai_compat"
@@ -10,6 +12,8 @@ class SettingsInput(BaseModel):
     api_key: str | None = Field(default=None, max_length=2000)
     clear_key: bool = False
     enable_thinking: bool | None = None
+    idle_timeout: int = Field(default=GENERATION_IDLE_TIMEOUT, ge=30, le=600)
+    generation_timeout: int = Field(default=GENERATION_TIMEOUT, ge=180, le=7200)
 
     @field_validator("model", "base_url", "api_key")
     @classmethod

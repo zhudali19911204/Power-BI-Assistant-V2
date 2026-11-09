@@ -5,8 +5,13 @@ import time
 
 from fastapi import HTTPException
 
-GENERATION_TIMEOUT = 180
+GENERATION_TIMEOUT = 900
+GENERATION_IDLE_TIMEOUT = 90
 HEARTBEAT_INTERVAL = 2
+
+
+def generation_timeout(provider):
+    return getattr(provider, 'generation_timeout', GENERATION_TIMEOUT)
 
 
 class BackgroundStream:
@@ -72,17 +77,23 @@ def task_events(work,*,timeout=100,heartbeat=HEARTBEAT_INTERVAL):
         break
 
 
-def completion_events(provider, system, messages, *, timeout=None, heartbeat=None, **opts):
-    timeout = GENERATION_TIMEOUT if timeout is None else timeout
+def completion_events(provider, system, messages, *, timeout=None, idle_timeout=None, heartbeat=None, **opts):
+    timeout = generation_timeout(provider) if timeout is None else timeout
+    idle_timeout = getattr(provider, 'idle_timeout', GENERATION_IDLE_TIMEOUT) if idle_timeout is None else idle_timeout
     heartbeat = HEARTBEAT_INTERVAL if heartbeat is None else heartbeat
     output = queue.Queue(maxsize=64)
     stopped = threading.Event()
     started = time.monotonic()
+    last_heartbeat = started
+    last_activity = started
+    warned = False
+    stall_after = min(30, idle_timeout / 2)
 
     def publish(kind, value=None):
+        received_at = time.monotonic()
         while not stopped.is_set():
             try:
-                output.put((kind, value), timeout=0.1)
+                output.put((kind, value, received_at), timeout=0.1)
                 return
             except queue.Full:
                 pass
@@ -111,16 +122,33 @@ def completion_events(provider, system, messages, *, timeout=None, heartbeat=Non
         while True:
             elapsed = time.monotonic() - started
             if elapsed >= timeout:
-                raise HTTPException(504, f'模型生成超过 {int(timeout)} 秒，请缩小问题范围或检查服务器负载')
+                raise HTTPException(504, f'已达到本次生成总时限（{int(timeout)} 秒），已保留收到的内容；可在模型服务设置中延长总时限后重试')
+            if time.monotonic() - last_heartbeat >= heartbeat:
+                last_heartbeat = time.monotonic()
+                yield {'type': 'heartbeat', 'elapsed': int(last_heartbeat-started)}
+                continue
+            idle = time.monotonic() - last_activity
+            if idle >= idle_timeout:
+                raise HTTPException(504, f'模型连续 {int(idle_timeout)} 秒未返回新数据，已保留收到的内容；请检查模型服务或在模型服务设置中调整等待时间后重试')
+            if not warned and idle >= stall_after:
+                warned = True
+                yield {'type': 'status', 'text': f'模型暂未返回新数据，继续等待（连续 {int(idle)} 秒）'}
             try:
-                kind, value = output.get(timeout=min(heartbeat, timeout-elapsed))
+                kind, value, received_at = output.get(timeout=min(heartbeat, timeout-elapsed, idle_timeout-idle))
             except queue.Empty:
-                yield {'type': 'heartbeat', 'elapsed': int(time.monotonic()-started)}
                 continue
             if kind == 'finished':
                 break
             if kind == 'error':
                 raise value
+            # Only upstream activity renews this deadline. Our own keep-alives cannot.
+            if kind in ('delta', 'activity', 'status'):
+                last_activity = received_at
+                if warned:
+                    warned = False
+                    yield {'type': 'status', 'text': '模型已恢复响应，正在继续生成'}
+            if kind == 'activity':
+                continue
             yield {'type': kind, 'text': value}
     finally:
         stopped.set()

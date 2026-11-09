@@ -45,10 +45,26 @@ class ClaudeProvider:
         return "".join(block.text for block in resp.content if block.type == "text")
 
     def stream(self, system: str, messages: list[ChatMessage], **opts: object) -> Iterator[str]:
+        for event in self.stream_events(system, messages, **opts):
+            if event['type'] == 'delta':
+                yield event['text']
+
+    def stream_events(self, system: str, messages: list[ChatMessage], **opts: object):
         with self._client.messages.stream(
             model=self.model,
             max_tokens=_max_tokens(opts),
             system=system,
             messages=cast(Any, self._to_messages(messages)),
         ) as stream:
-            yield from stream.text_stream
+            yield {'type': 'status', 'text': '模型已连接，正在等待正文回复'}
+            reasoning_reported = False
+            for event in stream:
+                yield {'type': 'activity'}
+                if event.type != 'content_block_delta':
+                    continue
+                delta = event.delta
+                if delta.type == 'text_delta' and delta.text:
+                    yield {'type': 'delta', 'text': delta.text}
+                elif delta.type == 'thinking_delta' and not reasoning_reported:
+                    reasoning_reported = True
+                    yield {'type': 'status', 'text': '模型正在分析，等待正文输出'}

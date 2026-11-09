@@ -142,6 +142,7 @@ def test_selected_provider_receives_its_own_credentials(client, app, monkeypatch
             self._client = self
 
         def with_options(self, **opts):
+            self.client_options = opts
             return self
 
     monkeypatch.setattr('backend.settings.OpenAICompatProvider', Provider)
@@ -152,6 +153,50 @@ def test_selected_provider_receives_its_own_credentials(client, app, monkeypatch
     client.post(f"/api/llm/profiles/{second['id']}/activate", json={})
     app.state.settings.provider()
     assert calls[-1][0] == 'second-key'
+
+
+def test_profile_timeouts_persist_independently_and_control_the_sdk(client, app, tmp_path, monkeypatch):
+    first = add(client)
+    second = add(client, 'slow-model', 'second-key', idle_timeout=180, generation_timeout=1800)
+    assert first['idle_timeout'] == 90 and first['generation_timeout'] == 900
+    assert second['idle_timeout'] == 180 and second['generation_timeout'] == 1800
+    assert create_app(tmp_path).state.settings.profiles()[1]['generation_timeout'] == 1800
+    # Old clients editing just the model must not reset previously saved timeouts.
+    edited = client.put(f"/api/llm/profiles/{second['id']}", json={
+        'model': 'slow-renamed', 'base_url': 'http://192.168.1.100:8000/v1'}).json()
+    assert edited['idle_timeout'] == 180 and edited['generation_timeout'] == 1800
+
+    class Provider:
+        def __init__(self, *args, **kwargs): self._client = self
+        def with_options(self, **kwargs): self.options = kwargs; return self
+
+    monkeypatch.setattr('backend.settings.OpenAICompatProvider', Provider)
+    provider = app.state.settings.provider(second['id'])
+    assert provider.idle_timeout == 180 and provider.generation_timeout == 1800
+    assert provider.options['timeout'].read == 185
+    assert provider.options['max_retries'] == 0
+    assert app.state.settings.public()['generation_timeout'] == 900
+
+
+def test_legacy_profile_without_timeout_fields_uses_new_defaults(client, app):
+    saved = add(client)
+    cfg = config(app, saved['id'])
+    cfg.pop('idle_timeout'); cfg.pop('generation_timeout')
+    app.state.db.execute('UPDATE llm_profiles SET config=? WHERE id=?', (encode(cfg), saved['id']))
+    public = app.state.settings.profiles()[0]
+    assert public['idle_timeout'] == 90 and public['generation_timeout'] == 900
+
+
+@pytest.mark.parametrize('extra', [
+    {'idle_timeout': 0}, {'idle_timeout': 601}, {'generation_timeout': 179},
+    {'generation_timeout': 7201}, {'idle_timeout': 300, 'generation_timeout': 180},
+])
+def test_invalid_timeouts_do_not_change_saved_profiles(client, extra):
+    first = add(client)
+    response = client.put(f"/api/llm/profiles/{first['id']}", json={'model': 'qwen', **extra})
+    assert response.status_code == 422
+    profile = client.get('/api/llm/profiles').json()[0]
+    assert profile['idle_timeout'] == 90 and profile['generation_timeout'] == 900
 
 
 def test_environment_defaults_are_imported_as_independent_profile(tmp_path, monkeypatch):

@@ -135,3 +135,16 @@ test('empty configurations can add a first model',async()=>{
   const f=await fixture([]);assert.ok(f.root.textContent.includes('尚未添加模型'));
   await f.click('[data-add]');assert.ok(f.root.querySelector('[data-model-form]'));
 });
+
+test('legacy models show new timeout defaults and save independent edits',async()=>{
+  const f=await fixture();await f.click('[data-edit="deepseek"]');
+  assert.equal(f.root.querySelector('[name="idle_timeout"]').value,'90');
+  assert.equal(f.root.querySelector('[name="generation_timeout"]').value,'900');
+  f.input('idle_timeout','180');f.input('generation_timeout','1800');await f.submit();
+  const body=JSON.parse(f.calls.find(call=>call.method==='PUT').body);
+  assert.equal(body.idle_timeout,180);assert.equal(body.generation_timeout,1800);
+  await f.click('[data-edit="deepseek"]');
+  assert.equal(f.root.querySelector('[name="generation_timeout"]').value,'1800');
+  await f.click('[data-back]');await f.click('[data-edit="qwen"]');
+  assert.equal(f.root.querySelector('[name="generation_timeout"]').value,'900');
+});
