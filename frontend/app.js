@@ -9,17 +9,18 @@ import {createWorkspaces, createGenerationManager} from './workspaces.js';
 import {clarificationCard, clarificationReply} from './clarification.js';
 import {fieldEvidence, mountFieldPreview} from './fields.js';
 import {mountSemanticWorkbench, semanticSummary} from './semantics.js';
+import {mountComposerImages, imageGallery} from './images.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const workspace=createWorkspaces();
 const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
-let modalCleanup=null,modalReturn=null;
+let modalCleanup=null,modalReturn=null,composerImages=null;
 hydrateIcons();
 const messageRenderer=createMessageRenderer({
   root:$('#messages'),scroll:$('#message-scroll'),
   label:m=>`<span class="message-avatar">${m.role==='user'?'你':icon('sparkles')}</span><span>${m.role==='user'?'你':'Power BI Assistant'}</span>`,
-  content:m=>m.role==='user'?'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'?'':markdown(m.content),
+  content:m=>m.role==='user'?imageGallery(m.images)+'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'?'':markdown(m.content),
   artifacts:m=>fieldEvidence(m.field_previews||[])+clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join(''),
   status:streamStatus,
 });
@@ -58,7 +59,8 @@ function toast(text,error=false) {
 const guard = fn => async (...args) => {try {await fn(...args);} catch(e) {toast(e.message,true);}};
 function available() {if(state.view.busy||state.view.loading){toast(state.view.loading?'正在读取此会话':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
 function renderBusy() {
-  $('#send-button').disabled=state.view.busy||!!state.view.loading;
+  $('#send-button').disabled=state.view.busy||!!state.view.loading||state.view.images.some(img=>img.status==='uploading');
+  composerImages?.render();
   document.body.classList.toggle('busy',state.view.busy);
 }
 function showModal(title,eyebrow,html) {
@@ -268,7 +270,9 @@ function openCalibration() {
 
 async function send(e) {
   e.preventDefault();if(!available())return;
-  const content=$('#prompt').value.trim();if(!content)return;
+  if(state.view.images.some(img=>img.status==='uploading')){toast('请等待图片添加完成');return;}
+  if(state.view.images.length>4){toast('每条消息最多 4 张图片，请移除多余图片');return;}
+  const images=state.view.images.filter(img=>img.id),content=$('#prompt').value.trim()||(images.length?'请结合图片和当前上下文，帮我分析并处理。':'');if(!content)return;
   if(!state.view.model){await openConnections();return;}
   if(state.view.mode==='analysis'&&state.view.model.source!=='desktop'){toast('请先连接真实 Desktop 模型进行数据分析');await openConnections();return;}
   if(!state.settings.ready){await openSettings();return;}
@@ -281,7 +285,7 @@ async function send(e) {
       if(dictionary.status!=='ready'){await openSemantics(view.model.id);toast('先完成模型语义梳理，再继续这条需求');return;}
     } catch(error){toast(error.message,true);return;}
   }
-  const payload={content,points:view.mode==='dax'?view.points:[],
+  const payload={content,image_ids:images.map(img=>img.id),images,points:view.mode==='dax'?view.points:[],
     query_name:view.mode==='mquery'?$('#query-select').value:'',llm_profile_id:state.settings.active_profile_id||null};
   $('#prompt').value='';
   const pending=generation.send(view,payload);renderMessages(true);await pending;
@@ -296,6 +300,8 @@ async function reviewWrite(id) {
 }
 
 $('#composer-form').onsubmit=send;
+composerImages=mountComposerImages($('#composer-form'),{getView:()=>state.view,onNotice:toast,
+  onChange:view=>{if(state.view===view)renderBusy();}});
 function updateClarificationDraft(event) {
   const card=event.target.closest('[data-clarification]');if(!card)return;
   const id=card.dataset.clarification,draft=state.view.clarificationDrafts[id]||{};
@@ -325,15 +331,22 @@ $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.v
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{
   const el=e.target.closest('button');if(!el)return;
+  if(el.dataset.openImage){
+    const id=el.dataset.openImage;if(!/^[a-f0-9]{32}$/.test(id))return;
+    showModal('查看图片','IMAGE',`<img class="image-full-preview" src="/api/images/${id}" alt="消息附图"><p class="field-help">图片保存在本机；发送消息时会提供给所选模型服务。</p>`);return;
+  }
   if(el.dataset.openSemantics){await openSemantics(el.dataset.openSemantics);return;}
   if(el.dataset.previewColumn!==undefined){await openFieldPreview(el.dataset.previewTable,el.dataset.previewColumn,el.dataset.previewModel||state.view.model?.id);return;}
   if(el.dataset.confirmClarification){
     if(!available())return;
     const view=state.view,message=view.messages.find(m=>m.id===el.dataset.confirmClarification);
+    if(view.images.some(img=>img.status==='uploading')){toast('请等待图片添加完成');return;}
+    if(view.images.length>4){toast('每条消息最多 4 张图片，请移除多余图片');return;}
     if(!message?.clarification||message.clarification.answered||message!==view.messages.at(-1)){toast('请回复会话中的最新口径问题');return;}
     const reply=clarificationReply(message,view.clarificationDrafts[message.id]);
     view.draft=$('#prompt').value;
     const pending=generation.send(view,{...reply,points:view.mode==='dax'?view.points:[],
+      image_ids:view.images.filter(img=>img.id).map(img=>img.id),images:view.images.filter(img=>img.id),
       llm_profile_id:state.settings.active_profile_id||null});
     renderMessages(true);await pending;return;
   }

@@ -16,6 +16,7 @@ from .fields import FieldCheck, FieldPreviewInput, FieldService, field_ref
 from .engine.context.live_source import _LiveSession,find_adomd_dll,find_instances
 from .engine.llm.base import ChatMessage
 from .streaming import completion_events,task_events,generation_timeout
+from .images import IMAGE_RULES, multimodal_error
 
 logger=logging.getLogger(__name__)
 ROW_LIMIT=200
@@ -249,15 +250,15 @@ class AnalysisService:
                     yield status('正在调整分析查询计划')
 
         try:
-            history=self.db.all("SELECT role,content FROM messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,rowid",(conv['id'],))[-16:]
+            history=self.db.all("SELECT id,role,content FROM messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,rowid",(conv['id'],))[-16:]
             while sum(len(m['content']) for m in history)>40000:history.pop(0)
-            self.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',(uid(),conv['id'],'user',body.content,'complete',now()))
+            user_id=self.chat.images.save_user(conv['id'],body.content,body.image_ids)
             self.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',(message_id,conv['id'],'assistant','','streaming',now()))
             self.db.execute("UPDATE conversations SET title=CASE WHEN title='新对话' THEN ? ELSE title END,updated_at=? WHERE id=?",(body.content[:36],now(),conv['id']))
             yield encode({'type':'start','message_id':message_id})+'\n'
             yield encode({'type':'model','model_id':model['id'],'live':True})+'\n'
-            messages=[ChatMessage(m['role'],m['content']) for m in history]+[ChatMessage('user',body.content)]
-            planner=plan_system(ctx)
+            messages=self.chat.images.llm_messages(history,user_id,body.content)
+            planner=plan_system(ctx)+'\n'+IMAGE_RULES
             if self.chat.semantics:
                 planner+='\n'+self.chat.semantics.prompt(model['id'])
                 planner+=self.chat.semantics.value_context(conv,body.content)
@@ -329,7 +330,7 @@ class AnalysisService:
                         yield encode({'type':'analysis','queries':evidence})+'\n'
                         if result['ok'] or result.get('connection_error') or attempt:break
                         yield status(f'{label} 查询未通过，正在修复查询')
-                        repair=[ChatMessage('user',body.content+'\n只修复下面这一个查询，按原 JSON 格式返回一个 queries 项。\n'+encode({'query':dax,'error':result['error']}))]
+                        repair=[ChatMessage('user',body.content+'\n只修复下面这一个查询，按原 JSON 格式返回一个 queries 项。\n'+encode({'query':dax,'error':result['error']}),messages[-1].images)]
                         raw=''
                         for event in completion_events(provider,planner,repair,max_tokens=5000,timeout=remaining(total_timeout)):
                             if event['type']=='delta':
@@ -352,7 +353,7 @@ class AnalysisService:
                     summary=messages[:]+[ChatMessage('user','以下为应用实际执行的查询结果。仅依据这些 evidence 回答原问题。\n'+encode({'scope':plan.scope,'evidence':evidence}))]
                     last_save=0
                     answer=''
-                    for event in completion_events(provider,SUMMARY_SYSTEM,summary,max_tokens=8000,timeout=remaining(total_timeout)):
+                    for event in completion_events(provider,SUMMARY_SYSTEM+'\n'+IMAGE_RULES,summary,max_tokens=8000,timeout=remaining(total_timeout)):
                         if event['type']=='delta':
                             answer+=event['text'];display+=event['text']
                             if len(display)>160000:raise HTTPException(422,'分析回复过长，请缩小问题范围')
@@ -379,6 +380,7 @@ class AnalysisService:
         except GeneratorExit:raise
         except Exception as exc:
             error=exc.detail if isinstance(exc,HTTPException) else f'分析未完成（{type(exc).__name__}），已保留已取得的查询结果'
+            error=multimodal_error(exc,any(m.images for m in locals().get('messages',[]))) or error
             logger.warning('Analysis %s failed: %s',message_id,type(exc).__name__)
             yield encode({'type':'error','text':error})+'\n'
         finally:

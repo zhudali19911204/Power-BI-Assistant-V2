@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
 
@@ -66,7 +66,8 @@ class ClarificationReply(BaseModel):
 
 
 class MessageInput(BaseModel):
-    content: str = Field(min_length=1, max_length=24000)
+    content: str = Field(default='', max_length=24000)
+    image_ids: list[str] = Field(default_factory=list, max_length=4)
     llm_profile_id: str | None = Field(default=None, min_length=1, max_length=64)
     home_table: str = Field(default="", max_length=300)
     clarification_reply: ClarificationReply | None = None
@@ -77,9 +78,21 @@ class MessageInput(BaseModel):
     @field_validator("content")
     @classmethod
     def not_blank(cls, value):
-        if not value.strip():
-            raise ValueError("请输入需求")
         return value.strip()
+
+    @field_validator('image_ids')
+    @classmethod
+    def valid_images(cls, value):
+        import re
+        if len(set(value))!=len(value) or any(not re.fullmatch(r'[a-f0-9]{32}',v) for v in value):
+            raise ValueError('图片标识无效或重复，请重新添加图片')
+        return value
+
+    @model_validator(mode='after')
+    def require_input(self):
+        if not self.content and not self.image_ids:raise ValueError('请输入需求或添加图片')
+        if not self.content:self.content='请结合图片和当前上下文，帮我分析并处理。'
+        return self
 
 
 class ApplyInput(BaseModel):

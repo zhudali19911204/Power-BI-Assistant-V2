@@ -7,10 +7,12 @@ import io
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .chat import ChatService
@@ -27,6 +29,7 @@ from .reports import reports_for_instances
 from .semantics import SemanticBuildInput, SemanticEdit, SemanticReuseInput, SemanticService
 from .streaming import BackgroundStream
 from .validation import validate
+from .images import MAX_UPLOAD_BYTES
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
 
@@ -50,6 +53,8 @@ def create_app(directory=None):
     app = FastAPI(title="Power BI Assistant", version="2.0.0", docs_url="/api/docs", redoc_url=None)
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
+    app.state.images=chat.images
+    chat.images.remove_expired_pending()
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.middleware("http")
@@ -61,15 +66,16 @@ def create_app(directory=None):
         if request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"detail": "不允许跨站访问本地助手"}, status_code=403)
         if request.method in ("POST", "PUT", "PATCH"):
-            if "application/json" not in request.headers.get("content-type", ""):
+            image_upload=request.method=='POST' and request.url.path=='/api/images'
+            if not image_upload and "application/json" not in request.headers.get("content-type", ""):
                 return JSONResponse({"detail": "请求必须使用 JSON"}, status_code=415)
-            if len(await request.body()) > 4 * 1024 * 1024:
+            if not image_upload and len(await request.body()) > 4 * 1024 * 1024:
                 return JSONResponse({"detail": "请求过大"}, status_code=413)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
             "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
@@ -78,6 +84,32 @@ def create_app(directory=None):
     @app.get("/api/health")
     def health():
         return {"status": "ok", "version": "2.0.0", "storage": "sqlite", "platform": "desktop"}
+
+    @app.post('/api/images',status_code=201)
+    async def upload_image(request:Request):
+        data=bytearray()
+        async for chunk in request.stream():
+            if len(data)+len(chunk)>MAX_UPLOAD_BYTES:raise HTTPException(413,'单张图片不能超过 8 MB，请缩小截图范围')
+            data.extend(chunk)
+        return await run_in_threadpool(chat.images.upload,bytes(data),unquote(request.headers.get('x-image-name','截图')),
+                                       request.headers.get('content-type','').split(';',1)[0].lower())
+
+    @app.get('/api/images/{image_id}')
+    def image_attachment(image_id:str):
+        row=chat.images.get(image_id)
+        return Response(row['data'],media_type=row['mime_type'],headers={'Cache-Control':'no-store'})
+
+    @app.delete('/api/images/{image_id}')
+    def delete_image(image_id:str):
+        chat.images.delete_pending(image_id)
+        return {'ok':True}
+
+    @app.post('/api/desktop/screenshot')
+    def start_screenshot():
+        if not hasattr(os,'startfile'):raise HTTPException(409,'当前系统无法打开截图工具，请自行截图后粘贴图片')
+        try:os.startfile('ms-screenclip:')
+        except OSError as exc:raise HTTPException(409,'未能打开 Windows 截图工具，请使用 Win+Shift+S 后粘贴图片') from exc
+        return {'ok':True,'detail':'截图后回到输入框按 Ctrl+V 添加图片'}
 
     @app.get("/api/settings")
     def get_settings():
@@ -232,6 +264,10 @@ def create_app(directory=None):
         text = "# " + conv["title"] + "\n\n"
         for message in chat.messages(conversation_id):
             text += f"## {'你' if message['role'] == 'user' else '助手'}\n\n{message['content']}\n\n"
+            for picture in message.get('images',[]):
+                row=chat.images.get(picture['id'])
+                import base64
+                text+='![附图](data:'+row['mime_type']+';base64,'+base64.b64encode(row['data']).decode('ascii')+')\n\n'
             for artifact in message["artifacts"]:
                 vr = artifact["validation"]
                 text += f"验证：{'通过' if vr['ok'] else '未通过'}；{'已实跑' if vr['run_verified'] else '未经实跑'}\n\n"

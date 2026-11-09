@@ -30,11 +30,16 @@ class OpenAICompatProvider:
         self.enable_thinking = enable_thinking
 
     @staticmethod
-    def _to_messages(system: str, messages: list[ChatMessage]) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
+    def _to_messages(system: str, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         if system:
             out.append({"role": "system", "content": system})
-        out.extend({"role": m.role, "content": m.content} for m in messages)
+        for m in messages:
+            content: Any=m.content
+            if m.images:
+                content=[{'type':'text','text':m.content}]+[{'type':'image_url','image_url':{
+                    'url':f'data:{img.mime_type};base64,{img.data}','detail':'auto'}} for img in m.images]
+            out.append({'role':m.role,'content':content})
         return out
 
     @staticmethod

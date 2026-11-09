@@ -43,6 +43,12 @@ class Database:
                 CREATE TABLE IF NOT EXISTS message_clarifications (
                     message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS message_images (
+                    id TEXT PRIMARY KEY, message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL, mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
+                    size INTEGER NOT NULL, data BLOB NOT NULL, created_at TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS message_images_message ON message_images(message_id);
                 CREATE TABLE IF NOT EXISTS artifacts (
                     id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
                     model_id TEXT NOT NULL REFERENCES models(id), kind TEXT NOT NULL, name TEXT NOT NULL,
@@ -82,6 +88,8 @@ class Database:
                 CREATE INDEX IF NOT EXISTS artifacts_message ON artifacts(message_id);
                 PRAGMA user_version=1;
             """)
+            if 'position' not in {r['name'] for r in db.execute('PRAGMA table_info(message_images)')}:
+                db.execute('ALTER TABLE message_images ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
 
     @contextmanager
     def connection(self):

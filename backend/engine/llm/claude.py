@@ -32,8 +32,15 @@ class ClaudeProvider:
         self.model = model
 
     @staticmethod
-    def _to_messages(messages: list[ChatMessage]) -> list[dict[str, str]]:
-        return [{"role": m.role, "content": m.content} for m in messages]
+    def _to_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        out=[]
+        for m in messages:
+            content: Any=m.content
+            if m.images:
+                content=[{'type':'image','source':{'type':'base64','media_type':img.mime_type,'data':img.data}}
+                         for img in m.images]+[{'type':'text','text':m.content}]
+            out.append({'role':m.role,'content':content})
+        return out
 
     def complete(self, system: str, messages: list[ChatMessage], **opts: object) -> str:
         resp = self._client.messages.create(

@@ -537,7 +537,8 @@ class SemanticService:
         explanation=card.get('value_explanation')
         text=explanation or card_markdown(card)
         try:
-            self.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',(uid(),conv['id'],'user',body.content,'complete',now()))
+            from .images import ImageStore
+            ImageStore(self.db).save_user(conv['id'],body.content,body.image_ids)
             self.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',(message_id,conv['id'],'assistant',text,'complete',now()))
             if not explanation:save_card(self.db,message_id,card)
             self.db.execute("UPDATE conversations SET title=CASE WHEN title='新对话' THEN ? ELSE title END,updated_at=? WHERE id=?",

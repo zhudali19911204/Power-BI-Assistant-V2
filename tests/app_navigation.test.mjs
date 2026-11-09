@@ -19,6 +19,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
     context:{tables:{事实表:[{name:'金额',dtype:'double'}]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
   const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
+  const imageMeta={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),mime_type:'image/png',width:80,height:40,size:100};
+  const uploads=[];
   let semanticProfile={model_id:'model',status:'inventory',stage:'本地事实已整理',error:'',coverage:0,entries:[{
     id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'candidate',business_name:'金额',
     meaning:'业务口径待确认',role:'数值',unit:'',aliases:[]}]};
@@ -31,6 +33,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     ok:true,error:'',profile:fieldProfile};
   const json=value=>new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
   async function fetchMock(path,opts={}) {
+    if(path==='/api/images'&&opts.method==='POST'){uploads.push(opts);return json(imageMeta);}
     if(path==='/api/settings')return json(settings);
     if(path==='/api/models')return json([model]);
     if(path==='/api/models/model')return json(model);
@@ -62,7 +65,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
         if(event.type==='done'){
           const previous=messages.get(id)||[];
           previous.forEach(m=>{if(m.clarification)m.clarification.answered=true;});
-          messages.set(id,[...previous,{role:'user',status:'complete',content:body.content,artifacts:[]},
+          messages.set(id,[...previous,{role:'user',status:'complete',content:body.content,images:body.image_ids?.length?[imageMeta]:[],artifacts:[]},
             {id:this.messageId||'answer-'+id,role:'assistant',status:'complete',content:this.text,artifacts:[],analysis:[],
               clarification:this.clarification||null,field_previews:this.field_previews||[]}]);
         }
@@ -125,7 +128,18 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('#prompt').value,'预览不改动这段草稿');
     await click('#modal-close');
     await click('[data-mode="analysis"]');assert.equal($('#page-title').textContent,'数据分析助手');
+    const imageFile=Object.assign(new Blob(['screenshot'],{type:'image/png'}),{name:'截图.png'});
+    const paste=new window.Event('paste',{bubbles:true,cancelable:true});
+    Object.defineProperty(paste,'clipboardData',{value:{items:[{kind:'file',type:'image/png',getAsFile:()=>imageFile}]}});
+    $('#prompt').dispatchEvent(paste);await tick();await tick();
+    assert.equal(uploads.length,1);assert.equal($('[data-image-drafts]').querySelectorAll('.image-draft').length,1);
+    await click('[data-mode="dax"]');assert.equal($('[data-image-drafts]').hidden,true);
+    await click('[data-mode="analysis"]');assert.equal($('[data-image-drafts]').querySelectorAll('.image-draft').length,1);
     await send('分析请求');const analysis=streams.get('c1');assert.ok(analysis);
+    assert.deepEqual(analysis.body.image_ids,[imageMeta.id]);assert.equal(analysis.body.images,undefined);
+    assert.equal($('[data-image-drafts]').hidden,true);
+    assert.ok($('#messages').querySelector('.message-image img'));
+    await click('[data-open-image]');assert.ok($('#modal-body').querySelector('.image-full-preview'));await click('#modal-close');
     analysis.emit({type:'start',message_id:'answer-c1'});analysis.emit({type:'delta',text:'第一段分析。'});await tick();await tick();
     assert.equal($('#send-button').disabled,true);
     await click('[data-mode="dax"]');draft('DAX 页面草稿');

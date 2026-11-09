@@ -9,10 +9,16 @@ business-code change. Defining it as a `Protocol` keeps providers decoupled — 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator, Literal, Protocol, runtime_checkable
 
 Role = Literal["user", "assistant"]
+
+
+@dataclass
+class ChatImage:
+    mime_type: str
+    data: str = field(repr=False)  # Base64 bytes; never log image contents.
 
 
 @dataclass
@@ -21,6 +27,7 @@ class ChatMessage:
 
     role: Role
     content: str
+    images: list[ChatImage] = field(default_factory=list, repr=False)
 
 
 def user(content: str) -> ChatMessage:

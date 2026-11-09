@@ -28,6 +28,7 @@ const paths = {
   trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
   check:'<path d="m5 12 4 4L19 6"/>',
   copy:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+  image:'<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m21 15-5-5L5 21M3 16l4-4 4 4"/>',
   book:'<path d="M12 5c-3-2-6-2-10-1v15c4-1 7-1 10 1 3-2 6-2 10-1V4c-4-1-7-1-10 1Zm0 0v15"/>',
   bolt:'<path d="m13 2-9 12h7l-1 8 10-12h-7l1-8Z"/>',
 };

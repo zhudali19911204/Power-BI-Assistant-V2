@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/assets/clarification.css">
   <link rel="stylesheet" href="/assets/fields.css">
   <link rel="stylesheet" href="/assets/semantics.css">
+  <link rel="stylesheet" href="/assets/images.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
 <body>
@@ -44,6 +45,8 @@
           <div class="composer-area">
             <div class="context-strip" id="context-strip"><span data-icon="database"></span><span id="composer-context">连接模型，让回答基于真实字段</span><button id="calibration-open" title="用已知结果校准最后一个度量值"><span data-icon="target"></span><span id="calibration-label">校准</span></button></div>
             <form class="composer" id="composer-form">
+              <div class="composer-image-tools"><button type="button" data-add-images title="选择图片">&#xFF0B; 图片</button><button type="button" data-screenshot title="打开 Windows 截图工具"><span data-icon="image"></span>截图</button><small>支持粘贴截图 · Ctrl+V</small><input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-input hidden></div>
+              <div class="image-drafts" data-image-drafts hidden aria-label="待发送图片"></div>
               <label for="prompt" class="sr-only">描述你的数据问题</label>
               <textarea id="prompt" rows="3" aria-describedby="composer-shortcuts" placeholder="描述你想计算的业务指标，或粘贴一段 DAX…"></textarea>
               <div class="composer-footer"><div class="composer-controls"><button type="button" class="model-chip" id="model-settings-chip"><span data-icon="sparkles"></span><span id="active-llm">配置大模型</span><span data-icon="chevron-down"></span></button><select id="query-select" title="目标 Power Query 查询" aria-label="目标查询" hidden></select></div><div class="send-group"><span class="keyboard-hint" id="composer-shortcuts">Enter 发送 · Shift+Enter 换行</span><button type="submit" id="send-button" class="send-button" aria-label="发送消息"><span data-icon="arrow-up"></span></button></div></div>

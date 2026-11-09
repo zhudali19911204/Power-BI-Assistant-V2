@@ -37,6 +37,32 @@ test('switching assistants preserves drafts, filters and the running page',()=>{
   assert.equal(w.switchMode('analysis').draft,'分析草稿');
 });
 
+test('image attachments are pinned to the submitted view and only IDs reach the backend',async()=>{
+  const f=fixture(),owner=f.workspace.open(conversation('A'),model),s=stream();f.streams.set('A',s);
+  const image={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),status:'ready'};
+  owner.images=[image];
+  const pending=f.manager.send(owner,{content:'看图',image_ids:[image.id],images:[image]});
+  assert.equal(owner.images.length,0);assert.equal(owner.messages[0].images[0].id,image.id);
+  f.workspace.switchMode('analysis');await tick();
+  assert.deepEqual(f.sent[0].body.image_ids,[image.id]);assert.equal(f.sent[0].body.images,undefined);
+  assert.equal(f.workspace.current.images.length,0);
+  f.saved.set('A',[{role:'user',content:'看图',images:[image]},{role:'assistant',content:'完成',status:'complete'}]);
+  s.event({type:'done'});s.close();await pending;
+  assert.equal(owner.messages[0].images[0].id,image.id);
+});
+
+test('early rejection restores image attachments for retry without clearing another draft',async()=>{
+  const workspace=createWorkspaces(),owner=workspace.open(conversation('A'),model);
+  const image={id:'a'.repeat(32),name:'截图.png',status:'ready'};owner.images=[image];
+  const manager=createGenerationManager({workspace,api:async()=>[],fetchResponse:async()=>
+    new Response(JSON.stringify({detail:'请先检查图片'}),{status:422,headers:{'Content-Type':'application/json'}})});
+  const pending=manager.send(owner,{content:'看图',image_ids:[image.id],images:[image]});
+  const other=workspace.switchMode('analysis');other.images=[{id:'b'.repeat(32)}];
+  await pending;
+  assert.equal(owner.images[0].id,image.id);assert.equal(owner.draft,'看图');
+  assert.equal(owner.messages.length,0);assert.equal(other.images[0].id,'b'.repeat(32));
+});
+
 test('creating a conversation after navigation binds only its owning view',async()=>{
   const f=fixture(),owner=f.workspace.current,s=stream();f.streams.set('new-0',s);
   const pending=f.manager.send(owner,{content:'原会话需求',home_table:'表',points:[],llm_profile_id:'old-profile'});

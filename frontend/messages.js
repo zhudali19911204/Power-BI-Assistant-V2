@@ -82,7 +82,7 @@ export function createMessageRenderer({root, scroll, label, content, artifacts, 
         record.article.classList.toggle('streaming',message.status==='streaming');
         if(message.id)record.article.dataset.messageId=message.id;
         // Completed messages are untouched when a later message streams.
-        const bodySource=JSON.stringify([message.content,!!message.clarification,message.status==='error']);
+        const bodySource=JSON.stringify([message.content,message.images,!!message.clarification,message.status==='error']);
         if(record.bodySource!==bodySource) {
           patchHtml(record.body,content(message));record.bodySource=bodySource;
         }

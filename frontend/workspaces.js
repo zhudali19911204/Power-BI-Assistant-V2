@@ -4,7 +4,7 @@ export function createWorkspaces() {
   let nextId=0,current;
   const modes=new Map(),conversations=new Map(),views=new Set();
   function make(mode,model=null,conversation=null) {
-    const view={key:`view-${++nextId}`,mode,model,conversation,messages:[],points:[],draft:'',clarificationDrafts:{},queryName:'',
+    const view={key:`view-${++nextId}`,mode,model,conversation,messages:[],points:[],draft:'',images:[],clarificationDrafts:{},queryName:'',
       busy:false,status:'',startedAt:0,attention:''};
     views.add(view);if(conversation)conversations.set(conversation.id,view);return view;
   }
@@ -91,8 +91,10 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
       if(running.has(view))return running.get(view);
       // Copy filters and service selection before the user navigates or edits another page.
       const body=structuredClone(request),previous=view.messages.slice();
+      const submittedImages=body.images||[];delete body.images;
       const answer={role:'assistant',content:'',status:'streaming',artifacts:[],analysis:[]};
-      view.messages.push({role:'user',content:body.content,artifacts:[]},answer);
+      view.messages.push({role:'user',content:body.content,images:submittedImages,artifacts:[]},answer);
+      view.images=view.images.filter(img=>!body.image_ids?.includes(img.id));
       if(!body.clarification_reply)view.draft='';
       view.status='正在等待模型回复';
       return watch(view,async()=>{
@@ -140,7 +142,9 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
             }
             catch { /* Preserve received content and report the original transport error. */ }
           }
-          if(rejected||!view.conversation||view.messages.length<=previous.length){view.messages=previous;view.draft=view.draft||(body.clarification_reply?'':body.content);}
+          if(rejected||!view.conversation||view.messages.length<=previous.length){view.messages=previous;view.draft=view.draft||(body.clarification_reply?'':body.content);
+            view.images=[...submittedImages,...view.images.filter(img=>!submittedImages.some(old=>old.id===img.id))];
+          }
           throw error;
         }
       });

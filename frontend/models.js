@@ -39,7 +39,7 @@ export async function mountModelManager(root,{api,onSettings=()=>{},onNotice=()=
     root.innerHTML=`<p class="notice">可保存多个模型，切换后从下一次请求开始使用。配置分别保存，已有会话继续保留。</p>
       <p class="model-feedback" role="status" aria-live="polite" hidden></p>
       <fieldset class="model-manager-fields">${editing?editorMarkup(editing):listMarkup(profiles,confirmId)}</fieldset>
-      <p class="field-help">当前服务会接收相关模型结构和对话；数据分析时还会接收本轮查询结果。查询由本机 Desktop 执行。</p>`;
+      <p class="field-help">当前服务会接收相关模型结构、对话及你发送的图片；数据分析时还会接收本轮查询结果。查询由本机 Desktop 执行。</p>`;
   }
   function feedback(message,error=false) {
     const el=$('.model-feedback',root);el.hidden=false;el.textContent=message;el.classList.toggle('error',error);
