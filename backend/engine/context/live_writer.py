@@ -71,10 +71,11 @@ class LiveDesktopWriter:
             target = next((t for t in model.Tables if t.Name == table), None)
             if target is None:
                 return WriteResult(False, f"目标表 '{table}' 不存在")
-            existing = next((m for m in target.Measures if m.Name == name), None)
+            existing = next((m for m in target.Measures if str(m.Name).casefold() == name.casefold()), None)
             if existing is not None:
                 if not overwrite:
                     return WriteResult(False, f"度量值 '{name}' 已存在")
+                existing.Name = name
                 existing.Expression = expression
                 action = "已更新"
             else:

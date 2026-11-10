@@ -129,6 +129,9 @@ def test_user_review_wins_over_a_running_inference_and_survives_restart(setup,mo
     client.post(f"/api/models/{model['id']}/semantics/build",json={})
     try:
         assert entered.wait(2)
+        monkeypatch.setattr('backend.semantics.find_instances',lambda:[])
+        connected=app.state.semantics.on_connect(model,app.state.settings)
+        assert connected['status']=='building' and len(provider.calls)==1
         entry=object_id('column','Dim Cost Center','CC Number')
         r=client.put(f"/api/models/{model['id']}/semantics/{entry}",json={
             'business_name':'成本中心编号','meaning':'成本中心的文本编号，前导零是编号的一部分','aliases':['成本中心'],'confirmed':True})

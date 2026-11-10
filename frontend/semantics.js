@@ -5,7 +5,9 @@ const $=(selector,root)=>root.querySelector(selector);
 const states={confirmed:'用户已确认',candidate:'候选含义 · 待确认',unresolved:'业务含义未知'};
 const kinds={table:'表',column:'字段',measure:'度量值'};
 export const semanticSummary=p=>({status:p.status,stage:p.stage,coverage:p.coverage,total:p.entries.length,
-  confirmed:p.entries.filter(e=>e.state==='confirmed').length});
+  confirmed:p.entries.filter(e=>e.state==='confirmed').length,
+  can_answer:p.status==='ready'||!!p.has_history||p.entries.some(e=>['candidate','confirmed'].includes(e.state)||e.previous_definition),
+  pending:p.entries.filter(e=>e.state==='unresolved').length});
 
 function facts(entry) {
   const f=entry.facts;
@@ -18,7 +20,9 @@ function facts(entry) {
 function entryMarkup(entry) {
   return `<article class="semantic-entry" data-semantic-entry="${esc(entry.id)}"><div class="semantic-entry-heading"><strong>${esc(entry.table)}${entry.kind==='table'?'':'['+esc(entry.name)+']'}</strong><span class="semantic-state ${entry.state}">${states[entry.state]||'待确认'}</span></div>
     <p class="semantic-business-name">${kinds[entry.kind]} · ${esc(entry.business_name||'尚无业务名称')}${entry.role?' · '+esc(entry.role):''}</p>
+    ${entry.state==='unresolved'&&entry.change?`<p class="semantic-change-note">${entry.change.kind==='added'?'新增条目':'待更新条目'} · ${entry.change.reasons.map(esc).join('；')}</p>`:''}
     <p class="semantic-meaning">${esc(entry.meaning||'业务含义尚未确定，需要结合模型描述和业务定义确认。')}</p>
+    ${entry.previous_definition?`<details class="semantic-facts"><summary>查看更新前定义（仅供核对，已不作为当前确认口径）</summary><p>${esc(entry.previous_definition.meaning||'此前未定义业务含义')}</p></details>`:''}
     <p class="semantic-unit">单位：${esc(entry.unit||'未知 / 未确认')}${entry.aliases.length?' · 别名：'+entry.aliases.map(esc).join('、'):''}</p>${facts(entry)}
     <div class="semantic-entry-actions"><button class="secondary-button" data-edit-semantic="${esc(entry.id)}">编辑与确认</button>${entry.kind==='column'?`<button class="text-link" data-semantic-preview="${esc(entry.id)}">${icon('eye')}查看实际取值</button>`:''}</div></article>`;
 }
@@ -33,23 +37,27 @@ function editMarkup(entry) {
 }
 
 export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},onPreview=()=>{}}) {
-  let profile,service,editing=null,filter='',onlyPending=false,busy=false,timer=null,disposed=false,paused=false;
+  let profile,service,editing=null,filter='',onlyPending=false,onlyChanges=false,busy=false,timer=null,disposed=false,paused=false;
   function feedback(text,error=false) {const el=$('[data-semantic-feedback]',root);if(el){el.textContent=text;el.hidden=false;el.classList.toggle('error',error);}}
   function list() {
-    const entries=profile.entries.filter(e=>(!onlyPending||e.state!=='confirmed')&&
+    const changed=new Set((profile.changes?.items||[]).map(e=>e.id));
+    const entries=profile.entries.filter(e=>(!onlyPending||e.state!=='confirmed')&&(!onlyChanges||changed.has(e.id))&&
       [e.table,e.name,e.business_name,e.meaning,...e.aliases].join(' ').toLowerCase().includes(filter.toLowerCase()));
     $('[data-semantic-entries]',root).innerHTML=entries.map(entryMarkup).join('')||'<p class="notice">没有匹配的条目。</p>';
   }
   function render() {
     const summary=semanticSummary(profile);
+    const delta=profile.changes;
+    const buildDisabled=profile.status==='building'||(summary.pending===0&&profile.status==='ready');
     root.innerHTML=`<p class="notice">语义词典保存在本机，重新打开同一报表时自动匹配并核对模型。字段名称和取值属于模型事实；自动解释是候选建议，需要你审阅。编号归属以实际查值为依据，有歧义时再确认。</p>
       <p data-semantic-feedback class="semantic-feedback" role="status" hidden></p>
       ${profile.report_identity?.name?`<p class="notice">当前报表：<strong>${esc(profile.report_identity.name)}</strong>${profile.report_identity.path?`<br>${esc(profile.report_identity.path)}`:''}</p>`:''}
       <div class="semantic-progress"><strong>${esc(profile.stage)}</strong><span>已梳理 ${profile.coverage}/${profile.entries.length} 项 · 用户确认 ${summary.confirmed} 项</span></div>
+      ${delta?`<div class="semantic-delta"><strong>本次模型同步</strong><p>保留 ${delta.preserved} 项 · 新增 ${delta.added} 项 · 修改或受影响 ${delta.modified} 项 · 删除 ${delta.removed} 项</p><p>${summary.can_answer?'可继续提问；仅在涉及未知业务口径时按需确认。':'已有定义将保留，只梳理待更新条目。'}</p>${delta.items.length?`<details><summary>查看变更清单</summary><ul>${delta.items.map(item=>`<li><b>${({added:'新增',modified:'修改或受影响',removed:'删除'})[item.change]}</b> ${esc(item.table)}${item.kind==='table'?'':'['+esc(item.name)+']'} · ${item.reasons.map(esc).join('；')}</li>`).join('')}</ul></details>`:''}</div>`:''}
       ${profile.error?`<p class="semantic-error">${esc(profile.error)}</p>`:''}
-      <div class="semantic-tools"><button type="button" class="primary-button" data-build-semantics ${profile.status==='building'?'disabled':''}>${icon('sparkles')}${profile.status==='building'?'正在后台梳理…':profile.status==='ready'?'重新梳理候选含义':profile.coverage>0?`继续梳理（已完成 ${profile.coverage} 项）`:'开始梳理模型语义'}</button><span>点击后将模型结构、公式和描述发送至 ${esc(service?.name||service?.model||'当前模型服务')}（${esc(service?.base_url||'Anthropic 官方服务')}）解释字段含义；不修改 Desktop。</span></div>
+      <div class="semantic-tools"><button type="button" class="primary-button" data-build-semantics ${buildDisabled?'disabled':''}>${icon('sparkles')}${profile.status==='building'?'正在后台梳理…':buildDisabled?'语义层已是最新':delta?`仅梳理待更新 ${summary.pending} 项`:profile.coverage>0?`继续梳理（剩余 ${summary.pending} 项）`:'开始梳理模型语义'}</button><span>点击后仅将待梳理对象的结构、公式和描述及相关关系发送至 ${esc(service?.name||service?.model||'当前模型服务')}（${esc(service?.base_url||'Anthropic 官方服务')}）解释含义；不修改 Desktop。</span></div>
       ${profile.status!=='ready'&&profile.status!=='building'&&profile.reuse_candidates?.length?`<div class="semantic-tools"><label class="form-field">关联已有词典（模型结构相同）<select data-semantic-history>${profile.reuse_candidates.map(c=>`<option value="${esc(c.model_id)}">${esc(c.name)}${c.path?' · '+esc(c.path):''} · ${c.coverage}/${c.total} 项</option>`).join('')}</select></label><button type="button" class="secondary-button" data-reuse-semantics>关联并复用</button><span>旧版未记录报表名称，或存在多个可能的词典时，选择已保存的词典；关联只读取本机记录，不调用大模型。</span></div>`:''}
-      <section data-semantic-content>${editing?editMarkup(editing):`<div class="semantic-filter"><input type="search" data-semantic-search value="${esc(filter)}" placeholder="搜索表、字段、业务名称或含义" aria-label="搜索语义词典"><label><input type="checkbox" data-semantic-pending ${onlyPending?'checked':''}>只看待确认项</label></div><div data-semantic-entries></div>`}</section>`;
+      <section data-semantic-content>${editing?editMarkup(editing):`<div class="semantic-filter"><input type="search" data-semantic-search value="${esc(filter)}" placeholder="搜索表、字段、业务名称或含义" aria-label="搜索语义词典"><label><input type="checkbox" data-semantic-pending ${onlyPending?'checked':''}>只看待确认项</label>${delta?`<label><input type="checkbox" data-semantic-changes ${onlyChanges?'checked':''}>只看本次变更</label>`:''}</div><div data-semantic-entries></div>`}</section>`;
     if(!editing)list();
   }
   function schedule() {
@@ -80,7 +88,7 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
     if(busy)return;busy=true;
     root.querySelectorAll('button').forEach(button=>button.disabled=true);
     try {await work();}catch(error){feedback(error.message,true);}
-    finally {busy=false;root.querySelectorAll('button').forEach(button=>button.disabled=false);if(profile?.status==='building')$('[data-build-semantics]',root).disabled=true;}
+    finally {busy=false;root.querySelectorAll('button').forEach(button=>button.disabled=false);if(profile&&(profile.status==='building'||(profile.status==='ready'&&semanticSummary(profile).pending===0)))$('[data-build-semantics]',root).disabled=true;}
   }
   root.onclick=event=>{
     const button=event.target.closest('button');if(!button||busy)return;
@@ -98,7 +106,7 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
     if(button.dataset.semanticPreview){const entry=profile.entries.find(e=>e.id===button.dataset.semanticPreview);onPreview(entry.table,entry.name,modelId);}
   };
   root.oninput=event=>{if(event.target.matches('[data-semantic-search]')){filter=event.target.value;list();}};
-  root.onchange=event=>{if(event.target.matches('[data-semantic-pending]')){onlyPending=event.target.checked;list();}};
+  root.onchange=event=>{if(event.target.matches('[data-semantic-pending]')){onlyPending=event.target.checked;list();}if(event.target.matches('[data-semantic-changes]')){onlyChanges=event.target.checked;list();}};
   root.onsubmit=event=>{event.preventDefault();if(editing)void run(()=>save(false));};
   root.innerHTML='<p class="notice">正在读取模型语义词典…</p>';
   service=await api('/settings');

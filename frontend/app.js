@@ -135,7 +135,7 @@ function renderBackgroundTasks() {
 function renderContext() {
   const model=state.view.model, ctx=model?.context;
   $('#model-summary').innerHTML=model?`<div class="model-name">${esc(model.name)}</div><div class="model-state">${model.live?'● 本机实时连接':model.source==='demo'?'○ 示例数据结构 · 仅供体验':'○ 离线模型快照'}</div><div class="model-counts"><span><b>${Object.keys(ctx.tables).length}</b>表</span><span><b>${Object.values(ctx.tables).flat().length}</b>字段</span><span><b>${ctx.measures.length}</b>度量值</span></div>`:'<div class="model-name">尚未连接模型</div><div class="model-state">在 Power BI Desktop 打开报表后连接</div>';
-  if(model?.source==='desktop')$('#model-summary').insertAdjacentHTML('beforeend',`<button class="text-link semantic-open-button" data-open-semantics="${esc(model.id)}">${icon('book')}模型语义层 <small>${model.semantics?.status==='ready'?'已梳理 · 可审阅定义':model.semantics?.status==='building'?'正在后台梳理':'需要先梳理语义'}</small></button>`);
+  if(model?.source==='desktop')$('#model-summary').insertAdjacentHTML('beforeend',`<button class="text-link semantic-open-button" data-open-semantics="${esc(model.id)}">${icon('book')}模型语义层 <small>${model.semantics?.status==='ready'?'已梳理 · 可审阅定义':model.semantics?.can_answer?'已有语义可用 · 更新可稍后处理':model.semantics?.status==='building'?'正在后台梳理':'需要先梳理语义'}</small></button>`);
   if(!model) {$('#model-tree').innerHTML=`<div class="model-empty"><div class="empty-model-icon">${icon('database')}</div><strong>让模型成为对话的上下文</strong><p>表、字段、关系与度量值<br>连接后将显示在这里</p><button class="text-link" id="empty-connect">连接 Power BI ${icon('arrow-right')}</button></div>`;return;}
   renderConnectionStatus();
   const needle=$('#field-search').value.toLowerCase();
@@ -197,7 +197,7 @@ function showView() {
 }
 function newChat(mode=state.view.mode) {saveDraft();workspace.newChat(mode);showView();$('#prompt').focus();}
 function switchMode(mode) {saveDraft();workspace.switchMode(mode);showView();}
-function useModel(model) {saveDraft();workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready')void openSemantics(model.id).catch(error=>toast(error.message,true));}
+function useModel(model) {saveDraft();workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)void openSemantics(model.id).catch(error=>toast(error.message,true));}
 let historyRequest=0;
 async function reloadHistory() {
   const request=++historyRequest,conversations=await api('/conversations');if(request!==historyRequest)return;
@@ -305,7 +305,7 @@ async function send(e) {
     try {
       const dictionary=await api(`/models/${view.model.id}/semantics`);view.model.semantics=semanticSummary(dictionary);
       if(state.view!==view)return;
-      if(dictionary.status!=='ready'){await openSemantics(view.model.id);toast('先完成模型语义梳理，再继续这条需求');return;}
+      if(!view.model.semantics.can_answer){await openSemantics(view.model.id);toast('先建立初始语义词典，再继续这条需求');return;}
     } catch(error){toast(error.message,true);return;}
   }
   const payload={content,image_ids:images.map(img=>img.id),images,points:view.mode==='dax'?view.points:[],
@@ -317,9 +317,30 @@ async function send(e) {
 async function reviewWrite(id) {
   if(!available())return;
   const view=state.view,obj=view.messages.flatMap(m=>m.artifacts||[]).find(o=>o.id===id);if(!obj)return;
-  showModal('确认写入模型','REVIEW CHANGE',`<p class="notice gold">将${obj.kind==='dax_table'?'创建计算表':'写入度量值'} <strong>${esc(obj.name)}</strong>${obj.kind==='dax_measure'?'，存放于 '+esc(obj.home_table):''}。完成后请在 Desktop 按 Ctrl+S 保存报表。</p><div class="code-block"><pre><code>${esc(obj.expression)}</code></pre></div>${obj.kind==='dax_measure'?'<label class="check-label"><input type="checkbox" id="overwrite-measure">如果存在同名度量值，允许覆盖</label>':'<p class="field-help">仅支持新建计算表，不覆盖同名已有表。</p>'}<div class="modal-actions"><button class="secondary-button" id="cancel-write">取消</button><button class="primary-button" id="confirm-write">确认写入</button></div>`);
+  const measure=obj.kind==='dax_measure',tables=Object.keys(view.model.context.tables);
+  showModal('确认写入模型','REVIEW CHANGE',`<p class="notice gold" id="write-target-notice">将${measure?'写入度量值':'创建计算表'} <strong>${esc(obj.name)}</strong>${measure?'，存放于 '+esc(obj.home_table):''}。完成后请在 Desktop 按 Ctrl+S 保存报表。</p>${measure?`<div class="form-row"><label class="form-field">度量值名称<input id="write-measure-name" required maxlength="300" value="${esc(obj.name)}" autocomplete="off"></label><label class="form-field">存放表<select id="write-home-table" required><option value="" ${!tables.includes(obj.home_table)?'selected':''} disabled>请选择存放表</option>${tables.map(table=>`<option value="${esc(table)}" ${table===obj.home_table?'selected':''}>${esc(table)}</option>`).join('')}</select></label></div><p class="field-help">可修改名称，并选择模型中已有的表。确认后将按所选名称和存放表重新验证，再写入模型。</p>`:''}<div class="code-block"><pre><code>${esc(obj.expression)}</code></pre></div>${measure?'<label class="check-label"><input type="checkbox" id="overwrite-measure">如果所选表中存在同名度量值，允许覆盖</label>':'<p class="field-help">仅支持新建计算表，不覆盖同名已有表。</p>'}<div class="modal-actions"><button class="secondary-button" id="cancel-write">取消</button><button class="primary-button" id="confirm-write">确认写入</button></div>`);
+  if(measure){
+    const preview=()=>{$('#write-target-notice').textContent=`将写入度量值 ${$('#write-measure-name').value.trim()||'（未填写名称）'}，存放于 ${$('#write-home-table').value||'（未选择表）'}。完成后请在 Desktop 按 Ctrl+S 保存报表。`;};
+    $('#write-measure-name').oninput=preview;$('#write-home-table').onchange=preview;
+  }
   $('#cancel-write').onclick=()=>$('#modal').close();
-  $('#confirm-write').onclick=guard(async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='重新验证并写入…';try {const r=await post(`/artifacts/${id}/apply`,{overwrite:!!$('#overwrite-measure')?.checked});obj.applied_at=new Date().toISOString();$('#modal').close();view.model=await api(`/models/${view.model.id}`);if(state.view===view)render();toast(r.detail);}finally {b.disabled=false;b.textContent='确认写入';}});
+  $('#confirm-write').onclick=guard(async e=>{
+    const body={overwrite:!!$('#overwrite-measure')?.checked};
+    if(measure){
+      body.name=$('#write-measure-name').value.trim();body.home_table=$('#write-home-table').value;
+      if(!body.name||body.name.length>300){toast('请填写 1～300 字的度量值名称',true);$('#write-measure-name').focus();return;}
+      if(!tables.includes(body.home_table)){toast('请选择模型中已有的存放表',true);return;}
+    }
+    const b=e.currentTarget,fields=$$('input,select',$('#modal-body'));b.disabled=true;b.textContent='重新验证并写入…';fields.forEach(el=>el.disabled=true);
+    try {
+      const r=await post(`/artifacts/${id}/apply`,body);
+      Object.assign(obj,{name:r.name??obj.name,home_table:r.home_table??obj.home_table,
+        validation:r.validation??obj.validation,applied_at:r.applied_at||new Date().toISOString()});
+      $('#modal').close();
+      try {view.model=await api(`/models/${view.model.id}`);}catch(error){toast('已写入，模型信息读取失败，请同步模型：'+error.message,true);}
+      if(state.view===view)render();toast(r.detail);
+    }finally {b.disabled=false;b.textContent='确认写入';fields.forEach(el=>el.disabled=false);}
+  });
 }
 
 $('#composer-form').onsubmit=send;

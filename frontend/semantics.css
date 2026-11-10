@@ -26,3 +26,10 @@
 .semantic-feedback{color:#648b72;background:#f2f8f4}
 .semantic-open-button{font-size:10px;margin-top:13px;line-height:1.7;max-width:100%;text-align:left}
 .semantic-open-button small{font-size:9px;color:#a3aab1}
+.semantic-delta{padding:12px 15px;border:1px solid #e8dfc0;border-radius:7px;background:#fffdf5;font-size:11px;color:#867641;line-height:1.9}
+.semantic-delta strong{font-weight:550}
+.semantic-delta p{margin:5px 0}
+.semantic-delta summary{cursor:pointer}
+.semantic-delta ul{padding-left:20px;max-height:220px;overflow:auto}
+.semantic-delta li{margin:6px 0;overflow-wrap:anywhere}
+.semantic-change-note{color:#a18b40;background:#fff9e8;border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.8}

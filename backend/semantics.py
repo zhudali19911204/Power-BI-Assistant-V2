@@ -21,7 +21,8 @@ from .cancellation import check_cancelled
 from .engine.llm.diagnostics import GenerationReport
 from .generation import generation_recorder
 from .values import ValueEvidence, codes_in
-from .reports import canonical, normalize_name, normalize_path, same_report, schema_signature
+from .reports import normalize_name, normalize_path, same_report, schema_signature
+from .semantic_diff import reconcile, source_snapshot
 
 
 SEMANTIC_RULES = '''语义依据规则：表列名、数据类型、关系、公式和取值是模型事实；字段业务含义、单位和业务别名可能尚未确认。
@@ -72,6 +73,12 @@ def object_id(kind, table, name):
     return hashlib.sha256(encode([kind, table, name]).encode()).hexdigest()[:24]
 
 
+def can_answer(profile):
+    return profile['status']=='ready' or bool(profile.get('has_history')) or any(
+        e['state'] in ('candidate','confirmed') or e.get('previous_definition')
+        for e in profile['entries'])
+
+
 def inventory(ctx):
     entries = []
     for table, columns in ctx.tables.items():
@@ -112,20 +119,73 @@ class SemanticService:
         with self.lock:
             row=self.db.one('SELECT * FROM model_semantics WHERE model_id=?',(model['id'],))
             if row and row['fingerprint']==model['fingerprint']:
-                return json.loads(row['payload'])
+                profile=json.loads(row['payload'])
+                if 'source_snapshot' not in profile:
+                    profile['source_snapshot']=source_snapshot(model['context'])
+                    self._store(model['id'],profile)
+                return profile
             if ctx is None:
                 from .powerbi import context_from_dict
                 ctx=context_from_dict(model['context'])
             entries=inventory(ctx)
-            previous={e['id']:e for e in json.loads(row['payload'])['entries']} if row else {}
-            for entry in entries:
-                old=previous.get(entry['id'])
-                if old and old['state']=='confirmed' and all(old['facts'].get(k)==v for k,v in entry['facts'].items()):
-                    entry.update({k:old[k] for k in ('business_name','meaning','role','unit','aliases','state','source','reviewed_at')})
+            previous=json.loads(row['payload']) if row else None
             profile={'model_id':model['id'],'fingerprint':model['fingerprint'],'status':'inventory',
                      'stage':'已整理模型事实，等待语义梳理','error':'','entries':entries,
                      'overview':'字段名和结构已读取；业务含义和单位仍需梳理与审阅。',
-                     'coverage':0,'metadata_status':'pending','updated_at':now()}
+                     'coverage':0,'metadata_status':'pending','updated_at':now(),
+                     'source_snapshot':source_snapshot(model['context'])}
+            if previous:
+                old={e['id']:e for e in previous['entries']}
+                for entry in entries:
+                    entry['facts']={**old.get(entry['id'],{}).get('facts',{}),**entry['facts']}
+                self._align(profile,entries,model,previous=previous)
+            self._store(model['id'],profile)
+            return profile
+
+    def _align(self,profile,entries,model,*,previous=None,before=None,metadata_read=False):
+        previous=previous or profile
+        before=before if before is not None else previous.get('source_snapshot',source_snapshot(model['context']))
+        has_history=bool(previous.get('has_history')) or any(
+            e['state'] in ('candidate','confirmed') or e.get('previous_definition') for e in previous['entries'])
+        entries,changes,removed=reconcile(entries,previous['entries'],before,model['context'])
+        # Structural and extended metadata reads happen in separate steps. Accumulate
+        # their deltas instead of hiding an earlier change when a later read finds one.
+        items={item['id']:item for item in previous.get('changes',{}).get('items',[])} if previous is profile else {}
+        items.update({item['id']:item for item in changes['items']})
+        for entry in entries:
+            if entry['state']=='unresolved' and entry.get('change'):
+                items[entry['id']]={**{k:entry[k] for k in ('id','kind','table','name')},
+                    'change':entry['change']['kind'],'reasons':entry['change']['reasons']}
+        changes.update(items=list(items.values()),**{kind:sum(item['change']==kind for item in items.values())
+            for kind in ('added','modified','removed')})
+        profile['entries']=entries
+        profile['has_history']=has_history
+        if any(changes[k] for k in ('added','modified','removed')) or previous is not profile:
+            profile['changes']=changes
+            profile['removed_entries']=list({e['id']:e for e in
+                ((profile.get('removed_entries',[]) if previous is profile else [])+removed)}.values())
+        pending=[e['id'] for e in entries if e['state']=='unresolved']
+        known=len(entries)-len(pending)
+        profile.update(coverage=known,pending_ids=pending,source_snapshot=source_snapshot(model['context']))
+        if metadata_read:profile.update(metadata_status='read',error='')
+        if profile['status']!='building':
+            ready=not pending and profile.get('metadata_status')=='read'
+            profile.update(status='ready' if ready else 'inventory',
+                stage=f'已保留 {known} 项语义，{len(pending)} 项待增量梳理' if pending else
+                      f'已保留全部 {known} 项语义，无需重复梳理' if ready else '已保留语义，等待核对模型元数据')
+        return profile
+
+    def _metadata(self,model,expected,metadata):
+        from .powerbi import context_from_dict
+        with self.lock:
+            profile=self.get(model['id'])
+            if profile['fingerprint']!=expected:raise RuntimeError('模型结构已变化，旧语义梳理任务已停止')
+            entries=inventory(context_from_dict(model['context']))
+            prior={e['id']:e for e in profile['entries']}
+            for entry in entries:
+                entry['facts']={**prior.get(entry['id'],{}).get('facts',{}),**entry['facts'],
+                    **metadata.get((entry['kind'],entry['table'],entry['name']),{})}
+            self._align(profile,entries,model,metadata_read=True)
             self._store(model['id'],profile)
             return profile
 
@@ -140,10 +200,11 @@ class SemanticService:
 
     def summary(self,model_id,expected=None):
         row=self.db.one('SELECT payload,fingerprint FROM model_semantics WHERE model_id=?',(model_id,))
-        if not row or (expected and row['fingerprint']!=expected):return {'status':'inventory','total':0,'confirmed':0,'coverage':0,'stage':'等待语义梳理'}
+        if not row or (expected and row['fingerprint']!=expected):return {'status':'inventory','total':0,'confirmed':0,'coverage':0,'stage':'等待语义梳理','can_answer':False}
         p=json.loads(row['payload'])
         return {k:p[k] for k in ('status','stage','coverage')} | {
-            'total':len(p['entries']),'confirmed':sum(e['state']=='confirmed' for e in p['entries'])}
+            'total':len(p['entries']),'confirmed':sum(e['state']=='confirmed' for e in p['entries']),
+            'can_answer':can_answer(p),'pending':sum(e['state']=='unresolved' for e in p['entries'])}
 
     def start(self,model_id,settings,profile_id=None):
         with self.lock:
@@ -152,14 +213,10 @@ class SemanticService:
             model=self.powerbi.get(model_id)
             if model['source']!='desktop':
                 raise HTTPException(409,'语义梳理需要连接真实 Desktop 模型')
-            provider=settings.provider(profile_id) if profile_id else settings.provider()
-            covered=profile.get('coverage',0)
-            resume=covered if profile['status']=='error' and 0<=covered<=len(profile['entries']) and all(
-                e['state'] in ('candidate','confirmed') for e in profile['entries'][:covered]) else 0
             all_ids=[e['id'] for e in profile['entries']]
-            pending=profile.get('pending_ids') if profile['status'] in ('inventory','error') else None
-            if pending is None:pending=all_ids[resume:]
-            pending=[key for key in pending if key in all_ids]
+            pending=[e['id'] for e in profile['entries'] if e['state']=='unresolved']
+            if not pending and profile['status']=='ready':return profile
+            provider=settings.provider(profile_id) if profile_id else settings.provider()
             resume=len(all_ids)-len(pending)
             profile.update(status='building',stage='正在读取模型描述、格式和字段来源',error='',resume_from=resume,
                            pending_ids=pending,diagnostics=[])
@@ -180,8 +237,9 @@ class SemanticService:
             row['context']=json.loads(row['context'])
             row['report']=json.loads(row['report_payload']) if row['report_payload'] else row['profile'].get('report_identity',{})
             row['signature']=schema_signature(row['context'])
-        return [r for r in rows if r['profile']['status']!='building' and
-                any(e['state'] in ('candidate','confirmed') for e in r['profile']['entries'])]
+        # Only validated, completed batches are stored, so even a running revision
+        # can supply preserved definitions and its remaining pending objects.
+        return [r for r in rows if can_answer(r['profile'])]
 
     def _claim_legacy(self,source,history,report):
         if not report.get('name') or source['report'].get('name'):return
@@ -195,19 +253,15 @@ class SemanticService:
             self._store(old['model_id'],old['profile'])
 
     def _reuse_from(self,model,profile,source,matched_by,metadata_read=True):
-        previous={e['id']:e for e in source['profile']['entries']}
-        old_context=source['context'];new_context=model['context']
-        changed_sources={name for name,query in new_context.get('table_queries',{}).items()
-                         if old_context.get('table_queries',{}).get(name)!=query}
-        shared_changed=old_context.get('shared_expressions',{})!=new_context.get('shared_expressions',{})
-        reused=0
-        for entry in profile['entries']:
-            old=previous.get(entry['id'])
-            unchanged=old and canonical(old['facts'])==canonical(entry['facts']) and entry['table'] not in changed_sources and not shared_changed
-            if not unchanged:continue
-            if not entry.get('reviewed_at'):
-                entry.update({k:old[k] for k in ('business_name','meaning','role','unit','aliases','state','source','reviewed_at')})
-            if entry['state'] in ('candidate','confirmed'):reused+=1
+        edits={e['id']:e for e in profile['entries'] if e.get('reviewed_at')}
+        if not metadata_read:
+            prior={e['id']:e for e in source['profile']['entries']}
+            for entry in profile['entries']:
+                entry['facts']={**prior.get(entry['id'],{}).get('facts',{}),**entry['facts']}
+        self._align(profile,profile['entries'],model,previous=source['profile'],before=source['context'],metadata_read=metadata_read)
+        # Explicit edits to the destination dictionary win over historical association.
+        profile['entries']=[edits.get(e['id'],e) for e in profile['entries']]
+        reused=profile['changes']['preserved']
         pending=[e['id'] for e in profile['entries'] if e['state']=='unresolved']
         name=model.get('report',{}).get('name') or source['name']
         ready=not pending and metadata_read
@@ -228,6 +282,7 @@ class SemanticService:
             if identity:profile['connection_identity']=identity
             profile['report_identity']=model.get('report',{})
             self._store(model['id'],profile)
+            if profile['status']=='building' and model['id'] in self.jobs:return profile
         # Connecting only prepares local facts. The workbench names the destination service;
         # its explicit build action starts interpretation by that service.
         metadata_read=False
@@ -236,10 +291,7 @@ class SemanticService:
                 with self.powerbi.lock:
                     current,_=self.powerbi.require_live(model['id'],unchanged=True)
                     metadata=LiveDesktopSource(current['port']).semantic_metadata()
-                updates={e['id']:{'facts':{**e['facts'],**metadata.get((e['kind'],e['table'],e['name']),{})}}
-                         for e in profile['entries']}
-                profile=self._merge(model['id'],model['fingerprint'],updates,metadata_status='read',
-                    stage=profile['stage'] if profile['status']=='ready' else '本地模型事实已整理，可选择模型服务梳理业务含义')
+                profile=self._metadata(model,model['fingerprint'],metadata)
                 metadata_read=True
             except Exception as exc:
                 profile=self._merge(model['id'],model['fingerprint'],stage='模型事实读取未完成，可重新连接或重试梳理',
@@ -269,8 +321,9 @@ class SemanticService:
                 named=[r for r in history if same_report(report,r['report'])]
                 paths={normalize_path(r['report'].get('path')) for r in named if r['report'].get('path')}
                 if report.get('path') or len(paths)<=1:
-                    source=next((r for r in named if r['signature']==signature and r['profile']['status']=='ready'),None)
-                    source=source or next(iter(named),None)
+                    # The newest revision may contain corrections or an unfinished delta.
+                    # An older exact schema must not resurrect superseded definitions.
+                    source=next(iter(named),None)
                     if source:matched_by='report'
                 if not source and identity:
                     source=next((r for r in exact if r['profile'].get('connection_identity')==identity
@@ -314,14 +367,9 @@ class SemanticService:
             with self.powerbi.lock:
                 model,ctx=self.powerbi.require_live(model_id,unchanged=True)
                 metadata=LiveDesktopSource(model['port']).semantic_metadata()
-            p=self.get(model_id)
-            updates={}
-            for entry in p['entries']:
-                facts={**entry['facts'],**metadata.get((entry['kind'],entry['table'],entry['name']),{})}
-                updates[entry['id']]={'facts':facts}
-            p=self._merge(model_id,expected,updates,metadata_status='read')
+            p=self._metadata(model,expected,metadata)
             entries=p['entries'];total=len(entries)
-            pending=p.get('pending_ids',[e['id'] for e in entries[p.get('resume_from',0):]])
+            pending=[e['id'] for e in entries if e['state']=='unresolved']
             work=[e for e in entries if e['id'] in pending];done=total-len(work)
             for start in range(0,len(work),20):
                 check_cancelled()
@@ -336,8 +384,10 @@ class SemanticService:
                     '返回 JSON {"entries":[{"id":"...","business_name":"中文业务名",'
                     '"meaning":"说明含义、推断依据及仍未知的内容","role":"编号/分类/日期/数值/指标/表等",'
                     '"unit":"只填写有明确依据的单位，否则留空","aliases":["合理业务别名"]}]}。')
+                batch_tables={e['table'] for e in batch}
                 prompt=encode({'objects':[{k:e[k] for k in ('id','kind','table','name','facts')} for e in batch],
-                               'relationships':[asdict(r) for r in ctx.relationships]})
+                               'relationships':[asdict(r) for r in ctx.relationships
+                                   if r.from_table in batch_tables or r.to_table in batch_tables]})
                 ids={e['id'] for e in batch}
                 messages=[ChatMessage('user',prompt)]
                 for attempt in range(2):
@@ -391,6 +441,10 @@ class SemanticService:
             if any(not alias.strip() or len(alias)>100 for alias in body.aliases):raise HTTPException(422,'业务别名每项为 1～100 字')
             entry.update(**body.model_dump(exclude={'confirmed'}),state='confirmed' if body.confirmed else 'candidate',
                          source='用户确认' if body.confirmed else '用户编辑 · 待确认',reviewed_at=now())
+            p['pending_ids']=[e['id'] for e in p['entries'] if e['state']=='unresolved']
+            p['coverage']=len(p['entries'])-len(p['pending_ids'])
+            if not p['pending_ids'] and p.get('metadata_status')=='read' and p['status']!='building':
+                p.update(status='ready',stage='语义词典已更新，候选定义仍待审阅',error='')
             if p['entries'] and all(e['state']=='confirmed' for e in p['entries']):
                 p.update(status='ready',coverage=len(p['entries']),stage='全部模型业务定义已由用户确认',error='')
             self._store(model_id,p)
@@ -398,7 +452,7 @@ class SemanticService:
 
     def require_ready(self,model,ctx):
         profile=self.ensure(model,ctx)
-        if profile['status']!='ready':
+        if not can_answer(profile):
             raise HTTPException(409,'请先完成模型语义梳理：打开右侧“模型语义层”查看进度或开始梳理，再进行 DAX 和数据分析')
         return profile
 
@@ -406,13 +460,20 @@ class SemanticService:
         p=self.get(model_id)
         entries=[{k:e[k] for k in ('kind','table','name','business_name','meaning','role','unit','aliases','state','source')}
                  | {key:e['facts'].get(key,'') for key in ('description','format_string','actual_dtype','source_column')}
+                 | ({'semantic_change':e['change']} if e['state']=='unresolved' and e.get('change') else {})
                  for e in sorted(p['entries'],key=lambda e:e['state']!='confirmed')]
         selected=[];size=0
         for entry in entries:
             text=encode(entry)
             if size+len(text)>50000:break
             selected.append(entry);size+=len(text)
-        return SEMANTIC_RULES+'\n模型语义词典（未确认建议不可视为事实）：\n'+encode({'entries':selected,'omitted':len(entries)-len(selected)})
+        return (SEMANTIC_RULES+'\n增量语义使用规则：词典更新未完成时仍正常回答，使用当前模型结构与未变化的定义。'
+            '新增或变更条目的历史确认已失效；不要套用旧含义、单位或别名。只有问题依赖未知业务含义时才逐项澄清，'
+            '或根据当前模型事实和实际查值回答并说明不确定性，不要求用户先重建整份语义层。'
+            'metadata_status 不是 read 时，扩展元数据尚未核对完整，沿用的历史解释需注明此限制。'+'\n模型语义词典（未确认建议不可视为事实）：\n'+encode(
+                {'status':p['status'],'metadata_status':p.get('metadata_status','pending'),
+                 'pending':sum(e['state']=='unresolved' for e in p['entries']),
+                 'entries':selected,'omitted':len(entries)-len(selected)}))
 
     def bindings(self,conversation_id):
         return self.db.all('SELECT literal,table_name,column_name FROM conversation_bindings WHERE conversation_id=?',(conversation_id,))

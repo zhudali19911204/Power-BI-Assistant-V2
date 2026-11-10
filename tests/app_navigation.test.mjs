@@ -18,13 +18,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务',
     reasoning_level:'low',reasoning_control:{supported:true}};
   const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
-    context:{tables:{事实表:[{name:'金额',dtype:'double'}]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
+    context:{tables:{事实表:[{name:'金额',dtype:'double'}],度量表:[]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
   const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
   const imageMeta={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),mime_type:'image/png',width:80,height:40,size:100};
-  const uploads=[],cancellations=[];
+  const uploads=[],cancellations=[],writes=[];let failWrite=true;
   const intervals=[];let connectionStatus='connected',connectionPort=51413;
   let semanticProfile={model_id:'model',status:'inventory',stage:'本地事实已整理',error:'',coverage:0,entries:[{
-    id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'candidate',business_name:'金额',
+    id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'unresolved',business_name:'金额',
     meaning:'业务口径待确认',role:'数值',unit:'',aliases:[]}]};
   const fieldProfile={model_id:'model',table:'事实表',column:'金额',dtype:'double',scope:'全模型范围，未应用报表筛选',
     statistics:{row_count:10,distinct_count:3,blank_count:1,empty_string_count:null,matched_distinct_count:3},
@@ -43,7 +43,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
       port:connectionPort,connection:{status:connectionStatus,detail:'连接状态测试'}});
     if(path==='/api/models/model/semantics')return json(semanticProfile);
     if(path==='/api/models/model/semantics/build'){
-      semanticProfile={...semanticProfile,status:'ready',stage:'测试语义完成',coverage:1};
+      semanticProfile={...semanticProfile,status:'ready',stage:'测试语义完成',coverage:1,
+        entries:semanticProfile.entries.map(e=>({...e,state:'candidate'}))};
       model.semantics={...model.semantics,status:'ready',coverage:1};return json(semanticProfile);
     }
     if(path==='/api/models/model/fields/preview'){
@@ -56,6 +57,15 @@ test('actual app navigation keeps background streams, drafts and independent sen
       conversations.unshift(conversation);return json(conversation);
     }
     if(path==='/api/conversations')return json(conversations);
+    if(path==='/api/artifacts/measure-test/apply'){
+      const body=JSON.parse(opts.body);writes.push(body);
+      if(failWrite){failWrite=false;return new Response(JSON.stringify({detail:'测试：目标度量验证失败'}),{status:409});}
+      const result={ok:true,detail:'已写入所选表',name:body.name,home_table:body.home_table,applied_at:'2026-11-10T08:00:00Z',
+        validation:{ok:true,run_verified:true,errors:[],warnings:[]}};
+      for(const rows of messages.values())for(const message of rows)for(const artifact of message.artifacts||[])
+        if(artifact.id==='measure-test')Object.assign(artifact,result);
+      return json(result);
+    }
     const id=path.split('/')[3];
     if(path.endsWith('/cancel')){
       cancellations.push({id,...JSON.parse(opts.body)});
@@ -72,12 +82,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
         if(event.type==='start')this.messageId=event.message_id;
         if(event.type==='clarification')this.clarification=event.clarification;
         if(event.type==='field_previews')this.field_previews=event.records;
+        if(event.type==='artifacts')this.artifacts=event.artifacts;
         if(event.type==='delta')this.text+=event.text;
         if(event.type==='done'){
           const previous=messages.get(id)||[];
           previous.forEach(m=>{if(m.clarification)m.clarification.answered=true;});
           messages.set(id,[...previous,{role:'user',status:'complete',content:body.content,images:body.image_ids?.length?[imageMeta]:[],artifacts:[]},
-            {id:this.messageId||'answer-'+id,role:'assistant',status:'complete',content:this.text,artifacts:[],analysis:[],
+            {id:this.messageId||'answer-'+id,role:'assistant',status:'complete',content:this.text,artifacts:this.artifacts||[],analysis:[],
               clarification:this.clarification||null,field_previews:this.field_previews||[]}]);
         }
         controller.enqueue(new TextEncoder().encode(JSON.stringify(event)+'\n'));
@@ -179,8 +190,24 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.ok(!$('#messages').textContent.includes('第一段分析'));
     assert.ok(document.querySelector('.history-task.complete'));
     dax.emit({type:'start',message_id:'answer-c2'});dax.emit({type:'delta',text:'DAX 回复。'});
+    dax.emit({type:'artifacts',artifacts:[{id:'measure-test',kind:'dax_measure',name:'候选金额',home_table:'事实表',
+      expression:'SUM(事实表[金额])',validation:{ok:true,run_verified:true,errors:[],warnings:[]}}]});
     dax.emit({type:'done'});dax.controller.close();await tick();await tick();await tick();
     assert.equal($('#send-button').disabled,false);assert.ok($('#messages').textContent.includes('DAX 回复。'));
+    await click('[data-apply="measure-test"]');
+    assert.equal($('#write-measure-name').value,'候选金额');assert.equal($('#write-home-table').value,'事实表');
+    $('#write-measure-name').value='   ';await click('#confirm-write');assert.equal(writes.length,0);
+    $('#write-measure-name').value='自定义金额';$('#write-measure-name').dispatchEvent(new window.Event('input'));
+    $('#write-home-table').value='度量表';$('#write-home-table').dispatchEvent(new window.Event('change'));
+    $('#overwrite-measure').checked=true;
+    assert.ok($('#write-target-notice').textContent.includes('自定义金额，存放于 度量表'));
+    await click('#confirm-write');
+    assert.equal(modal.open,true);assert.equal($('#confirm-write').disabled,false);
+    assert.equal($('#write-measure-name').value,'自定义金额');assert.equal($('#write-home-table').value,'度量表');
+    await click('#confirm-write');
+    assert.deepEqual(writes.at(-1),{name:'自定义金额',home_table:'度量表',overwrite:true});
+    assert.equal(modal.open,false);assert.ok($('#messages').textContent.includes('自定义金额'));
+    assert.ok($('[data-apply="measure-test"]').textContent.includes('已写入模型'));
     await click('[data-conversation="c1"]');
     assert.equal($('#page-title').textContent,'数据分析助手');
     assert.ok($('#messages').textContent.includes('第一段分析。后台续写。'));
@@ -231,6 +258,19 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('#stop-button').disabled,true);assert.equal($('#send-button').disabled,false);
     assert.ok($('#messages').textContent.includes('这段文字需要保留。'));
     assert.ok($('#messages').textContent.includes('已中止'));
+
+    // A stale/unfinished delta must never block sending when a historical dictionary exists.
+    for(const status of ['inventory','building','error']){
+      semanticProfile={...semanticProfile,status,coverage:0,has_history:true,entries:semanticProfile.entries.map(e=>({
+        ...e,state:'unresolved',meaning:'',previous_definition:{meaning:'原有金额定义',state:'confirmed'}}))};
+      await click('[data-open-semantics]');await click('#modal-close');
+      const previous=streams.get('c1');await send('使用历史语义继续提问 '+status);
+      const current=streams.get('c1');assert.notEqual(current,previous);
+      assert.equal(current.body.content,'使用历史语义继续提问 '+status);
+      assert.equal(modal.open,false);assert.equal($('#prompt').value,'');
+      current.emit({type:'start',message_id:'delta-'+status});current.emit({type:'delta',text:'按可用语义回答。'});
+      current.emit({type:'done'});current.controller.close();await tick();await tick();await tick();
+    }
   } finally {
     Object.defineProperty(selectProto,'value',valueDescriptor);
     for(const [key,descriptor] of Object.entries(savedGlobals)){

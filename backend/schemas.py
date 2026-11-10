@@ -106,6 +106,17 @@ class MessageInput(BaseModel):
 
 class ApplyInput(BaseModel):
     overwrite: bool = False
+    name: str | None = Field(default=None, min_length=1, max_length=300)
+    home_table: str | None = Field(default=None, min_length=1, max_length=300)
+
+    @field_validator('name','home_table')
+    @classmethod
+    def write_target(cls,value):
+        if value is None:return value
+        value=value.strip()
+        if not value or any(ord(c)<32 for c in value):
+            raise ValueError('名称和存放表不能为空，也不能包含控制字符')
+        return value
 
 
 class CancelGenerationInput(BaseModel):

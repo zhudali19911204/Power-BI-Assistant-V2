@@ -93,7 +93,7 @@ test('real values remain accessible and dictionary text cannot create executable
 });
 
 test('summary never conflates inferred entries with user-confirmed definitions',()=>{
-  assert.deepEqual(semanticSummary(profile()),{status:'ready',stage:'语义梳理完成',coverage:2,total:2,confirmed:0});
+  assert.deepEqual(semanticSummary(profile()),{status:'ready',stage:'语义梳理完成',coverage:2,total:2,confirmed:0,can_answer:true,pending:1});
 });
 
 test('a matched report displays its saved name and path without starting another build',async()=>{
@@ -121,4 +121,37 @@ test('legacy dictionary selection reuses a concrete saved model without calling 
     assert.equal(f.root.querySelector('[data-semantic-history]'),null);
     assert.equal(f.calls.filter(c=>c.path.endsWith('/build')).length,0);
   } finally {f.manager.dispose();}
+});
+
+test('incremental workbench lists changes and only offers to build pending objects',async()=>{
+  const f=await fixture(profile({status:'inventory',coverage:1,has_history:true,entries:[entry('one'),entry('two',{
+    name:'New Category',state:'unresolved',meaning:'',change:{kind:'added',reasons:['新增对象']}})],
+    changes:{preserved:1,added:1,modified:0,removed:1,items:[
+      {id:'two',kind:'column',table:'成本中心',name:'New Category',change:'added',reasons:['新增对象']},
+      {id:'removed',kind:'column',table:'成本中心',name:'<Old>',change:'removed',reasons:['对象已删除']}]}}));
+  try {
+    assert.ok(f.root.textContent.includes('保留 1 项 · 新增 1 项 · 修改或受影响 0 项 · 删除 1 项'));
+    assert.ok(f.root.textContent.includes('可继续提问'));
+    assert.ok(f.root.querySelector('[data-build-semantics]').textContent.includes('仅梳理待更新 1 项'));
+    assert.equal(f.root.querySelector('Old'),null);
+    const filter=f.root.querySelector('[data-semantic-changes]');filter.checked=true;
+    filter.dispatchEvent(new f.window.Event('change',{bubbles:true}));
+    assert.equal(f.root.querySelectorAll('[data-semantic-entry]').length,1);
+    assert.ok(f.root.querySelector('[data-semantic-entry]').textContent.includes('New Category'));
+  } finally {f.manager.dispose();}
+});
+
+test('a fully current dictionary cannot accidentally trigger a full rebuild',async()=>{
+  const f=await fixture(profile({entries:[entry('one')],coverage:1}));
+  try {
+    assert.equal(f.root.querySelector('[data-build-semantics]').disabled,true);
+    assert.ok(f.root.querySelector('[data-build-semantics]').textContent.includes('语义层已是最新'));
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/build')).length,0);
+  } finally {f.manager.dispose();}
+});
+
+test('history keeps chat available when all current entries await semantic updates',()=>{
+  const summary=semanticSummary(profile({status:'error',has_history:true,coverage:0,
+    entries:[entry('one',{state:'unresolved',previous_definition:{meaning:'历史解释',state:'confirmed'}})]}));
+  assert.equal(summary.can_answer,true);assert.equal(summary.confirmed,0);assert.equal(summary.pending,1);
 });
