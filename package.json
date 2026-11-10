@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --test-isolation=none tests/stream.test.mjs tests/messages.test.mjs tests/markdown.test.mjs tests/calibration.test.mjs tests/analysis.test.mjs tests/models.test.mjs tests/workspaces.test.mjs tests/app_navigation.test.mjs tests/clarification.test.mjs tests/fields.test.mjs tests/semantics.test.mjs tests/images.test.mjs"
+    "test": "node --test --test-isolation=none tests/stream.test.mjs tests/messages.test.mjs tests/markdown.test.mjs tests/calibration.test.mjs tests/analysis.test.mjs tests/models.test.mjs tests/workspaces.test.mjs tests/app_navigation.test.mjs tests/clarification.test.mjs tests/fields.test.mjs tests/semantics.test.mjs tests/images.test.mjs tests/connections.test.mjs"
   },
   "devDependencies": {
     "linkedom": "^0.18.12",

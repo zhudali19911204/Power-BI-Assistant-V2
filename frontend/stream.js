@@ -5,7 +5,7 @@ export async function readEvents(response, onEvent, {idleTimeout=90000}={}) {
   const process=line=>{
     if(!line.trim())return;
     const event=JSON.parse(line);
-    if(event.type==='done'||event.type==='error'||event.type==='background')terminal=true;
+    if(event.type==='done'||event.type==='error'||event.type==='background'||event.type==='cancelled')terminal=true;
     onEvent(event);
   };
   try {

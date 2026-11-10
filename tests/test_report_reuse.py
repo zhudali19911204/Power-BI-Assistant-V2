@@ -160,7 +160,7 @@ def test_ambiguous_legacy_reports_require_selection_instead_of_arbitrary_reuse(s
     assert new['semantics']['status']=='inventory'
     response=client.post(f"/api/models/{new['id']}/semantics/reuse",json={'source_model_id':first['id']})
     assert response.status_code==200 and response.json()['status']=='ready'
-    assert not app.state.powerbi.get(second['id'])['report']
+    assert not app.state.powerbi.get(second['id'])['report'].get('name')
 
 
 def test_changed_fields_preserve_unchanged_definitions_and_only_build_pending_objects(setup,monkeypatch):

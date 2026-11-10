@@ -16,6 +16,7 @@ const paths = {
   target:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
   sparkles:'<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Zm7-2v4m-2-2h4"/>',
   'arrow-up':'<path d="M12 19V5m-6 6 6-6 6 6"/>',
+  stop:'<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/>',
   'arrow-right':'<path d="M4 12h16m-6-6 6 6-6 6"/>',
   'arrow-left':'<path d="M20 12H4m6-6-6 6 6 6"/>',
   layers:'<path d="m12 3 10 5-10 5L2 8l10-5ZM2 12l10 5 10-5M2 16l10 5 10-5"/>',

@@ -17,6 +17,10 @@ from .engine.context.live_source import _LiveSession,find_adomd_dll,find_instanc
 from .engine.llm.base import ChatMessage
 from .streaming import completion_events,task_events,generation_timeout
 from .images import IMAGE_RULES, multimodal_error
+from .engine.llm.diagnostics import GenerationReport
+from .generation import generation_recorder
+from .cancellation import GenerationCancelled, CANCELLED_TEXT, check_cancelled, close_cancelled_provider
+from .reconnection import transport_disconnected
 
 logger=logging.getLogger(__name__)
 ROW_LIMIT=200
@@ -172,13 +176,23 @@ class AnalysisService:
         started=time.monotonic()
         try:
             dax=readonly_query(query)
-            with self.powerbi.lock:
-                current,_=self.powerbi.require_live(model['id'],unchanged=True)
-                dll=find_adomd_dll(find_instances())
-                if not dll:raise HTTPException(409,'未找到 Desktop 的 ADOMD 客户端')
-                with _LiveSession(current['port'],dll) as session:
-                    result['run_verified']=True
-                    data=session.query(dax,max_rows=ROW_LIMIT+1)
+            for read_attempt in range(2):
+                try:
+                    with self.powerbi.lock:
+                        current,_=self.powerbi.require_live(model['id'],unchanged=True)
+                        dll=find_adomd_dll(find_instances())
+                        if not dll:raise HTTPException(409,'未找到 Desktop 的 ADOMD 客户端')
+                        with _LiveSession(current['port'],dll) as session:
+                            result['run_verified']=True
+                            data=session.query(dax,max_rows=ROW_LIMIT+1)
+                    if read_attempt:result['warnings'].append('查询连接中断后已自动重连并重试一次')
+                    break
+                except GenerationCancelled:raise
+                except Exception as exc:
+                    check_cancelled()
+                    if not transport_disconnected(exc):raise
+                    self.powerbi.reconnector.lost(model['id'])
+                    if read_attempt:raise
             columns=list(data[0]) if data else []
             if len(columns)>30:raise ValueError('结果超过 30 列，请缩小分析范围')
             result['columns']=columns
@@ -201,18 +215,21 @@ class AnalysisService:
             result['ok']=True
         except Exception as exc:
             result['error']=str(exc.detail if isinstance(exc,HTTPException) else exc).splitlines()[0][:350]
-            result['connection_error']=isinstance(exc,HTTPException)
+            result['connection_error']=isinstance(exc,HTTPException) or transport_disconnected(exc)
         result['seconds']=round(time.monotonic()-started,3)
         return result
 
     def stream(self,conv,model,ctx,body,provider,lock):
         message_id=uid();display='';saved=False;error='本次分析已中断，请重新发送'
+        cancelled=False
         started=time.monotonic();evidence=[];field_records=[]
         total_timeout=generation_timeout(provider)
         deadline=started+total_timeout
+        call_counts={}
         self.chat.active_messages[conv['id']]=message_id
 
         def remaining(limit):
+            check_cancelled()
             seconds=deadline-time.monotonic()
             if seconds<=0:raise HTTPException(504,f'已达到本轮分析总时限（{int(total_timeout)} 秒），已保留文字及查询结果；可在模型服务设置中延长总时限后重试')
             self.chat.progress.get(message_id,{})['elapsed']=int(time.monotonic()-started)
@@ -225,6 +242,12 @@ class AnalysisService:
         def save_partial():
             self.db.execute('UPDATE messages SET content=? WHERE id=?',(display,message_id))
 
+        def generate(stage,system,turns,*,report=None,**options):
+            call_counts[stage]=call_counts.get(stage,0)+1
+            return completion_events(provider,system,turns,timeout=remaining(total_timeout),report=report,
+                on_report=generation_recorder(self.db,provider,stage=stage,attempt=call_counts[stage],
+                    message_id=message_id,model_id=model['id']),**options)
+
         def persist_query(query_id,label,title,dax,result,attempt):
             record={**result,'id':query_id,'label':label,'title':title,'dax':dax,
                     'attempt':attempt,'created_at':now()}
@@ -235,12 +258,14 @@ class AnalysisService:
         def request_plan(planning_messages):
             for attempt in range(2):
                 raw=''
-                for event in completion_events(provider,planner,planning_messages,max_tokens=6000,timeout=remaining(total_timeout)):
+                report=GenerationReport()
+                for event in generate('analysis_plan',planner,planning_messages,report=report):
                     if event['type']=='delta':
                         raw+=event['text']
                         if len(raw)>40000:raise HTTPException(422,'查询计划过长，请缩小分析范围')
                     elif event['type']=='heartbeat':yield encode(event)+'\n'
                     elif event['type']=='status':yield status(event['text'])
+                if report.interruption():raise HTTPException(422,report.interruption())
                 try:return parse_plan(raw)
                 except ValueError:
                     if attempt:raise HTTPException(422,'模型未返回有效查询计划，请明确分析指标后重试')
@@ -292,6 +317,7 @@ class AnalysisService:
                         for event in task_events(work,timeout=field_timeout):
                             if event['type']=='heartbeat':yield encode(event)+'\n'
                             else:record.update(ok=True,profile=event['result'])
+                    except GenerationCancelled:raise
                     except Exception as exc:
                         record['error']=str(exc.detail if isinstance(exc,HTTPException) else exc).splitlines()[0][:240]
                         if isinstance(exc,HTTPException) and exc.status_code==409:record['connection_error']=True
@@ -332,12 +358,14 @@ class AnalysisService:
                         yield status(f'{label} 查询未通过，正在修复查询')
                         repair=[ChatMessage('user',body.content+'\n只修复下面这一个查询，按原 JSON 格式返回一个 queries 项。\n'+encode({'query':dax,'error':result['error']}),messages[-1].images)]
                         raw=''
-                        for event in completion_events(provider,planner,repair,max_tokens=5000,timeout=remaining(total_timeout)):
+                        report=GenerationReport()
+                        for event in generate('analysis_repair',planner,repair,report=report):
                             if event['type']=='delta':
                                 raw+=event['text']
                                 if len(raw)>40000:raise HTTPException(422,'修复查询过长，请缩小分析范围')
                             elif event['type']=='heartbeat':yield encode(event)+'\n'
                             elif event['type']=='status':yield status(event['text'])
+                        if report.interruption():raise HTTPException(422,report.interruption())
                         try:
                             fixed=parse_plan(raw)
                             if not fixed.queries:break
@@ -352,16 +380,33 @@ class AnalysisService:
                     yield status('已取得真实数据，正在形成分析结论')
                     summary=messages[:]+[ChatMessage('user','以下为应用实际执行的查询结果。仅依据这些 evidence 回答原问题。\n'+encode({'scope':plan.scope,'evidence':evidence}))]
                     last_save=0
-                    answer=''
-                    for event in completion_events(provider,SUMMARY_SYSTEM+'\n'+IMAGE_RULES,summary,max_tokens=8000,timeout=remaining(total_timeout)):
-                        if event['type']=='delta':
-                            answer+=event['text'];display+=event['text']
-                            if len(display)>160000:raise HTTPException(422,'分析回复过长，请缩小问题范围')
-                            if time.monotonic()-last_save>1:save_partial();last_save=time.monotonic()
-                            yield encode(event)+'\n'
-                        elif event['type']=='heartbeat':yield encode(event)+'\n'
-                        elif event['type']=='status':yield status(event['text'])
-                    if not answer.strip():raise HTTPException(422,'模型没有返回分析结论，已保留实际查询结果')
+                    for summary_attempt in range(2):
+                        answer='';report=GenerationReport();options={}
+                        if summary_attempt:
+                            # The same successful evidence and attached images are reused. This
+                            # does not execute DAX again or change the saved model configuration.
+                            summary=summary+[ChatMessage('user',
+                                '上次请求没有返回结论正文。请直接根据上面的实际 evidence，用简短中文给出关键结论、'
+                                '来源编号和仍无法确定的内容，不需要重新查询。不要重复分析口径，不要编造缺失数字。')]
+                            if getattr(provider,'can_disable_thinking',False):
+                                options['enable_thinking']=False
+                        for event in generate('analysis_summary',SUMMARY_SYSTEM+'\n'+IMAGE_RULES,summary,report=report,**options):
+                            if event['type']=='delta':
+                                answer+=event['text'];display+=event['text']
+                                if len(display)>160000:raise HTTPException(422,'分析回复过长，请缩小问题范围')
+                                if time.monotonic()-last_save>1:save_partial();last_save=time.monotonic()
+                                yield encode(event)+'\n'
+                            elif event['type']=='heartbeat':yield encode(event)+'\n'
+                            elif event['type']=='status':yield status(event['text'])
+                        if answer.strip():
+                            if report.interruption():
+                                raise HTTPException(422,report.interruption()+'；已保留已输出的文字和实际查询结果')
+                            break
+                        retryable=report.finish_reason in (None,'stop','length')
+                        if summary_attempt or not retryable:
+                            retried='；已复用查询结果重试一次' if summary_attempt else ''
+                            raise HTTPException(422,report.empty_message()+retried+'；已保留实际查询结果')
+                        yield status(report.empty_message()+'；正在复用查询结果重新生成结论（重试 1/1）')
                     # Sources remain visible even when a compatible model omits inline citations.
                     sources='、'.join('['+q['label']+'] '+' '.join(q['title'].split()) for q in successful)
                     footer='\n\n---\n\n**本轮数据依据**：'+sources+'。查询和实际结果见下方。'
@@ -373,21 +418,27 @@ class AnalysisService:
                         footer+=' 本轮部分结果已截断，相关结论只适用于已保留的数据。'
                     display+=footer
                     yield encode({'type':'delta','text':footer})+'\n'
+            check_cancelled()
             self.db.execute("UPDATE messages SET content=?,status='complete' WHERE id=?",(display,message_id))
             saved=True
             yield encode({'type':'analysis','queries':evidence})+'\n'
             yield encode({'type':'done'})+'\n'
         except GeneratorExit:raise
+        except GenerationCancelled:
+            cancelled=True;error=CANCELLED_TEXT
+            yield encode({'type':'cancelled','text':CANCELLED_TEXT})+'\n'
         except Exception as exc:
             error=exc.detail if isinstance(exc,HTTPException) else f'分析未完成（{type(exc).__name__}），已保留已取得的查询结果'
             error=multimodal_error(exc,any(m.images for m in locals().get('messages',[]))) or error
             logger.warning('Analysis %s failed: %s',message_id,type(exc).__name__)
             yield encode({'type':'error','text':error})+'\n'
         finally:
-            if not saved:self.db.execute("UPDATE messages SET content=?,status='error' WHERE id=?",(display+'\n\n['+error+']',message_id))
+            if not saved:self.db.execute("UPDATE messages SET content=?,status=? WHERE id=?",
+                (display+'\n\n['+error+']','cancelled' if cancelled else 'error',message_id))
             self.chat.progress.pop(message_id,None);self.chat.active_messages.pop(conv['id'],None)
             lock.release()
             client=getattr(provider,'_client',None)
-            if client:
+            if cancelled:close_cancelled_provider(provider)
+            if client and not cancelled:
                 try:client.close()
                 except Exception:pass

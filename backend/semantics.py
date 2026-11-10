@@ -16,6 +16,8 @@ from .engine.context.live_source import LiveDesktopSource, find_instances
 from .engine.llm.base import ChatMessage
 from .fields import field_ref
 from .streaming import completion_events
+from .engine.llm.diagnostics import GenerationReport
+from .generation import generation_recorder
 from .values import ValueEvidence, codes_in
 from .reports import canonical, normalize_name, normalize_path, same_report, schema_signature
 
@@ -335,10 +337,14 @@ class SemanticService:
                 messages=[ChatMessage('user',prompt)]
                 for attempt in range(2):
                     raw=''
-                    for event in completion_events(provider,system,messages,max_tokens=10000):
+                    report=GenerationReport()
+                    for event in completion_events(provider,system,messages,report=report,
+                            on_report=generation_recorder(self.db,provider,stage=f'semantics_batch_{start//20+1}',
+                                attempt=attempt+1,model_id=model_id)):
                         if event['type']=='delta':raw+=event['text']
                         elif event['type']=='status':self._merge(model_id,expected,stage=event['text'])
                         if len(raw)>80000:raise ValueError('语义词典回复过长')
+                    if report.interruption():raise HTTPException(422,report.interruption())
                     try:
                         result=_parse_batch(raw)
                         if {e.id for e in result.entries}!=ids or len(result.entries)!=len(ids):

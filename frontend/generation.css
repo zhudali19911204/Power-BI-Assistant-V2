@@ -1,0 +1,7 @@
+.send-group>.stop-button,.send-group>.send-button{box-sizing:border-box;width:32px;height:32px;min-width:32px;flex:0 0 32px;align-self:center;display:grid;place-items:center;padding:0}
+.stop-button{border:1px solid #e3e7ec;border-radius:7px;background:#fff;color:#776b46;cursor:pointer}
+.stop-button .icon{width:18px;height:18px}
+.stop-button:hover:not(:disabled){background:#fff8df;border-color:#d9bb56}
+.stop-button:disabled{color:#abb2bc;background:#f7f8fa;cursor:default;opacity:.65}
+.stop-button:focus-visible{outline:2px solid #d6b748;outline-offset:3px}
+.busy .send-button{animation:none}

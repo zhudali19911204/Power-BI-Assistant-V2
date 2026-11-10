@@ -17,6 +17,10 @@ from .streaming import completion_events, task_events
 from .analysis import AnalysisService
 from .clarifications import QUESTION_RULES, resolve_answer
 from .images import ImageStore, IMAGE_RULES, multimodal_error
+from .engine.llm.diagnostics import GenerationReport
+from .generation import generation_recorder, generation_records
+from .cancellation import (CancellationToken, GenerationCancelled, CANCELLED_TEXT,
+                           cancellation_scope, check_cancelled, close_cancelled_provider)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,7 @@ class ChatService:
         self.mutex = threading.Lock()
         self.progress = {}
         self.active_messages = {}
+        self.cancellations = {}
         self.analysis=AnalysisService(self)
         self.semantics=getattr(powerbi,'semantics',None)
         self.images=ImageStore(db)
@@ -41,8 +46,28 @@ class ChatService:
     def generation_status(self, conversation_id):
         lock = self.locks.get(conversation_id)
         message_id = self.active_messages.get(conversation_id)
+        token = self.cancellations.get(conversation_id)
         return {'running': bool(lock and lock.locked()), 'message_id': message_id,
+                'generation_id': token.id if token else None, 'stopping': bool(token and token.event.is_set()),
                 'progress': self.progress.get(message_id, {})}
+
+    def cancel(self, conversation_id, generation_id):
+        self.conversation(conversation_id)
+        with self.mutex:
+            token = self.cancellations.get(conversation_id)
+            if token:
+                if token.id != generation_id:
+                    raise HTTPException(409, '本次生成已变化，请刷新会话状态后再中止')
+                token.cancel()
+        return self.generation_status(conversation_id)
+
+    def cancellable_stream(self, conv, token, source):
+        with cancellation_scope(token):
+            try: yield from source
+            finally:
+                with self.mutex:
+                    if self.cancellations.get(conv['id']) is token:
+                        self.cancellations.pop(conv['id'], None)
 
     def messages(self, conversation_id):
         self.conversation(conversation_id)
@@ -64,6 +89,7 @@ class ChatService:
                 artifact["validation"] = json.loads(artifact["validation"])
             message['analysis']=self.analysis.records(message['id'])
             message['images']=self.images.metadata(message['id'])
+            message['generations']=generation_records(self.db,message['id'])
             message['field_previews']=self.analysis.field_records(message['id'])
             record=self.db.one('SELECT payload FROM message_clarifications WHERE message_id=?',(message['id'],))
             message['clarification']=(json.loads(record['payload']) | {'answered':index<last_user}) if record else None
@@ -96,6 +122,8 @@ class ChatService:
             lock = self.locks.setdefault(conversation_id, threading.Lock())
         if not lock.acquire(blocking=False):
             raise HTTPException(409, "该会话正在生成，请等待完成")
+        token = CancellationToken(body.generation_id or uid())
+        with self.mutex: self.cancellations[conversation_id] = token
         try:
             if body.clarification_reply:
                 content=resolve_answer(self.db,conversation_id,body.clarification_reply)
@@ -103,14 +131,15 @@ class ChatService:
                 body=body.model_copy(update={'content':content})
             if self.semantics and model['source']=='desktop' and conv['mode'] in ('dax','analysis'):
                 self.semantics.require_ready(model,ctx)
-                return self.grounded_stream(conv,model,ctx,body,home,settings,lock)
+                return self.cancellable_stream(conv,token,self.grounded_stream(conv,model,ctx,body,home,settings,lock))
             provider = settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
         except BaseException:
+            with self.mutex: self.cancellations.pop(conversation_id, None)
             lock.release()
             raise
         if conv['mode']=='analysis':
-            return self.analysis.stream(conv,model,ctx,body,provider,lock)
-        return self.stream(conv, model, ctx, body, home, provider, lock)
+            return self.cancellable_stream(conv,token,self.analysis.stream(conv,model,ctx,body,provider,lock))
+        return self.cancellable_stream(conv,token,self.stream(conv, model, ctx, body, home, provider, lock))
 
     def grounded_stream(self,conv,model,ctx,body,home,settings,lock):
         delegated=False
@@ -122,6 +151,7 @@ class ChatService:
             for event in task_events(lambda:self.semantics.unresolved_code(conv,body,ctx),timeout=35):
                 if event['type']=='heartbeat':yield encode(event)+'\n'
                 else:question=event['result']
+            check_cancelled()
             if question:
                 delegated=True
                 yield from self.semantics.confirmation_stream(conv,model,body,question,lock)
@@ -133,6 +163,13 @@ class ChatService:
             else:
                 yield from self.stream(conv,model,ctx,body,home,provider,lock)
         except GeneratorExit:raise
+        except GenerationCancelled:
+            message_id=uid()
+            self.images.save_user(conv['id'],body.content,body.image_ids)
+            self.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
+                (message_id,conv['id'],'assistant','['+CANCELLED_TEXT+']','cancelled',now()))
+            yield encode({'type':'start','message_id':message_id})+'\n'
+            yield encode({'type':'cancelled','text':CANCELLED_TEXT})+'\n'
         except Exception as exc:
             detail=exc.detail if isinstance(exc,HTTPException) else f'语义与取值检查未完成（{type(exc).__name__}），请重试'
             yield encode({'type':'error','text':detail})+'\n'
@@ -163,6 +200,7 @@ class ChatService:
     def stream(self, conv, model, ctx, body, home, provider, lock):
         assistant_id, partial, display, final_saved = uid(), "", "", False
         error_detail = '本次响应已中断，请重新发送'
+        cancelled = False
         started, last_saved = time.monotonic(), 0
         self.active_messages[conv['id']] = assistant_id
 
@@ -212,13 +250,18 @@ class ChatService:
                     self.db.execute('UPDATE messages SET content=? WHERE id=?',(display,assistant_id))
                     yield encode({'type':'delta','text':prefix})+'\n'
                     logger.info('Chat %s appending repair attempt %d',assistant_id,attempt)
-                for event in completion_events(provider, system, messages, max_tokens=12000):
+                report=GenerationReport()
+                for event in completion_events(provider, system, messages, report=report,
+                        on_report=generation_recorder(self.db,provider,stage=conv['mode'],attempt=attempt+1,
+                            message_id=assistant_id,model_id=model['id'])):
                     if event['type'] == 'status':
                         yield status(event['text'])
                         continue
                     if event['type'] == 'heartbeat':
                         self.progress[assistant_id]['elapsed'] = int(time.monotonic()-started)
                         yield encode(event) + '\n'
+                        continue
+                    if event['type'] != 'delta':
                         continue
                     if not partial:
                         logger.info('Chat %s first content received after %.1fs', assistant_id, time.monotonic()-started)
@@ -232,33 +275,39 @@ class ChatService:
                         self.db.execute("UPDATE messages SET content=? WHERE id=?", (display, assistant_id))
                         last_saved = time.monotonic()
                     yield encode(event) + '\n'
+                if report.interruption():
+                    raise HTTPException(422, report.interruption()+'；已保留收到的内容')
                 if not partial.strip():
-                    raise HTTPException(422, "模型返回了空响应，请检查模型名称与服务配置")
+                    raise HTTPException(422, report.empty_message())
                 objects = candidates(partial, conv["mode"], conv["query_name"])
                 if len(objects) > 20:
                     raise HTTPException(422, "单次最多生成 20 个对象，请拆分需求")
                 yield status('正在验证代码' if objects else '正在保存回复')
+                check_cancelled()
                 results = validate(ctx, objects, home)
                 connection_blocked=False
                 if objects and conv["mode"] == "dax" and model['source']=='desktop':
                     try:
                         yield status('正在 Desktop 实跑验证')
                         with self.powerbi.lock:
-                            _, current = self.powerbi.require_live(model["id"], unchanged=True)
+                            model, current = self.powerbi.require_live(model["id"], unchanged=True)
                             results = validate(current, objects, home, LiveDesktopEvaluator(model["port"]),
                                                [p.model_dump() for p in body.points])
+                    except GenerationCancelled: raise
                     except HTTPException as exc:
                         connection_blocked=True
                         for result in results:
                             result.update(ok=False, run_verified=False)
                             result["errors"].append(exc.detail)
                 failures = [r for r in results if not r["ok"]]
+                check_cancelled()
                 if not failures or attempt == 2 or connection_blocked:
                     break
                 messages += [ChatMessage("assistant", partial), ChatMessage("user",
                     '以下是应用验证结果。请修复并输出本轮完整候选代码，保留仍需使用的基础度量。'
                     '只补充简短修改说明，不要重复之前整段模型评价。不要声称已通过验证。\n'+encode(failures))]
             artifacts = []
+            check_cancelled()
             with self.db.connection() as db:
                 db.execute("UPDATE messages SET content=?,status='complete' WHERE id=?", (display, assistant_id))
                 for obj, result in zip(objects, results):
@@ -274,6 +323,10 @@ class ChatService:
             yield encode({"type": "done"}) + "\n"
         except GeneratorExit:
             raise
+        except GenerationCancelled:
+            cancelled = True
+            error_detail = CANCELLED_TEXT
+            yield encode({'type': 'cancelled', 'text': CANCELLED_TEXT}) + '\n'
         except Exception as exc:
             # SDK exceptions can include endpoint details; expose a concise classified error only.
             detail = exc.detail if isinstance(exc, HTTPException) else f"AI 服务调用失败（{type(exc).__name__}），请检查 API 地址、Key 和网络"
@@ -283,13 +336,14 @@ class ChatService:
             yield encode({"type": "error", "text": detail}) + "\n"
         finally:
             if not final_saved:
-                self.db.execute("UPDATE messages SET content=?,status='error' WHERE id=?", (
-                    display + '\n\n[' + error_detail + ']', assistant_id))
+                self.db.execute("UPDATE messages SET content=?,status=? WHERE id=?", (
+                    display + '\n\n[' + error_detail + ']', 'cancelled' if cancelled else 'error', assistant_id))
             self.progress.pop(assistant_id, None)
             self.active_messages.pop(conv['id'], None)
             lock.release()
             client = getattr(provider, '_client', None)
-            if client:
+            if cancelled: close_cancelled_provider(provider)
+            if client and not cancelled:
                 try:
                     client.close()
                 except Exception:

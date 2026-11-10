@@ -14,6 +14,8 @@
   <link rel="stylesheet" href="/assets/fields.css">
   <link rel="stylesheet" href="/assets/semantics.css">
   <link rel="stylesheet" href="/assets/images.css">
+  <link rel="stylesheet" href="/assets/generation.css">
+  <link rel="stylesheet" href="/assets/connections.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
 <body>
@@ -49,7 +51,7 @@
               <div class="image-drafts" data-image-drafts hidden aria-label="待发送图片"></div>
               <label for="prompt" class="sr-only">描述你的数据问题</label>
               <textarea id="prompt" rows="3" aria-describedby="composer-shortcuts" placeholder="描述你想计算的业务指标，或粘贴一段 DAX…"></textarea>
-              <div class="composer-footer"><div class="composer-controls"><button type="button" class="model-chip" id="model-settings-chip"><span data-icon="sparkles"></span><span id="active-llm">配置大模型</span><span data-icon="chevron-down"></span></button><select id="query-select" title="目标 Power Query 查询" aria-label="目标查询" hidden></select></div><div class="send-group"><span class="keyboard-hint" id="composer-shortcuts">Enter 发送 · Shift+Enter 换行</span><button type="submit" id="send-button" class="send-button" aria-label="发送消息"><span data-icon="arrow-up"></span></button></div></div>
+              <div class="composer-footer"><div class="composer-controls"><button type="button" class="model-chip" id="model-settings-chip"><span data-icon="sparkles"></span><span id="active-llm">配置大模型</span><span data-icon="chevron-down"></span></button><select id="query-select" title="目标 Power Query 查询" aria-label="目标查询" hidden></select></div><div class="send-group"><span class="keyboard-hint" id="composer-shortcuts">Enter 发送 · Shift+Enter 换行</span><button type="button" id="stop-button" class="stop-button" aria-label="中止本次生成" title="中止本次生成，保留已收到的内容" disabled><span data-icon="stop"></span></button><button type="submit" id="send-button" class="send-button" aria-label="发送消息"><span data-icon="arrow-up"></span></button></div></div>
             </form>
             <p class="composer-note"><span class="tiny-dot"></span>模型在本机读取 · AI 在服务器推理 · 写入前由你确认</p>
           </div>

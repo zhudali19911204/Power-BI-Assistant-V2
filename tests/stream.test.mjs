@@ -27,3 +27,10 @@ test('error events finish normally so the caller can display the server error',a
   await readEvents(new Response('{"type":"error","text":"服务器超时"}\n'),event=>events.push(event));
   assert.equal(events[0].text,'服务器超时');
 });
+
+test('user cancellation is a normal terminal event and preserves earlier deltas',async()=>{
+  const events=[];
+  await readEvents(new Response('{"type":"delta","text":"已收到"}\n{"type":"cancelled","text":"已中止"}\n'),event=>events.push(event));
+  assert.deepEqual(events.map(event=>event.type),['delta','cancelled']);
+  assert.equal(events[0].text,'已收到');
+});

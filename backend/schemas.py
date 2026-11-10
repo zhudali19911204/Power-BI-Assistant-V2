@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
+from .engine.llm.diagnostics import DEFAULT_MAX_TOKENS
 
 
 class SettingsInput(BaseModel):
@@ -12,6 +13,7 @@ class SettingsInput(BaseModel):
     api_key: str | None = Field(default=None, max_length=2000)
     clear_key: bool = False
     enable_thinking: bool | None = None
+    max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=256, le=131072)
     idle_timeout: int = Field(default=GENERATION_IDLE_TIMEOUT, ge=30, le=600)
     generation_timeout: int = Field(default=GENERATION_TIMEOUT, ge=180, le=7200)
 
@@ -67,6 +69,7 @@ class ClarificationReply(BaseModel):
 
 class MessageInput(BaseModel):
     content: str = Field(default='', max_length=24000)
+    generation_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
     image_ids: list[str] = Field(default_factory=list, max_length=4)
     llm_profile_id: str | None = Field(default=None, min_length=1, max_length=64)
     home_table: str = Field(default="", max_length=300)
@@ -97,3 +100,7 @@ class MessageInput(BaseModel):
 
 class ApplyInput(BaseModel):
     overwrite: bool = False
+
+
+class CancelGenerationInput(BaseModel):
+    generation_id: str = Field(pattern=r'^[a-f0-9]{32}$')

@@ -15,6 +15,7 @@ from .engine.llm.openai_compat import OpenAICompatProvider
 from .engine.net import enable_os_trust_store
 from .schemas import LLMProfileInput, SettingsInput
 from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
+from .engine.llm.diagnostics import DEFAULT_MAX_TOKENS
 
 
 class SettingsService:
@@ -38,6 +39,7 @@ class SettingsService:
             "base_url": os.getenv("PBI_LLM_BASE_URL", ""),
             "encrypted_key": "",
             "enable_thinking": None,
+            "max_tokens": DEFAULT_MAX_TOKENS,
             "idle_timeout": GENERATION_IDLE_TIMEOUT,
             "generation_timeout": GENERATION_TIMEOUT,
             "use_env_key": True,
@@ -90,7 +92,7 @@ class SettingsService:
     def _public_config(self, cfg):
         cfg = {**self.defaults(), **cfg}
         key = self.key(cfg)
-        return {k: cfg[k] for k in ("provider", "model", "base_url", "enable_thinking", "idle_timeout", "generation_timeout")} | {
+        return {k: cfg[k] for k in ("provider", "model", "base_url", "enable_thinking", "max_tokens", "idle_timeout", "generation_timeout")} | {
             "has_key": bool(key), "ready": bool(cfg["model"] and key and
                 (cfg["base_url"] or cfg["provider"] == "claude")),
         }
@@ -146,7 +148,7 @@ class SettingsService:
                 'encrypted_key': '', 'enable_thinking': None, 'use_env_key': False,
             }
             cfg = {**self.defaults(), **cfg}
-            for name in ('idle_timeout', 'generation_timeout'):
+            for name in ('max_tokens', 'idle_timeout', 'generation_timeout'):
                 if name in body.model_fields_set:
                     cfg[name] = getattr(body, name)
             if cfg['idle_timeout'] > cfg['generation_timeout']:
@@ -221,6 +223,8 @@ class SettingsService:
                                              enable_thinking=cfg['enable_thinking'])
         provider.idle_timeout = cfg['idle_timeout']
         provider.generation_timeout = cfg['generation_timeout']
+        provider.max_tokens = cfg['max_tokens']
+        provider.profile_id = profile_id or cfg.get('active_profile_id')
         # Leave deadline/error reporting to completion_events, including the first response.
         # A transparent SDK retry must not restart an already timed-out generation.
         provider._client = provider._client.with_options(

@@ -151,6 +151,8 @@ class _LiveSession:
         self._conn = System.Activator.CreateInstance(t, System.Array[System.Object]([connstr]))
 
     def __enter__(self) -> "_LiveSession":
+        from ...cancellation import check_cancelled
+        check_cancelled()
         self._conn.Open()
         return self
 
@@ -161,27 +163,35 @@ class _LiveSession:
             pass
 
     def query(self, dax: str, max_rows: int | None = None, timeout_seconds: int = 60) -> list[dict[str, Any]]:
+        from ...cancellation import check_cancelled, close_on_cancel
+        check_cancelled()
         cmd = self._conn.CreateCommand()
         cmd.CommandTimeout = timeout_seconds
         cmd.CommandText = dax
-        rdr = cmd.ExecuteReader()
+        unregister = close_on_cancel(cmd.Cancel) if callable(getattr(cmd, 'Cancel', None)) else lambda: None
+        rdr = None
         try:
+            check_cancelled()
+            rdr = cmd.ExecuteReader()
+            check_cancelled()
             n = rdr.FieldCount
             names = [rdr.GetName(i) for i in range(n)]
             rows: list[dict[str, Any]] = []
             while rdr.Read():
+                check_cancelled()
                 rows.append({names[i]: _to_py(None if rdr.IsDBNull(i) else rdr.GetValue(i)) for i in range(n)})
                 if max_rows is not None and len(rows)>=max_rows:
                     break
             return rows
         finally:
-            rdr.Close()
+            unregister()
+            if rdr is not None:rdr.Close()
 
 
-def _safe_query(session: "_LiveSession", dax: str) -> list[dict[str, Any]]:
+def _safe_query(session: "_LiveSession", dax: str, timeout_seconds: int = 60) -> list[dict[str, Any]]:
     """Run a DMV query, returning [] if the engine rejects it (older engines may lack some DMVs)."""
     try:
-        return session.query(dax)
+        return session.query(dax,timeout_seconds=timeout_seconds)
     except Exception:  # noqa: BLE001 — optional grounding; absence degrades gracefully
         return []
 
@@ -328,13 +338,14 @@ class LiveDesktopSource(ContextSource):
         if not self.dll:
             raise RuntimeError("未找到 Power BI 的 ADOMD 客户端 DLL（请确认 Power BI Desktop 已安装）")
         with _LiveSession(self.port, self.dll) as s:
-            tables = s.query(_Q_TABLES)
-            columns = s.query(_Q_COLUMNS)
-            rels = s.query(_Q_RELS)
-            measures = s.query(_Q_MEASURES)
-            partitions = _safe_query(s, _Q_PARTITIONS)  # M grounding; tolerate older engines
-            expressions = _safe_query(s, _Q_EXPRESSIONS)
-            query_groups = _safe_query(s, _Q_QUERY_GROUPS)  # Power Query folder structure
+            timeout=getattr(self,'query_timeout',60)
+            tables = s.query(_Q_TABLES,timeout_seconds=timeout)
+            columns = s.query(_Q_COLUMNS,timeout_seconds=timeout)
+            rels = s.query(_Q_RELS,timeout_seconds=timeout)
+            measures = s.query(_Q_MEASURES,timeout_seconds=timeout)
+            partitions = _safe_query(s, _Q_PARTITIONS,timeout)  # M grounding; tolerate older engines
+            expressions = _safe_query(s, _Q_EXPRESSIONS,timeout)
+            query_groups = _safe_query(s, _Q_QUERY_GROUPS,timeout)  # Power Query folder structure
         return build_model_context(tables, columns, rels, measures, partitions, expressions, query_groups)
 
     def column_values(self, table: str, column: str, top: int = 500) -> list[Any]:

@@ -148,3 +148,15 @@ test('legacy models show new timeout defaults and save independent edits',async(
   await f.click('[data-back]');await f.click('[data-edit="qwen"]');
   assert.equal(f.root.querySelector('[name="generation_timeout"]').value,'900');
 });
+
+test('output budget defaults for legacy profiles and persists per model',async()=>{
+  const f=await fixture();await f.click('[data-edit="deepseek"]');
+  assert.equal(f.root.querySelector('[name="max_tokens"]').value,'16000');
+  f.input('max_tokens','32000');await f.submit();
+  assert.equal(JSON.parse(f.calls.find(call=>call.method==='PUT').body).max_tokens,32000);
+  await f.click('[data-edit="deepseek"]');
+  assert.equal(f.root.querySelector('[name="max_tokens"]').value,'32000');
+  await f.click('[data-back]');await f.click('[data-edit="qwen"]');
+  assert.equal(f.root.querySelector('[name="max_tokens"]').value,'16000');
+  assert.ok(f.root.textContent.includes('阿里云百炼'));
+});

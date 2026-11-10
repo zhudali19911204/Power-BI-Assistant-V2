@@ -10,17 +10,27 @@ import {clarificationCard, clarificationReply} from './clarification.js';
 import {fieldEvidence, mountFieldPreview} from './fields.js';
 import {mountSemanticWorkbench, semanticSummary} from './semantics.js';
 import {mountComposerImages, imageGallery} from './images.js';
+import {createConnectionMonitor,connectionPresentation} from './connections.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const workspace=createWorkspaces();
 const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
+const connectionMonitor=createConnectionMonitor({api,
+  getModels:()=>[state.view.model,...workspace.all().filter(view=>view.busy).map(view=>view.model)],
+  onChange:result=>{
+    const patch=model=>model?.id===result.model_id?{...model,live:result.live,port:result.port,connection:result.connection}:model;
+    state.models=state.models.map(patch);
+    for(const view of workspace.all())view.model=patch(view.model);
+    if(state.view.model?.id===result.model_id)renderConnectionStatus();
+  },
+});
 let modalCleanup=null,modalReturn=null,composerImages=null;
 hydrateIcons();
 const messageRenderer=createMessageRenderer({
   root:$('#messages'),scroll:$('#message-scroll'),
   label:m=>`<span class="message-avatar">${m.role==='user'?'你':icon('sparkles')}</span><span>${m.role==='user'?'你':'Power BI Assistant'}</span>`,
-  content:m=>m.role==='user'?imageGallery(m.images)+'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'?'':markdown(m.content),
+  content:m=>m.role==='user'?imageGallery(m.images)+'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'&&m.status!=='cancelled'?'':markdown(m.content),
   artifacts:m=>fieldEvidence(m.field_previews||[])+clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join(''),
   status:streamStatus,
 });
@@ -34,10 +44,10 @@ const generation=createGenerationManager({
     if(signature!==taskSignature){taskSignature=signature;renderHistory();renderBackgroundTasks();}
   },
   onCreated:conversation=>{state.conversations=[conversation,...state.conversations.filter(c=>c.id!==conversation.id)];renderHistory();},
-  onModel:(view,event)=>{if(view.model?.id===event.model_id){view.model.live=event.live;if(state.view===view)renderContext();}},
+  onModel:(view,event)=>{if(view.model?.id===event.model_id){view.model.live=event.live;if(event.live)view.model.connection={status:'connected'};if(state.view===view)renderConnectionStatus();}},
   onComplete:(view,failed)=>{
     if(state.view===view){renderControls();if(!$('#prompt').value&&view.draft)$('#prompt').value=view.draft;messagePaint.flush();}
-    else toast(`“${view.conversation?.title||'后台会话'}”${failed?'生成未完成，请查看原因':view.messages.at(-1)?.clarification?'有一项口径待确认':'已生成完成'}`,failed);
+    else toast(`“${view.conversation?.title||'后台会话'}”${view.cancelled?'已中止生成':failed?'生成未完成，请查看原因':view.messages.at(-1)?.clarification?'有一项口径待确认':'已生成完成'}`,failed);
     void reloadHistory().catch(error=>toast(error.message,true));
   },
   onError:(message,view)=>toast((state.view===view?'':`“${view.conversation?.title||'后台会话'}”：`)+message,true),
@@ -60,6 +70,9 @@ const guard = fn => async (...args) => {try {await fn(...args);} catch(e) {toast
 function available() {if(state.view.busy||state.view.loading){toast(state.view.loading?'正在读取此会话':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
 function renderBusy() {
   $('#send-button').disabled=state.view.busy||!!state.view.loading||state.view.images.some(img=>img.status==='uploading');
+  $('#stop-button').disabled=!state.view.busy||state.view.stopping;
+  $('#stop-button').setAttribute('aria-label',state.view.stopping?'正在中止本次生成':'中止本次生成');
+  $('#stop-button').title=state.view.stopping?'正在中止本次生成':'中止本次生成，保留已收到的内容';
   composerImages?.render();
   document.body.classList.toggle('busy',state.view.busy);
 }
@@ -110,7 +123,7 @@ function renderHistory() {
   $('#history-list').innerHTML=rows.length?rows.map(c=>{
     const view=workspace.find(c.id),busy=view?.busy||(c.generating&&!view?.loaded);
     const last=view?.messages.at(-1),pending=last?.status==='complete'&&last.clarification&&!last.clarification.answered;
-    const badge=busy?'<small class="history-task running">生成中</small>':pending?'<small class="history-task clarification">待确认</small>':view?.attention?`<small class="history-task ${view.attention}">${view.attention==='error'?'查看错误':'已完成'}</small>`:'';
+    const badge=busy?'<small class="history-task running">生成中</small>':pending?'<small class="history-task clarification">待确认</small>':view?.attention?`<small class="history-task ${view.attention}">${view.attention==='error'?'查看错误':view.attention==='cancelled'?'已中止':'已完成'}</small>`:'';
     return `<div class="history-item ${state.view.conversation?.id===c.id?'active':''}"><button class="history-name" data-conversation="${c.id}" title="${esc(c.title)}">${icon(MODES[c.mode]?.historyIcon||'chat')}<span>${esc(c.title)}</span>${badge}</button><button class="icon-button" data-delete-conversation="${c.id}" aria-label="删除 ${esc(c.title)}" ${busy?'disabled title="生成完成后可删除"':''}>${icon('trash')}</button></div>`;
   }).join(''):'<p class="muted history-empty">'+(needle?'没有匹配的对话':'还没有对话<br>从一个数据问题开始吧')+'</p>';
 }
@@ -121,12 +134,10 @@ function renderBackgroundTasks() {
 }
 function renderContext() {
   const model=state.view.model, ctx=model?.context;
-  $('#connection-label').textContent=model?(model.live?'Desktop 已连接':model.source==='demo'?'示例模型':'模型快照'):'连接 Power BI';
-  $('.status-dot').classList.toggle('connected',!!model?.live);
-  $('#composer-context').textContent=model?model.name+' · '+(model.live?'实时模型':model.source==='demo'?'仅示例结构，无法实跑':'离线快照，需重新连接才能实跑'):'连接模型，让回答基于真实字段';
   $('#model-summary').innerHTML=model?`<div class="model-name">${esc(model.name)}</div><div class="model-state">${model.live?'● 本机实时连接':model.source==='demo'?'○ 示例数据结构 · 仅供体验':'○ 离线模型快照'}</div><div class="model-counts"><span><b>${Object.keys(ctx.tables).length}</b>表</span><span><b>${Object.values(ctx.tables).flat().length}</b>字段</span><span><b>${ctx.measures.length}</b>度量值</span></div>`:'<div class="model-name">尚未连接模型</div><div class="model-state">在 Power BI Desktop 打开报表后连接</div>';
   if(model?.source==='desktop')$('#model-summary').insertAdjacentHTML('beforeend',`<button class="text-link semantic-open-button" data-open-semantics="${esc(model.id)}">${icon('book')}模型语义层 <small>${model.semantics?.status==='ready'?'已梳理 · 可审阅定义':model.semantics?.status==='building'?'正在后台梳理':'需要先梳理语义'}</small></button>`);
   if(!model) {$('#model-tree').innerHTML=`<div class="model-empty"><div class="empty-model-icon">${icon('database')}</div><strong>让模型成为对话的上下文</strong><p>表、字段、关系与度量值<br>连接后将显示在这里</p><button class="text-link" id="empty-connect">连接 Power BI ${icon('arrow-right')}</button></div>`;return;}
+  renderConnectionStatus();
   const needle=$('#field-search').value.toLowerCase();
   if(state.contextTab==='tables') {
     $('#model-tree').innerHTML=Object.entries(ctx.tables).map(([name,cols])=>{
@@ -141,6 +152,15 @@ function renderContext() {
     const queries={...ctx.table_queries,...ctx.shared_expressions};
     $('#model-tree').innerHTML=Object.keys(queries).filter(n=>n.toLowerCase().includes(needle)).map(name=>`<button class="query-button" data-query="${esc(name)}">${icon('code')}${esc(name)}</button>`).join('')||'<p class="history-empty muted">模型中暂无可用 M 查询</p>';
   }
+}
+function renderConnectionStatus() {
+  const model=state.view.model,view=connectionPresentation(model);
+  $('#connection-label').textContent=view.label;$('#connect-open').title=view.detail;
+  $('.status-dot').classList.toggle('connected',view.kind==='connected');
+  $('.status-dot').classList.toggle('reconnecting',view.kind==='reconnecting');
+  $('.status-dot').classList.toggle('warning',view.kind==='warning');
+  $('#composer-context').textContent=model?model.name+' · '+view.context:view.context;
+  const status=$('.model-state');if(status)status.textContent=(view.kind==='connected'?'● ':'○ ')+(view.state||view.detail);
 }
 function renderControls() {
   const query=state.view.queryName;
@@ -170,6 +190,7 @@ function saveDraft() {
 }
 function showView() {
   $('#prompt').value=state.view.draft;render();
+  renderConnectionStatus();void connectionMonitor.refresh();
   if(state.view.scrollTop!==undefined&&!state.view.pinned)$('#message-scroll').scrollTo({top:state.view.scrollTop,behavior:'instant'});
 }
 function newChat(mode=state.view.mode) {saveDraft();workspace.newChat(mode);showView();$('#prompt').focus();}
@@ -300,6 +321,7 @@ async function reviewWrite(id) {
 }
 
 $('#composer-form').onsubmit=send;
+$('#stop-button').onclick=()=>{void generation.stop(state.view);};
 composerImages=mountComposerImages($('#composer-form'),{getView:()=>state.view,onNotice:toast,
   onChange:view=>{if(state.view===view)renderBusy();}});
 function updateClarificationDraft(event) {
@@ -386,10 +408,12 @@ async function init() {
   try {
     const [settings,models,conversations]=await Promise.all([api('/settings'),api('/models'),api('/conversations')]);
     Object.assign(state,{settings,models,conversations});state.view.model=models[0]||null;render();
+    renderConnectionStatus();void connectionMonitor.refresh();
     for(const conversation of conversations.filter(c=>c.generating)) {
       const view=workspace.register(conversation,models.find(m=>m.id===conversation.model_id)||null);
       void loadConversation(view).catch(error=>toast(error.message,true));
     }
   } catch(e) {render();toast('无法连接本地服务：'+e.message,true);}
 }
+setInterval(()=>{void connectionMonitor.refresh();},3000);
 init();

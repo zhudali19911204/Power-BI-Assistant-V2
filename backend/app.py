@@ -22,7 +22,7 @@ from .engine.context.live_writer import LiveDesktopWriter
 from .engine.dax.live_eval import LiveDesktopEvaluator
 from .engine.llm.base import user
 from .powerbi import PowerBIService, context_from_dict
-from .schemas import ApplyInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, SettingsInput
+from .schemas import ApplyInput, CancelGenerationInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, SettingsInput
 from .settings import SettingsService
 from .fields import FieldPreviewInput
 from .reports import reports_for_instances
@@ -186,6 +186,10 @@ def create_app(directory=None):
     def model(model_id: str):
         return powerbi.get(model_id)
 
+    @app.get('/api/models/{model_id}/connection')
+    def model_connection(model_id: str):
+        return powerbi.reconnector.poll(model_id)
+
     @app.post('/api/models/{model_id}/fields/preview')
     def preview_field(model_id: str, body: FieldPreviewInput):
         return chat.analysis.fields.preview(model_id, body)
@@ -208,10 +212,7 @@ def create_app(directory=None):
 
     @app.post("/api/models/{model_id}/refresh")
     def refresh(model_id: str):
-        row = powerbi.get(model_id)
-        if row["source"] != "desktop":
-            raise HTTPException(409, "示例模型无需同步")
-        model=powerbi.connect(row['port'],row.get('report',{}).get('name',''))
+        model=powerbi.refresh(model_id)
         semantics.on_connect(model,settings)
         return powerbi.get(model['id'])
 
@@ -240,6 +241,10 @@ def create_app(directory=None):
     def generation_status(conversation_id: str):
         chat.conversation(conversation_id)
         return chat.generation_status(conversation_id)
+
+    @app.post('/api/conversations/{conversation_id}/cancel')
+    def cancel_generation(conversation_id: str, body: CancelGenerationInput):
+        return chat.cancel(conversation_id, body.generation_id)
 
     @app.delete("/api/conversations/{conversation_id}")
     def delete_conversation(conversation_id: str):

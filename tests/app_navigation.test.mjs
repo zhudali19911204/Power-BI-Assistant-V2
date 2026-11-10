@@ -20,7 +20,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
     context:{tables:{事实表:[{name:'金额',dtype:'double'}]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
   const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
   const imageMeta={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),mime_type:'image/png',width:80,height:40,size:100};
-  const uploads=[];
+  const uploads=[],cancellations=[];
+  const intervals=[];let connectionStatus='connected',connectionPort=51413;
   let semanticProfile={model_id:'model',status:'inventory',stage:'本地事实已整理',error:'',coverage:0,entries:[{
     id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'candidate',business_name:'金额',
     meaning:'业务口径待确认',role:'数值',unit:'',aliases:[]}]};
@@ -37,6 +38,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
     if(path==='/api/settings')return json(settings);
     if(path==='/api/models')return json([model]);
     if(path==='/api/models/model')return json(model);
+    if(path==='/api/models/model/connection')return json({model_id:'model',live:connectionStatus==='connected',
+      port:connectionPort,connection:{status:connectionStatus,detail:'连接状态测试'}});
     if(path==='/api/models/model/semantics')return json(semanticProfile);
     if(path==='/api/models/model/semantics/build'){
       semanticProfile={...semanticProfile,status:'ready',stage:'测试语义完成',coverage:1};
@@ -53,6 +56,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
     }
     if(path==='/api/conversations')return json(conversations);
     const id=path.split('/')[3];
+    if(path.endsWith('/cancel')){
+      cancellations.push({id,...JSON.parse(opts.body)});
+      const record=streams.get(id);
+      messages.set(id,[...(messages.get(id)||[]),{role:'user',content:record.body.content,status:'complete'},
+        {id:record.messageId,role:'assistant',content:record.text+'\n\n[已中止]',status:'cancelled',artifacts:[]}]);
+      record.emit({type:'cancelled',text:'已中止'});record.controller.close();return json({running:false});
+    }
     if(path.endsWith('/generation'))return json({running:false});
     if(path.endsWith('/messages')&&opts.method==='POST') {
       const body=JSON.parse(opts.body);let controller;
@@ -77,7 +87,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     throw new Error('Unexpected '+path);
   }
   const replacements={document,window,fetch:fetchMock,requestAnimationFrame:cb=>setImmediate(cb),cancelAnimationFrame:clearImmediate,
-    setInterval:()=>0,innerWidth:1440};
+    setInterval:(callback,ms)=>{intervals.push({callback,ms});return intervals.length;},innerWidth:1440};
   for(const [key,value] of Object.entries(replacements)){savedGlobals[key]=Object.getOwnPropertyDescriptor(globalThis,key);Object.defineProperty(globalThis,key,{value,writable:true,configurable:true});}
   const $=s=>document.querySelector(s);
   async function click(selector){$(selector).click();await tick();await tick();}
@@ -85,6 +95,14 @@ test('actual app navigation keeps background streams, drafts and independent sen
   async function send(text){draft(text);$('#composer-form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();}
   try {
     await import('../frontend/app.js?navigation-test');await tick();await tick();
+    assert.equal($('#connection-label').textContent,'Desktop 已连接');
+    const treeNode=$('#model-tree').firstChild;draft('重连期间保留的草稿');
+    connectionStatus='reconnecting';intervals.find(timer=>timer.ms===3000).callback();await tick();await tick();
+    assert.equal($('#connection-label').textContent,'自动重连中');assert.equal($('#prompt').value,'重连期间保留的草稿');
+    assert.equal($('#model-tree').firstChild,treeNode);assert.equal(document.querySelector('.status-dot').classList.contains('connected'),false);
+    connectionStatus='connected';connectionPort=60001;intervals.find(timer=>timer.ms===3000).callback();await tick();await tick();
+    assert.equal($('#connection-label').textContent,'Desktop 已连接');assert.equal($('#model-tree').firstChild,treeNode);
+    assert.equal($('#stop-button').disabled,true);assert.equal($('#stop-button').type,'button');
     await send('先建立词典再生成');
     assert.equal(streams.size,0);assert.equal($('#prompt').value,'先建立词典再生成');
     assert.ok($('#semantic-workbench'));
@@ -142,8 +160,10 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await click('[data-open-image]');assert.ok($('#modal-body').querySelector('.image-full-preview'));await click('#modal-close');
     analysis.emit({type:'start',message_id:'answer-c1'});analysis.emit({type:'delta',text:'第一段分析。'});await tick();await tick();
     assert.equal($('#send-button').disabled,true);
+    assert.equal($('#stop-button').disabled,false);assert.equal($('#send-button').getAttribute('aria-label'),'发送消息');
     await click('[data-mode="dax"]');draft('DAX 页面草稿');
     assert.equal($('#page-title').textContent,'DAX 助手');assert.equal($('#send-button').disabled,false);
+    assert.equal($('#stop-button').disabled,true);
     assert.equal($('#background-generations').hidden,false);
     analysis.emit({type:'delta',text:'后台续写。'});await tick();await tick();
     assert.ok(!$('#messages').textContent.includes('后台续写'));
@@ -200,6 +220,15 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal(document.querySelectorAll('[data-confirm-clarification]').length,1);
     assert.equal($('[data-confirm-clarification]').dataset.confirmClarification,'card-2');
     assert.equal($('#prompt').value,'独立的聊天草稿');
+    await send('中止测试');const stopped=streams.get('c1');
+    stopped.emit({type:'start',message_id:'stopped-answer'});stopped.emit({type:'delta',text:'这段文字需要保留。'});
+    await tick();await tick();
+    assert.equal($('#stop-button').disabled,false);assert.equal($('#send-button').disabled,true);
+    await click('#stop-button');await tick();await tick();
+    assert.equal(cancellations.at(-1).generation_id,stopped.body.generation_id);
+    assert.equal($('#stop-button').disabled,true);assert.equal($('#send-button').disabled,false);
+    assert.ok($('#messages').textContent.includes('这段文字需要保留。'));
+    assert.ok($('#messages').textContent.includes('已中止'));
   } finally {
     Object.defineProperty(selectProto,'value',valueDescriptor);
     for(const [key,descriptor] of Object.entries(savedGlobals)){

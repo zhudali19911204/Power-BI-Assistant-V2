@@ -187,6 +187,35 @@ def test_legacy_profile_without_timeout_fields_uses_new_defaults(client, app):
     assert public['idle_timeout'] == 90 and public['generation_timeout'] == 900
 
 
+def test_output_budget_is_independent_persistent_and_retained_by_old_clients(client, app, tmp_path, monkeypatch):
+    first = add(client)
+    second = add(client, 'reasoning-model', 'separate-key', max_tokens=32000)
+    assert first['max_tokens'] == 16000 and second['max_tokens'] == 32000
+    assert create_app(tmp_path).state.settings.profiles()[1]['max_tokens'] == 32000
+    updated = client.put(f"/api/llm/profiles/{second['id']}", json={
+        'model': 'renamed', 'base_url': 'https://inference.example/v1'}).json()
+    assert updated['max_tokens'] == 32000
+
+    class Provider:
+        def __init__(self, *args, **kwargs): self._client = self
+        def with_options(self, **kwargs): return self
+    monkeypatch.setattr('backend.settings.OpenAICompatProvider', Provider)
+    selected = app.state.settings.provider(second['id'])
+    assert selected.max_tokens == 32000 and selected.profile_id == second['id']
+    assert app.state.settings.public()['max_tokens'] == 16000
+    cfg = config(app, first['id']); cfg.pop('max_tokens')
+    app.state.db.execute('UPDATE llm_profiles SET config=? WHERE id=?', (encode(cfg), first['id']))
+    assert app.state.settings.profiles()[0]['max_tokens'] == 16000
+
+
+@pytest.mark.parametrize('budget', [0, 255, 131073, 1000.5, 'invalid'])
+def test_invalid_output_budget_keeps_saved_profile(client, budget):
+    first = add(client, max_tokens=32000)
+    response = client.put(f"/api/llm/profiles/{first['id']}", json={'model': 'qwen', 'max_tokens': budget})
+    assert response.status_code == 422
+    assert client.get('/api/llm/profiles').json()[0]['max_tokens'] == 32000
+
+
 @pytest.mark.parametrize('extra', [
     {'idle_timeout': 0}, {'idle_timeout': 601}, {'generation_timeout': 179},
     {'generation_timeout': 7201}, {'idle_timeout': 300, 'generation_timeout': 180},

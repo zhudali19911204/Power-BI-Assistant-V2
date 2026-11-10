@@ -43,6 +43,13 @@ class Database:
                 CREATE TABLE IF NOT EXISTS message_clarifications (
                     message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS llm_generations (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+                    model_id TEXT REFERENCES models(id) ON DELETE CASCADE,
+                    stage TEXT NOT NULL, attempt INTEGER NOT NULL,
+                    diagnostic TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS llm_generations_message ON llm_generations(message_id);
                 CREATE TABLE IF NOT EXISTS message_images (
                     id TEXT PRIMARY KEY, message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
                     name TEXT NOT NULL, mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
