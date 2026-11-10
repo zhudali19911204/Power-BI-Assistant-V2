@@ -2,11 +2,13 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 import threading
+from collections.abc import Callable
 
 from fastapi import HTTPException
 
 CANCELLED_TEXT = '已中止本次生成，已保留收到的文字和查询结果'
 _current = ContextVar('generation_cancellation', default=None)
+_authorization: ContextVar[Callable[[], None] | None] = ContextVar('execution_authorization', default=None)
 
 
 class GenerationCancelled(HTTPException):
@@ -58,6 +60,13 @@ def current_cancellation():
 
 def check_cancelled():
     token = current_cancellation()
+    authorize = _authorization.get()
+    if authorize:
+        try:
+            authorize()
+        except HTTPException:
+            if token: token.cancel()
+            raise
     if token: token.check()
 
 
@@ -77,3 +86,10 @@ def cancellation_scope(token):
     marker = _current.set(token)
     try: yield
     finally: _current.reset(marker)
+
+
+@contextmanager
+def authorization_scope(check: Callable[[], None] | None):
+    marker = _authorization.set(check)
+    try: yield
+    finally: _authorization.reset(marker)

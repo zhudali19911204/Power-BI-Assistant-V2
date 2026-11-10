@@ -15,7 +15,7 @@ import uuid
 
 from PyInstaller.archive.readers import CArchiveReader
 
-from backend.licensing import machine_code, machine_code_from_guid
+from backend.licensing import TRIAL_SECONDS, machine_code, machine_code_from_guid
 from scripts.build_desktop import ROOT, find_iscc
 from scripts.license_admin import default_key_directory, issue_license, load_private_key
 
@@ -71,7 +71,8 @@ def native_window(process_id: int) -> int | None:
     return None
 
 
-def check_service(executable: Path, env: dict[str, str], *, native: bool = False) -> None:
+def check_service(executable: Path, env: dict[str, str], *, native: bool = False,
+                  license_type: str = "permanent", wait_expiry: bool = False) -> None:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -95,6 +96,11 @@ def check_service(executable: Path, env: dict[str, str], *, native: bool = False
                 time.sleep(0.2)
         if health.get("status") != "ok":
             raise RuntimeError("Unexpected packaged health response")
+        license_info = health["license"]
+        if license_info["type"] != license_type:
+            raise RuntimeError("Packaged service reported the wrong license type")
+        if license_type == "trial" and license_info["expires_at"] - license_info["issued_at"] != 604800:
+            raise RuntimeError("Trial duration is not exactly seven days")
         for resource in ("/", "/assets/app.js", "/assets/vendor/markdown-it.mjs"):
             with opener.open(f"http://127.0.0.1:{port}{resource}", timeout=5) as response:
                 if response.status != 200 or not response.read(64):
@@ -109,11 +115,29 @@ def check_service(executable: Path, env: dict[str, str], *, native: bool = False
             if not window:
                 raise RuntimeError("Packaged native window/WebView2 renderer did not appear")
             user32 = ctypes.WinDLL("user32", use_last_error=True)
+            if license_type == "trial":
+                user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+                title = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(window, title, len(title))
+                if license_info["summary"] not in title.value:
+                    raise RuntimeError("Native window does not show the trial deadline")
             user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
             if not user32.PostMessageW(window, 0x0010, 0, 0):
                 raise ctypes.WinError(ctypes.get_last_error())
             if process.wait(timeout=15) != 0:
                 raise RuntimeError("Packaged native window did not close cleanly")
+        if wait_expiry:
+            while time.monotonic() < deadline:
+                try:
+                    with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=2):
+                        pass
+                except urllib.error.HTTPError as exc:
+                    if exc.code != 403 or "已到期" not in json.load(exc).get("detail", ""):
+                        raise RuntimeError("Expected an explicit trial expiration error") from exc
+                    break
+                time.sleep(0.2)
+            else:
+                raise RuntimeError("Open application did not block API access after expiration")
     finally:
         if process.poll() is None:
             process.terminate()
@@ -148,18 +172,30 @@ def main() -> None:
         valid = temporary / "valid.txt"
         wrong_machine = temporary / "other-machine.txt"
         malformed = temporary / "invalid.txt"
+        trial = temporary / "trial.txt"
+        expired = temporary / "expired.txt"
+        future = temporary / "future.txt"
+        wrong_trial = temporary / "other-machine-trial.txt"
         code = machine_code()
         valid.write_text(issue_license(private, code), encoding="utf-8-sig")
         wrong_machine.write_text(
             issue_license(private, machine_code_from_guid(str(uuid.uuid4()))), encoding="utf-8")
         malformed.write_text("PBI2K-invalid", encoding="utf-8")
+        trial.write_text(issue_license(private, code, license_type="trial"), encoding="utf-8")
+        expired.write_text(issue_license(private, code, license_type="trial",
+                                        issued_at=int(time.time()) - TRIAL_SECONDS - 1), encoding="utf-8")
+        future.write_text(issue_license(private, code, license_type="trial",
+                                       issued_at=int(time.time()) + 3600), encoding="utf-8")
+        wrong_trial.write_text(issue_license(private, machine_code_from_guid(str(uuid.uuid4())),
+                                            license_type="trial"), encoding="utf-8")
         run([str(verifier), "machine-code", "--output", str(result)], success=True)
         if result.read_text(encoding="utf-8") != code:
             raise RuntimeError("Installer helper and runtime disagree about machine identity")
-        for path, accepted in ((valid, True), (wrong_machine, False), (malformed, False)):
+        for path, accepted in ((valid, True), (trial, True), (wrong_machine, False), (malformed, False),
+                               (expired, False), (future, False), (wrong_trial, False)):
             run([str(verifier), "verify", "--license-file", str(path), "--output", str(result)],
                 success=accepted)
-        print("PASS: real installer helper accepts only a valid license for this machine")
+        print("PASS: real verifier accepts permanent/trial keys and rejects expired/future/wrong-machine keys")
 
         env = dict(os.environ, PBI_DATA_DIR=str(temporary / "unauthorized-data"))
         run([str(executable), "--browser", "--no-open"], success=False, env=env)
@@ -179,21 +215,31 @@ def main() -> None:
                 )
             common = [str(test_setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
                       "/SP-", "/NOICONS", f"/DIR={install}"]
-            for path in (None, malformed, wrong_machine):
+            for path in (None, malformed, wrong_machine, expired, future, wrong_trial):
                 command = common + ([f"/LICENSEFILE={path}"] if path else [])
                 run(command, success=False)
                 if install.exists():
                     raise RuntimeError("Installer wrote application files before authorization")
-            print("PASS: missing, invalid and other-machine keys cannot bypass silent installation")
-            run(common + [f"/LICENSEFILE={valid}"], success=True)
+            print("PASS: missing, invalid, expired, future and other-machine keys cannot bypass silent installation")
+            run(common + [f"/LICENSEFILE={trial}"], success=True)
             installed_exe = install / "PowerBIAssistant.exe"
             if not installed_exe.is_file() or not (install / "license.key").is_file():
                 raise RuntimeError("Authorized installer did not persist app and license")
             env = dict(os.environ, PBI_DATA_DIR=str(temporary / "authorized-data"))
+            check_service(installed_exe, env, license_type="trial")
+            check_service(installed_exe, env, native=True, license_type="trial")
+            print("PASS: trial installs, serves health/UI and displays its deadline in the native window")
+            for path in (expired, future):
+                (install / "license.key").write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+                run([str(installed_exe), "--browser", "--no-open"], success=False, env=env)
+            (install / "license.key").write_text(issue_license(
+                private, code, license_type="trial", issued_at=int(time.time()) - TRIAL_SECONDS + 12), encoding="utf-8")
+            check_service(installed_exe, env, license_type="trial", wait_expiry=True)
+            print("PASS: real seven-day deadline blocks an already open app without changing the system clock")
+            run(common + [f"/LICENSEFILE={valid}"], success=True)
             check_service(installed_exe, env)
-            print("PASS: authorized install persists license and serves health/UI from the installed EXE")
             check_service(installed_exe, env, native=True)
-            print("PASS: licensed native window opens a WebView2 renderer and closes cleanly")
+            print("PASS: reinstall upgrades the same machine from trial to permanent; native startup succeeds")
             (install / "license.key").write_text(wrong_machine.read_text(encoding="utf-8"), encoding="utf-8")
             run([str(installed_exe), "--browser", "--no-open"], success=False, env=env)
             (install / "license.key").unlink()

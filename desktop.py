@@ -58,7 +58,11 @@ def main():
             time.sleep(0.05)
         import webview
         webview.settings['ALLOW_DOWNLOADS']=True
-        webview.create_window("Power BI Assistant", address, width=1440, height=940,
+        license_info = app.state.license_info
+        title = "Power BI Assistant"
+        if license_info and license_info.expires_at is not None:
+            title += " - " + license_info.summary
+        webview.create_window(title, address, width=1440, height=940,
                               min_size=(1000, 700), background_color="#F8F9FA")
         webview.start(gui="edgechromium", private_mode=True)
     except Exception:

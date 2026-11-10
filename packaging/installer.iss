@@ -2,7 +2,7 @@
   #error ReleaseDir must point to the PyInstaller output directory.
 #endif
 #ifndef AppVersion
-  #define AppVersion "2.0.0"
+  #define AppVersion "2.0.1"
 #endif
 #ifndef InstallerAppId
   #define InstallerAppId "{{34648710-F74C-44F7-BB72-73CD0B346D4C}"
@@ -48,6 +48,7 @@ var
   LicensePath: String;
   VerifierPath: String;
   ResultPath: String;
+  LicenseSummary: String;
 
 function ReadUTF8File(const Path: String; var Value: String): Boolean;
 var
@@ -92,6 +93,7 @@ var
   Message: String;
 begin
   Result := '';
+  LicenseSummary := '';
   if Trim(LicensePage.Values[1]) = '' then
   begin
     Result := '请输入软件提供者为本机签发的 CD-KEY。';
@@ -103,7 +105,9 @@ begin
     Exit;
   end;
   if not RunVerifier('verify --license-file ' + AddQuotes(LicensePath), Message) then
-    Result := Message;
+    Result := Message
+  else
+    LicenseSummary := Message;
 end;
 
 procedure InitializeWizard();
@@ -115,8 +119,8 @@ begin
   ResultPath := ExpandConstant('{tmp}\pbi-license-result.txt');
   ExtractTemporaryFile('LicenseVerifier.exe');
   VerifierPath := ExpandConstant('{tmp}\LicenseVerifier.exe');
-  LicensePage := CreateInputQueryPage(wpWelcome, '软件授权', '请输入本机专用的永久 CD-KEY',
-    '将机器码复制给软件提供者，收到 CD-KEY 后粘贴到下方。无需联网激活；此授权不能用于其他电脑。');
+  LicensePage := CreateInputQueryPage(wpWelcome, '软件授权', '请输入本机专用的永久或 7 天试用 CD-KEY',
+    '将机器码复制给软件提供者，收到 CD-KEY 后粘贴到下方。试用期从发码时起算 7×24 小时，重装不会重置；无需联网激活。');
   LicensePage.Add('本机机器码（可选中后按 Ctrl+C 复制）：', False);
   LicensePage.Edits[0].ReadOnly := True;
   LicensePage.Add('CD-KEY（请完整粘贴）：', False);
@@ -151,4 +155,11 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   { Also runs for /SILENT and /VERYSILENT: skipping wizard pages is not authorization. }
   Result := ValidateLicense();
+end;
+
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := MemoDirInfo + NewLine + MemoGroupInfo + NewLine + MemoTasksInfo +
+    NewLine + NewLine + LicenseSummary;
 end;

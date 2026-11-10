@@ -30,7 +30,8 @@ from .semantics import SemanticBuildInput, SemanticEdit, SemanticReuseInput, Sem
 from .streaming import BackgroundStream
 from .validation import validate
 from .images import MAX_UPLOAD_BYTES
-from .licensing import require_runtime_license
+from .licensing import LicenseError, LicenseGuard, require_runtime_license
+from .cancellation import authorization_scope
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
 
@@ -44,7 +45,8 @@ def data_directory():
 
 
 def create_app(directory=None):
-    require_runtime_license()
+    license_info = require_runtime_license()
+    license_guard = LicenseGuard(license_info) if license_info else None
     directory = Path(directory) if directory else data_directory()
     db = Database(directory / "assistant.sqlite3")
     settings = SettingsService(db, directory)
@@ -52,12 +54,20 @@ def create_app(directory=None):
     semantics=SemanticService(db,powerbi)
     powerbi.semantics=semantics
     chat = ChatService(db, powerbi)
-    app = FastAPI(title="Power BI Assistant", version="2.0.0", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="Power BI Assistant", version="2.0.1", docs_url="/api/docs", redoc_url=None)
+    app.state.license_info = license_info
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
     app.state.images=chat.images
     chat.images.remove_expired_pending()
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
+
+    def check_authorization():
+        if license_guard:
+            try:
+                license_guard.check()
+            except LicenseError as exc:
+                raise HTTPException(403, str(exc)) from exc
 
     @app.middleware("http")
     async def local_security(request: Request, call_next):
@@ -73,7 +83,14 @@ def create_app(directory=None):
                 return JSONResponse({"detail": "请求必须使用 JSON"}, status_code=415)
             if not image_upload and len(await request.body()) > 4 * 1024 * 1024:
                 return JSONResponse({"detail": "请求过大"}, status_code=413)
-        response = await call_next(request)
+        try:
+            if request.url.path.startswith("/api/"):
+                check_authorization()
+        except HTTPException as exc:
+            response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        else:
+            with authorization_scope(check_authorization if license_guard else None):
+                response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
@@ -85,7 +102,10 @@ def create_app(directory=None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "2.0.0", "storage": "sqlite", "platform": "desktop"}
+        return {"status": "ok", "version": "2.0.1", "storage": "sqlite", "platform": "desktop",
+                "license": {"type": "trial" if license_info.issued_at is not None else "permanent",
+                            "issued_at": license_info.issued_at, "expires_at": license_info.expires_at,
+                            "summary": license_info.summary} if license_info else {"type": "development"}}
 
     @app.post('/api/images',status_code=201)
     async def upload_image(request:Request):

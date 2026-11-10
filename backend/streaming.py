@@ -29,7 +29,8 @@ class BackgroundStream:
         self.detached = threading.Event()
         self.finished = threading.Event()
         self.overflow = threading.Event()
-        threading.Thread(target=self._run, daemon=True, name='background-generation').start()
+        context = copy_context()
+        threading.Thread(target=lambda: context.run(self._run), daemon=True, name='background-generation').start()
 
     def _run(self):
         try:

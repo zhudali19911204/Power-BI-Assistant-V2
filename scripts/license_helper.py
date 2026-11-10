@@ -22,8 +22,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if args.license_file is None:
                 raise LicenseError("未提供 CD-KEY 文件。")
-            verify_license(read_license_file(args.license_file), code, trusted_public_key())
-            result = "授权验证通过。"
+            info = verify_license(read_license_file(args.license_file), code, trusted_public_key())
+            result = f"授权验证通过：{info.summary}。"
     except LicenseError as exc:
         result, status = str(exc), 1
     try:

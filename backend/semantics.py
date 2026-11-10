@@ -6,6 +6,7 @@ import threading
 import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from contextvars import copy_context
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -16,6 +17,7 @@ from .engine.context.live_source import LiveDesktopSource, find_instances
 from .engine.llm.base import ChatMessage
 from .fields import field_ref
 from .streaming import completion_events
+from .cancellation import check_cancelled
 from .engine.llm.diagnostics import GenerationReport
 from .generation import generation_recorder
 from .values import ValueEvidence, codes_in
@@ -163,7 +165,8 @@ class SemanticService:
                            pending_ids=pending,diagnostics=[])
             self.jobs[model_id]=True
             self._store(model_id,profile)
-            thread=threading.Thread(target=self._build,args=(model_id,model['fingerprint'],provider),
+            context=copy_context()
+            thread=threading.Thread(target=context.run,args=(self._build,model_id,model['fingerprint'],provider),
                                     daemon=True,name='model-semantics')
             thread.start()
             return profile
@@ -307,6 +310,7 @@ class SemanticService:
 
     def _build(self,model_id,expected,provider):
         try:
+            check_cancelled()
             with self.powerbi.lock:
                 model,ctx=self.powerbi.require_live(model_id,unchanged=True)
                 metadata=LiveDesktopSource(model['port']).semantic_metadata()
@@ -320,6 +324,7 @@ class SemanticService:
             pending=p.get('pending_ids',[e['id'] for e in entries[p.get('resume_from',0):]])
             work=[e for e in entries if e['id'] in pending];done=total-len(work)
             for start in range(0,len(work),20):
+                check_cancelled()
                 batch=work[start:start+20]
                 self._merge(model_id,expected,stage=f'正在梳理字段语义 · {done}/{total}',coverage=done)
                 system=('你在为 Power BI 建立待审阅的语义词典。只解释这批真实对象。'
@@ -359,6 +364,7 @@ class SemanticService:
                             '上次 JSON 没有通过约定格式或对象完整性检查。请重新返回本批所有原始 id，一项不漏；'
                             '不要添加字段或说明文字。精简 meaning，确保 JSON 完整闭合；未知文本用空字符串，不使用 null。'
                             '格式问题类型：'+encode(issues))]
+                check_cancelled()
                 updates={e.id:{**e.model_dump(exclude={'id'}),'state':'candidate','source':'模型建议 · 待用户审阅'} for e in result.entries}
                 done+=len(batch)
                 self._merge(model_id,expected,updates,coverage=done,pending_ids=[e['id'] for e in work[start+len(batch):]])

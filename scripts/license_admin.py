@@ -6,12 +6,15 @@ import getpass
 import os
 from pathlib import Path
 import sys
+import time
+from typing import Literal
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from backend.licensing import (
-    LICENSE_PREFIX, MACHINE_PREFIX, SIGNING_CONTEXT, LicenseError, decode_code, encode_code,
+    LICENSE_PREFIX, MACHINE_PREFIX, SIGNING_CONTEXT, TRIAL_PREFIX, TRIAL_SIGNING_CONTEXT,
+    LicenseError, LicenseInfo, decode_code, encode_code, verify_license,
 )
 
 
@@ -68,8 +71,17 @@ def load_private_key(directory: Path) -> Ed25519PrivateKey:
     return Ed25519PrivateKey.from_private_bytes(protect_private_key(protected, decrypt=True))
 
 
-def issue_license(key: Ed25519PrivateKey, code: str) -> str:
+def issue_license(key: Ed25519PrivateKey, code: str, *,
+                  license_type: Literal["permanent", "trial"] = "permanent",
+                  issued_at: int | None = None) -> str:
     fingerprint = decode_code(code, MACHINE_PREFIX, 16)
+    if license_type == "trial":
+        stamp = int(time.time()) if issued_at is None else issued_at
+        LicenseInfo(stamp)
+        payload = fingerprint + stamp.to_bytes(8, "big")
+        return encode_code(TRIAL_PREFIX, payload + key.sign(TRIAL_SIGNING_CONTEXT + payload))
+    if license_type != "permanent" or issued_at is not None:
+        raise LicenseError("授权类型无效；永久授权不接受签发时间。")
     return encode_code(LICENSE_PREFIX, fingerprint + key.sign(SIGNING_CONTEXT + fingerprint))
 
 
@@ -87,8 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--key-dir", type=Path, help="密钥目录，默认保存在当前 Windows 用户的本地应用数据中")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init", help="生成签发密钥，私钥由当前 Windows 用户 DPAPI 加密")
-    issue = commands.add_parser("issue", help="为指定机器码签发永久 CD-KEY")
+    issue = commands.add_parser("issue", help="为指定机器码签发永久或 7 天试用 CD-KEY")
     issue.add_argument("--machine-code", required=True)
+    issue.add_argument("--type", choices=["permanent", "trial"], default="permanent",
+                       help="permanent：永久（默认）；trial：从发码时起算 7×24 小时")
     issue.add_argument("--out", type=Path, help="另存为 UTF-8 文件；不覆盖现有文件")
     export = commands.add_parser("export", help="使用密码加密导出私钥备份，请勿发送给客户")
     export.add_argument("--out", type=Path, required=True)
@@ -101,11 +115,14 @@ def main(argv: list[str] | None = None) -> int:
             save_key_pair(directory, Ed25519PrivateKey.generate())
             print(f"签发密钥已保存至：{directory}\n请使用 export 命令创建密码加密备份。")
         elif args.command == "issue":
-            cd_key = issue_license(load_private_key(directory), args.machine_code)
+            private = load_private_key(directory)
+            cd_key = issue_license(private, args.machine_code, license_type=args.type)
+            info = verify_license(cd_key, args.machine_code, private.public_key())
             if args.out:
                 with args.out.open("x", encoding="utf-8") as handle:
                     handle.write(cd_key + "\n")
             print(cd_key)
+            print(info.summary, file=sys.stderr)
         elif args.command == "export":
             data = load_private_key(directory).private_bytes(
                 serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
