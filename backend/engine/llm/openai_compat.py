@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from .base import ChatMessage
 from .diagnostics import DEFAULT_MAX_TOKENS, token_usage
+from .reasoning import ReasoningLevel, reasoning_control
 from ...cancellation import check_cancelled, close_on_cancel
 
 _DEFAULT_MAX_TOKENS = DEFAULT_MAX_TOKENS
@@ -25,13 +26,15 @@ def _max_tokens(opts: dict[str, object]) -> int:
 
 
 class OpenAICompatProvider:
-    def __init__(self, api_key: str, model: str, base_url: str = "", *, enable_thinking: bool | None = None) -> None:
+    def __init__(self, api_key: str, model: str, base_url: str = "", *, enable_thinking: bool | None = None,
+                 reasoning_level: ReasoningLevel | None = None) -> None:
         from openai import OpenAI  # lazy
 
         self._client = OpenAI(api_key=api_key, base_url=base_url or None)
         self.model = model
         self.base_url = base_url
         self.enable_thinking = enable_thinking
+        self.reasoning_level = reasoning_level
 
     @staticmethod
     def _to_messages(system: str, messages: list[ChatMessage]) -> list[dict[str, Any]]:
@@ -63,16 +66,33 @@ class OpenAICompatProvider:
 
     @property
     def can_disable_thinking(self):
+        if getattr(self, 'reasoning_level', None) is not None:
+            control = reasoning_control('openai_compat', self.model, self.base_url)
+            return control.supported and control.can_disable
         host = (urlsplit(getattr(self, 'base_url', '')).hostname or '').lower()
         return (host == 'api.deepseek.com' or host == 'aliyuncs.com' or host.endswith('.aliyuncs.com')
                 or 'qwen' in self.model.lower() or self.enable_thinking is not None)
+
+    @property
+    def can_reduce_reasoning(self):
+        return reasoning_control('openai_compat', self.model, getattr(self, 'base_url', '')).supported
+
+    def _request_options(self, opts: dict[str, object]) -> dict[str, Any]:
+        level = opts.get('reasoning_level', getattr(self, 'reasoning_level', None))
+        if level is None:
+            return {'extra_body': self._extra_body(opts, self.enable_thinking, getattr(self, 'base_url', '')) or None}
+        if level not in ('low', 'high'):
+            raise ValueError('思考强度仅支持 low 或 high')
+        selected: ReasoningLevel = 'high' if level == 'high' else 'low'
+        control = reasoning_control('openai_compat', self.model, getattr(self, 'base_url', ''))
+        return control.request_options(selected, disable=opts.get('enable_thinking') is False)
 
     def complete(self, system: str, messages: list[ChatMessage], **opts: object) -> str:
         resp = self._client.chat.completions.create(
             model=self.model,
             messages=cast(Any, self._to_messages(system, messages)),
             max_tokens=_max_tokens({'max_tokens': getattr(self, 'max_tokens', DEFAULT_MAX_TOKENS), **opts}),
-            extra_body=self._extra_body(opts, self.enable_thinking, getattr(self, 'base_url', '')) or None,
+            **self._request_options(opts),
         )
         return (resp.choices[0].message.content or "") if resp.choices else ""
 
@@ -87,7 +107,7 @@ class OpenAICompatProvider:
             model=self.model,
             messages=cast(Any, self._to_messages(system, messages)),
             max_tokens=_max_tokens({'max_tokens': getattr(self, 'max_tokens', DEFAULT_MAX_TOKENS), **opts}),
-            extra_body=self._extra_body(opts, self.enable_thinking, getattr(self, 'base_url', '')) or None,
+            **self._request_options(opts),
             stream=True,
             stream_options={'include_usage': True},
         )

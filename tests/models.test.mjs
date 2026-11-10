@@ -5,17 +5,27 @@ import {mountModelManager} from '../frontend/models.js';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const profile=(id,extra={})=>({id,name:id,model:id,provider:'openai_compat',base_url:'http://localhost:8080/v1',
-  enable_thinking:null,has_key:true,ready:true,active:id==='qwen',...extra});
+  reasoning_level:'low',reasoning_control:{supported:true,mode:'effort',description:'原生 low / high 推理强度',
+    effective_label:extra.reasoning_level==='high'?'高强度思考':'低强度思考'},
+  has_key:true,ready:true,active:id==='qwen',...extra});
 
 async function fixture(initial=[profile('qwen'),profile('deepseek')]) {
   const {document,window}=parseHTML('<html><body><section></section></body></html>');
   const root=document.querySelector('section'),calls=[],settings=[];
-  let profiles=structuredClone(initial),active=profiles.find(p=>p.active)?.id||null,testError='';
+  let profiles=structuredClone(initial),active=profiles.find(p=>p.active)?.id||null,testError='',reasoningError='',reasoningWait;
   const current=()=>({...profiles.find(p=>p.id===active),active_profile_id:active});
   async function api(path,opts={}) {
     calls.push({path,...opts});
     if(path==='/settings')return current();
     if(path==='/llm/profiles'&&!opts.method)return structuredClone(profiles);
+    if(path.endsWith('/reasoning')&&opts.method==='PATCH') {
+      if(reasoningWait)await reasoningWait;
+      if(reasoningError)throw new Error(reasoningError);
+      const saved=profiles.find(p=>p.id===path.split('/')[3]);
+      saved.reasoning_level=JSON.parse(opts.body).reasoning_level;
+      saved.reasoning_control.effective_label=saved.reasoning_level==='high'?'高强度思考':'低强度思考';
+      return structuredClone(saved);
+    }
     if(path.endsWith('/activate')) {
       active=path.split('/')[3];profiles.forEach(p=>p.active=p.id===active);return current();
     }
@@ -30,7 +40,7 @@ async function fixture(initial=[profile('qwen'),profile('deepseek')]) {
     }
     if(opts.method==='POST'||opts.method==='PUT') {
       const data=JSON.parse(opts.body),id=opts.method==='POST'?'added':path.split('/').at(-1);
-      const old=profiles.find(p=>p.id===id),saved=profile(id,{...data,name:data.name||data.model,active:id===active,
+      const old=profiles.find(p=>p.id===id),saved=profile(id,{...old,...data,name:data.name||data.model,active:id===active,
         has_key:data.clear_key?false:!!(data.api_key||old?.has_key)});
       delete saved.api_key;delete saved.clear_key;
       if(old)profiles[profiles.indexOf(old)]=saved;else profiles.push(saved);
@@ -52,7 +62,9 @@ async function fixture(initial=[profile('qwen'),profile('deepseek')]) {
     const form=root.querySelector('form');form.reportValidity=()=>true;
     form.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();
   }
-  return {root,calls,settings,click,input,choose,submit,failTest:message=>{testError=message;}};
+  return {root,calls,settings,click,input,choose,submit,failTest:message=>{testError=message;},
+    failReasoning:message=>{reasoningError=message;},
+    deferReasoning:()=>{let release;reasoningWait=new Promise(resolve=>{release=resolve;});return release;}};
 }
 
 test('saved models list shows current selection and can switch without editing the other model',async()=>{
@@ -72,7 +84,8 @@ test('adding a model creates a separate profile and optionally activates it',asy
   await f.click('[data-save-use]');
   const created=f.calls.find(call=>call.path==='/llm/profiles'&&call.method==='POST');
   assert.equal(JSON.parse(created.body).model,'custom-model');
-  assert.equal(JSON.parse(created.body).enable_thinking,null);
+  assert.equal(JSON.parse(created.body).enable_thinking,undefined);
+  assert.equal(f.settings.at(-1).reasoning_level,'low');
   assert.equal(f.settings.at(-1).active_profile_id,'added');
   assert.equal(f.root.querySelectorAll('.llm-profile').length,3);
   assert.ok(!f.root.innerHTML.includes('test-new-secret'));
@@ -82,11 +95,13 @@ test('editing an inactive model preserves its key with a blank input and keeps t
   const f=await fixture();await f.click('[data-edit="deepseek"]');
   assert.equal(f.root.querySelector('[name="api_key"]').type,'password');
   assert.equal(f.root.querySelector('[name="api_key"]').value,'');
-  f.input('name','更名');f.choose('enable_thinking','off');await f.submit();
+  assert.equal(f.root.querySelector('[name="enable_thinking"]'),null);
+  f.input('name','更名');await f.submit();
   const edited=f.calls.find(call=>call.method==='PUT');
   assert.equal(edited.path,'/llm/profiles/deepseek');
   assert.equal(JSON.parse(edited.body).api_key,'');
-  assert.equal(JSON.parse(edited.body).enable_thinking,false);
+  assert.equal(JSON.parse(edited.body).enable_thinking,undefined);
+  assert.equal(JSON.parse(edited.body).reasoning_level,undefined);
   assert.equal(f.settings.at(-1).active_profile_id,'qwen');
   assert.equal(f.calls.filter(call=>call.path.endsWith('/activate')).length,0);
 });
@@ -158,5 +173,54 @@ test('output budget defaults for legacy profiles and persists per model',async()
   assert.equal(f.root.querySelector('[name="max_tokens"]').value,'32000');
   await f.click('[data-back]');await f.click('[data-edit="qwen"]');
   assert.equal(f.root.querySelector('[name="max_tokens"]').value,'16000');
-  assert.ok(f.root.textContent.includes('阿里云百炼'));
+  assert.ok(f.root.textContent.includes('默认低强度'));
+});
+
+test('strength is visible on each card and changes without editing or activating it',async()=>{
+  const f=await fixture();
+  const low='[data-reasoning-profile="deepseek"][data-reasoning-level="low"]';
+  const high='[data-reasoning-profile="deepseek"][data-reasoning-level="high"]';
+  assert.equal(f.root.querySelector(low).getAttribute('aria-pressed'),'true');
+  await f.click(high);
+  const changed=f.calls.find(call=>call.method==='PATCH');
+  assert.equal(changed.path,'/llm/profiles/deepseek/reasoning');
+  assert.deepEqual(JSON.parse(changed.body),{reasoning_level:'high'});
+  assert.equal(f.root.querySelector(high).getAttribute('aria-pressed'),'true');
+  assert.equal(f.root.querySelector(low).getAttribute('aria-pressed'),'false');
+  assert.equal(f.settings.at(-1).active_profile_id,'qwen');
+  assert.equal(f.root.querySelector('[data-model-form]'),null);
+  await f.click(high);
+  assert.equal(f.calls.filter(call=>call.method==='PATCH').length,1);
+  await f.click('[data-edit="deepseek"]');f.input('name','保留高强度');await f.submit();
+  assert.equal(f.root.querySelector(high).getAttribute('aria-pressed'),'true');
+});
+
+test('failed strength updates keep the saved state and show an explicit error',async()=>{
+  const f=await fixture();f.failReasoning('强度保存失败');
+  await f.click('[data-reasoning-profile="qwen"][data-reasoning-level="high"]');
+  assert.equal(f.root.querySelector('[data-reasoning-profile="qwen"][data-reasoning-level="low"]').getAttribute('aria-pressed'),'true');
+  assert.ok(f.root.querySelector('.model-feedback.error').textContent.includes('强度保存失败'));
+  assert.equal(f.root.getAttribute('aria-busy'),'false');
+  assert.equal(f.root.querySelector('fieldset').disabled,false);
+});
+
+test('pending strength changes disable controls and prevent competing requests',async()=>{
+  const f=await fixture(),release=f.deferReasoning();
+  await f.click('[data-reasoning-profile="qwen"][data-reasoning-level="high"]');
+  assert.equal(f.root.querySelector('fieldset').disabled,true);
+  await f.click('[data-reasoning-profile="deepseek"][data-reasoning-level="high"]');
+  assert.equal(f.calls.filter(call=>call.method==='PATCH').length,1);
+  release();await tick();
+  assert.equal(f.settings.at(-1).reasoning_level,'high');
+  assert.equal(f.root.querySelector('fieldset').disabled,false);
+});
+
+test('unsupported models never display a working low-strength selection',async()=>{
+  const f=await fixture([profile('qwen',{reasoning_control:{supported:false,mode:'unsupported',
+    description:'此模型固定思考，不支持降低强度',effective_label:'服务端默认 · 强度不可调'}})]);
+  const buttons=[...f.root.querySelectorAll('[data-reasoning-level]')];
+  assert.ok(buttons.every(button=>button.disabled&&button.getAttribute('aria-pressed')==='false'));
+  assert.ok(f.root.textContent.includes('不支持降低强度'));
+  await f.click('[data-reasoning-level="high"]');
+  assert.equal(f.calls.filter(call=>call.method==='PATCH').length,0);
 });

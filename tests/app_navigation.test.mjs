@@ -15,7 +15,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const scroll=document.querySelector('#message-scroll');
   Object.assign(scroll,{scrollHeight:1000,clientHeight:400,scrollTop:600,scrollTo({top}){this.scrollTop=top;}});
   const modal=document.querySelector('#modal');modal.showModal=()=>{modal.open=true;};modal.close=()=>{modal.open=false;modal.dispatchEvent(new window.Event('close'));};
-  const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务'};
+  const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务',
+    reasoning_level:'low',reasoning_control:{supported:true}};
   const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
     context:{tables:{事实表:[{name:'金额',dtype:'double'}]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
   const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
@@ -96,6 +97,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
   try {
     await import('../frontend/app.js?navigation-test');await tick();await tick();
     assert.equal($('#connection-label').textContent,'Desktop 已连接');
+    assert.equal($('#active-llm').textContent,'test-service · 低强度');
     const treeNode=$('#model-tree').firstChild;draft('重连期间保留的草稿');
     connectionStatus='reconnecting';intervals.find(timer=>timer.ms===3000).callback();await tick();await tick();
     assert.equal($('#connection-label').textContent,'自动重连中');assert.equal($('#prompt').value,'重连期间保留的草稿');

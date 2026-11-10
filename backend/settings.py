@@ -13,9 +13,10 @@ from .database import Database, encode, now, uid
 from .engine.llm.claude import ClaudeProvider
 from .engine.llm.openai_compat import OpenAICompatProvider
 from .engine.net import enable_os_trust_store
-from .schemas import LLMProfileInput, SettingsInput
+from .schemas import LLMProfileInput, ReasoningInput, SettingsInput
 from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
 from .engine.llm.diagnostics import DEFAULT_MAX_TOKENS
+from .engine.llm.reasoning import reasoning_control
 
 
 class SettingsService:
@@ -30,6 +31,7 @@ class SettingsService:
             pass
         self.cipher = Fernet(key_path.read_bytes())
         self._migrate()
+        self._migrate_reasoning()
 
     @staticmethod
     def defaults():
@@ -39,6 +41,7 @@ class SettingsService:
             "base_url": os.getenv("PBI_LLM_BASE_URL", ""),
             "encrypted_key": "",
             "enable_thinking": None,
+            "reasoning_level": "low",
             "max_tokens": DEFAULT_MAX_TOKENS,
             "idle_timeout": GENERATION_IDLE_TIMEOUT,
             "generation_timeout": GENERATION_TIMEOUT,
@@ -89,10 +92,26 @@ class SettingsService:
                 raise HTTPException(409, "无法解密 API Key，请重新配置；迁移时需同时保留 secret.key")
         return os.getenv("PBI_LLM_API_KEY", "") if cfg.get('use_env_key', True) else ''
 
+    def _migrate_reasoning(self):
+        with self.db.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT value FROM settings WHERE id=1').fetchone()
+            active_id = json.loads(row['value']).get('active_profile_id') if row else None
+            for profile in db.execute('SELECT id,config FROM llm_profiles').fetchall():
+                cfg = json.loads(profile['config'])
+                if 'reasoning_level' in cfg:
+                    continue
+                cfg['reasoning_level'] = 'low'
+                db.execute('UPDATE llm_profiles SET config=? WHERE id=?', (encode(cfg), profile['id']))
+                if profile['id'] == active_id:
+                    self._select(db, active_id, cfg)
+
     def _public_config(self, cfg):
         cfg = {**self.defaults(), **cfg}
         key = self.key(cfg)
-        return {k: cfg[k] for k in ("provider", "model", "base_url", "enable_thinking", "max_tokens", "idle_timeout", "generation_timeout")} | {
+        control = reasoning_control(cfg['provider'], cfg['model'], cfg['base_url'])
+        return {k: cfg[k] for k in ("provider", "model", "base_url", "enable_thinking", "reasoning_level", "max_tokens", "idle_timeout", "generation_timeout")} | {
+            "reasoning_control": control.public(cfg['reasoning_level']),
             "has_key": bool(key), "ready": bool(cfg["model"] and key and
                 (cfg["base_url"] or cfg["provider"] == "claude")),
         }
@@ -162,6 +181,9 @@ class SettingsService:
             cfg.update(provider=body.provider, model=body.model, base_url=body.base_url.rstrip('/'))
             if 'enable_thinking' in body.model_fields_set:
                 cfg['enable_thinking'] = body.enable_thinking
+                cfg['reasoning_level'] = 'high' if body.enable_thinking else 'low'
+            if 'reasoning_level' in body.model_fields_set:
+                cfg['reasoning_level'] = body.reasoning_level
             name = (body.name or body.model) if isinstance(body, LLMProfileInput) else (row['name'] if row else body.model)
             name = name or '未命名模型'
             profile_id, stamp = profile_id or uid(), now()
@@ -179,6 +201,26 @@ class SettingsService:
             'id': profile_id, 'name': name,
             'active': self.raw().get('active_profile_id') == profile_id,
         }
+
+    def save_reasoning(self, profile_id: str, body: ReasoningInput):
+        with self.db.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM llm_profiles WHERE id=?', (profile_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, '模型配置不存在，请刷新模型列表')
+            cfg = {**self.defaults(), **json.loads(row['config'])}
+            control = reasoning_control(cfg['provider'], cfg['model'], cfg['base_url'])
+            if not control.supported:
+                raise HTTPException(409, control.public(body.reasoning_level)['description'])
+            cfg['reasoning_level'] = body.reasoning_level
+            cfg['enable_thinking'] = None
+            db.execute('UPDATE llm_profiles SET config=?,updated_at=? WHERE id=?',
+                       (encode(cfg), now(), profile_id))
+            selected = db.execute('SELECT value FROM settings WHERE id=1').fetchone()
+            active = bool(selected and json.loads(selected['value']).get('active_profile_id') == profile_id)
+            if active:
+                self._select(db, profile_id, cfg)
+        return self._public_config(cfg) | {'id': profile_id, 'name': row['name'], 'active': active}
 
     def activate(self, profile_id):
         with self.db.connection() as db:
@@ -220,7 +262,8 @@ class SettingsService:
                 provider._client = Anthropic(api_key=key, base_url=cfg["base_url"])
         else:
             provider = OpenAICompatProvider(key, cfg["model"], cfg["base_url"],
-                                             enable_thinking=cfg['enable_thinking'])
+                                             enable_thinking=cfg['enable_thinking'],
+                                             reasoning_level=cfg['reasoning_level'])
         provider.idle_timeout = cfg['idle_timeout']
         provider.generation_timeout = cfg['generation_timeout']
         provider.max_tokens = cfg['max_tokens']

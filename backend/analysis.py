@@ -388,7 +388,9 @@ class AnalysisService:
                             summary=summary+[ChatMessage('user',
                                 '上次请求没有返回结论正文。请直接根据上面的实际 evidence，用简短中文给出关键结论、'
                                 '来源编号和仍无法确定的内容，不需要重新查询。不要重复分析口径，不要编造缺失数字。')]
-                            if getattr(provider,'can_disable_thinking',False):
+                            if getattr(provider,'can_reduce_reasoning',False):
+                                options['reasoning_level']='low'
+                            elif getattr(provider,'can_disable_thinking',False):
                                 options['enable_thinking']=False
                         for event in generate('analysis_summary',SUMMARY_SYSTEM+'\n'+IMAGE_RULES,summary,report=report,**options):
                             if event['type']=='delta':

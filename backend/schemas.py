@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
 from .engine.llm.diagnostics import DEFAULT_MAX_TOKENS
+from .engine.llm.reasoning import ReasoningLevel
 
 
 class SettingsInput(BaseModel):
@@ -13,6 +14,7 @@ class SettingsInput(BaseModel):
     api_key: str | None = Field(default=None, max_length=2000)
     clear_key: bool = False
     enable_thinking: bool | None = None
+    reasoning_level: ReasoningLevel = 'low'
     max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=256, le=131072)
     idle_timeout: int = Field(default=GENERATION_IDLE_TIMEOUT, ge=30, le=600)
     generation_timeout: int = Field(default=GENERATION_TIMEOUT, ge=180, le=7200)
@@ -30,6 +32,10 @@ class LLMProfileInput(SettingsInput):
     @classmethod
     def trimmed_name(cls, value):
         return value.strip()
+
+
+class ReasoningInput(BaseModel):
+    reasoning_level: ReasoningLevel
 
 
 class ConnectInput(BaseModel):

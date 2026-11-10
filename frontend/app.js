@@ -172,7 +172,9 @@ function renderControls() {
   state.view.queryName=$('#query-select').value;
   $('#calibration-open').hidden=state.view.mode!=='dax';
   $('#calibration-label').textContent=state.view.points.length?(state.view.points[0].filters.length?`校准 · ${state.view.points[0].filters.length} 个条件`:'校准 · 全模型'):'校准';
-  $('#active-llm').textContent=state.settings.model||'配置大模型';
+  const strength=state.settings.reasoning_control?.supported?(state.settings.reasoning_level==='high'?'高强度':'低强度'):
+    state.settings.reasoning_control?'强度不可调':'';
+  $('#active-llm').textContent=state.settings.model?(state.settings.model+(strength?` · ${strength}`:'')):'配置大模型';
   $('#model-settings-chip').title=state.settings.name?`${state.settings.name} · 点击切换或添加模型`:'点击添加模型';
   $('#sidebar-model').textContent=state.settings.model||'连接你的大模型服务器';
   const mode=MODES[state.view.mode]||MODES.dax;

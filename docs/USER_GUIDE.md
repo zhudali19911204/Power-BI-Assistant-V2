@@ -167,7 +167,7 @@ python -m venv .venv
 | 服务器 API 地址 | 填服务商的 API 根地址，不是聊天网页地址；Anthropic 官方服务可留空 |
 | 模型名称 / ID | 服务端实际暴露的 ID，不要仅填写自定义显示名称 |
 | API Key | 使用该服务的有效密钥；无鉴权的内部兼容服务可填 `local` |
-| 回复方式 | 支持阿里云百炼、DeepSeek 官方接口和自建 Qwen 的思考开关；其他服务或 Anthropic Messages 协议选择“服务器默认” |
+| 思考强度 | 不在编辑表单内。保存后直接在模型卡片点击“低强度 · 快速”或“高强度 · 深入” |
 | 单次输出额度 | 默认 16000 token，允许 256～131072，须符合所选模型的范围；思考可能占用输出额度 |
 | 无新数据等待时间 | 默认 90 秒，允许 30～600 秒 |
 | 单次生成总时限 | 默认 900 秒，即 15 分钟，允许 180～7200 秒；不能小于无新数据等待时间 |
@@ -199,12 +199,37 @@ python -m venv .venv
 - 编辑已有条目时，API Key 留空表示保留**该条目自己的密钥**；需要清除时勾选“清除此模型已保存的 Key”。
 - 点击“使用此模型”后，下一次请求使用新服务，已有会话和历史内容保留。
 - 已提交的生成任务固定使用提交时的模型配置；中途切换服务不会更换该任务的模型。
+- 卡片直接显示思考强度及实际生效方式；切换后立即保存到该模型，不需要编辑或再次点击保存，也不会切换当前模型。
 - 删除当前条目会选择列表中的其他模型；删除最后一个后，需重新添加才能继续调用 AI。
 - API Key 加密保存在本机，不在界面回显。更换服务后，同一会话中的相关历史内容可能会发送到新服务，切换前应确认数据权限。
 
-### 回复方式与等待时间
+### 思考强度与等待时间
 
-“标准回复 · 关闭深度思考”和“深度思考”会按 OpenAI 兼容服务器地址选择对应参数：阿里云百炼使用顶层 `enable_thinking`，DeepSeek 官方接口使用 `thinking.type`，自建 Qwen 使用 `chat_template_kwargs.enable_thinking`。其他服务或 Anthropic Messages 协议应选“服务器默认”。模型思考数据会计入活动检测，但不作为正文显示或保存。
+新增模型默认**低强度**；首次启动新版时，没有强度字段的已有配置也统一迁移到低强度，地址、密钥、输出额度及等待设置不变。已经选择过高强度的配置不会在下次启动时重置。输入框下方同时显示当前模型的强度。
+
+每张模型卡片提供“低强度 · 快速”和“高强度 · 深入”两个直接切换按钮：
+
+- **原生强度接口**：发送 `reasoning_effort=low/high`；低强度仍然思考，不等于关闭思考。
+- **仅支持开关的接口**：低强度使用标准回复、关闭深度思考；高强度开启思考。卡片明确显示“标准回复 · 思考已关闭”或“深度思考已开启”，避免误认为两档都是原生推理强度。
+- **固定思考或参数尚未确认的版本**：按钮禁用并说明限制，按服务端默认运行，不会显示为已经降低强度，也不会自动尝试错误参数或重发收费请求。
+
+适配同时检查 API 协议、服务器域名和模型 ID，不会仅凭模型名称向任意代理发送同一组参数。当前 OpenAI Chat Completions 适配范围：
+
+| 模型／接口 | 强度方式及限制 |
+| --- | --- |
+| 千问：百炼 Qwen3 混合思考版本 | `enable_thinking` 开关；固定思考版本不显示可调强度 |
+| 自建 Qwen3 | `chat_template_kwargs.enable_thinking` 开关；服务端需支持模板参数 |
+| DeepSeek：官方 V4／Flash、百炼 V4.1 及指定新版 V4 | 原生 `low/high`，并按接口设置思考开关；百炼不支持 `low` 的旧版 V4 Pro 使用开关兼容 |
+| GLM：官方及百炼 GLM-5.3 | 原生 `low/high`，始终思考，不发送禁用思考参数；其他已适配版本按接口使用强度或开关 |
+| Kimi：官方 K3／K3.1、百炼／方舟已识别 K3 | 原生 `low/high`；官方 K2.5／K2.6 使用开关；K2.7 固定思考不可调 |
+| MiniMax：官方及百炼 M3.1 Flash | 原生 `low/high`；官方 M3 使用 `thinking.type` 开关；M2 系列固定思考不可调 |
+| 豆包：方舟 Seed 2.x／Evolving／Character | 原生 `low/high`；已识别旧版使用开关；未知 `ep-...` 部署别名不猜测能力 |
+| 混元：官方 Hunyuan-A13B | 思考开关；其他旧版不套用此参数 |
+| 文心／千帆、未知代理及 Anthropic Messages 协议 | 强度参数尚未适配，明确标注不可调；原有模型调用方式保留 |
+
+不同版本的能力可能变化，不能保证所有同品牌模型或第三方代理都接受这些参数。高强度通常增加等待和消耗，不保证更准确；DAX 仍需真实模型验证。模型思考数据计入活动检测，但不作为正文显示或保存。当前保存的内网 Qwen、百炼 Qwen Max 和 DeepSeek V4.1 已用合成问题验证低／高两档请求；未持有凭据的其他接口仅核对参数文档和自动化请求测试。
+
+参数依据：[百炼思考模式](https://help.aliyun.com/zh/model-studio/deep-thinking)、[百炼 GLM](https://help.aliyun.com/zh/model-studio/glm)、[百炼 DeepSeek](https://help.aliyun.com/zh/model-studio/deepseek-api)、[DeepSeek 官方](https://api-docs.deepseek.com/guides/thinking_mode)、[GLM-5.3](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3)、[Kimi 强度](https://platform.kimi.com/docs/guide/use-reasoning-effort.md)、[MiniMax OpenAI 接口](https://platform.minimaxi.com/docs/api-reference/text-openai-api)、[方舟思考模式](https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh)、[混元接口](https://cloud.tencent.com/document/product/1729/105701)。
 
 “单次输出额度”用于 DAX、Power Query、分析规划/修复/总结和语义梳理的每次生成请求。它不是输入上下文容量，也不是等待时间。默认 16000 token；推理模型的思考可能占用这个额度。出现“模型因长度限制停止”时，按模型实际支持的范围适当提高额度或缩小任务，不能仅延长等待时间。各模型单独保存，旧配置自动使用默认值。
 

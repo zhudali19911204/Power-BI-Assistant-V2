@@ -147,7 +147,8 @@ def test_selected_provider_receives_its_own_credentials(client, app, monkeypatch
 
     monkeypatch.setattr('backend.settings.OpenAICompatProvider', Provider)
     app.state.settings.provider(second['id'])
-    assert calls[-1] == ('second-key', 'deepseek', 'https://inference.example/v1', {'enable_thinking': None})
+    assert calls[-1] == ('second-key', 'deepseek', 'https://inference.example/v1',
+                        {'enable_thinking': None, 'reasoning_level': 'low'})
     app.state.settings.provider()
     assert calls[-1][0] == 'private-qwen-key' and calls[-1][3]['enable_thinking'] is False
     client.post(f"/api/llm/profiles/{second['id']}/activate", json={})
@@ -237,6 +238,69 @@ def test_environment_defaults_are_imported_as_independent_profile(tmp_path, monk
     assert service.key(service.raw()) == 'environment-key'
     monkeypatch.setenv('PBI_LLM_API_KEY', 'changed-env-key')
     assert service.key(service.raw()) == 'environment-key'
+
+
+def test_reasoning_is_low_by_default_and_card_changes_are_independent(client, app, tmp_path):
+    url = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    first = add(client, 'qwen3.8-max', base_url=url, max_tokens=32000)
+    second = add(client, 'glm-5.3', 'separate-key', base_url=url)
+    assert first['reasoning_level'] == second['reasoning_level'] == 'low'
+    before = config(app, second['id'])
+    changed = client.patch(f"/api/llm/profiles/{second['id']}/reasoning",
+                           json={'reasoning_level': 'high'})
+    assert changed.status_code == 200
+    assert changed.json()['reasoning_level'] == 'high'
+    assert not changed.json()['active']
+    assert client.get('/api/settings').json()['active_profile_id'] == first['id']
+    after = config(app, second['id'])
+    assert after == {**before, 'reasoning_level': 'high', 'enable_thinking': None}
+    assert app.state.settings.key(after) == 'separate-key'
+    assert config(app, first['id'])['max_tokens'] == 32000
+    edited = client.put(f"/api/llm/profiles/{second['id']}", json={
+        'name': '更名', 'model': 'glm-5.3', 'base_url': url}).json()
+    assert edited['reasoning_level'] == 'high'
+    restarted = create_app(tmp_path).state.settings
+    assert next(p for p in restarted.profiles() if p['id'] == second['id'])['reasoning_level'] == 'high'
+    client.post(f"/api/llm/profiles/{second['id']}/activate", json={})
+    assert client.get('/api/settings').json()['reasoning_level'] == 'high'
+    client.patch(f"/api/llm/profiles/{second['id']}/reasoning", json={'reasoning_level': 'low'})
+    assert client.get('/api/settings').json()['reasoning_level'] == 'low'
+
+
+def test_existing_profiles_migrate_once_to_low_without_changing_keys_or_selection(client, app, tmp_path):
+    first = add(client, 'qwen3.8-max', enable_thinking=True)
+    second = add(client, 'glm-5.3', 'second-key')
+    originals = {}
+    for profile in (first, second):
+        cfg = config(app, profile['id'])
+        cfg.pop('reasoning_level')
+        originals[profile['id']] = cfg
+        app.state.db.execute('UPDATE llm_profiles SET config=? WHERE id=?', (encode(cfg), profile['id']))
+    restarted = create_app(tmp_path).state.settings
+    for profile in restarted.profiles():
+        assert profile['reasoning_level'] == 'low'
+        assert config(app, profile['id']) == {**originals[profile['id']], 'reasoning_level': 'low'}
+    assert restarted.public()['active_profile_id'] == first['id']
+    assert restarted.public()['reasoning_level'] == 'low'
+
+
+@pytest.mark.parametrize('level', ['medium', '', None, True, 1])
+def test_invalid_reasoning_does_not_change_config(client, app, level):
+    saved = add(client, 'qwen3.8-max', base_url='https://dashscope.aliyuncs.com/v1')
+    before = config(app, saved['id'])
+    response = client.patch(f"/api/llm/profiles/{saved['id']}/reasoning", json={'reasoning_level': level})
+    assert response.status_code == 422
+    assert config(app, saved['id']) == before
+
+
+def test_unverified_reasoning_rejected_without_touching_profile(client, app):
+    saved = add(client, 'unknown-model')
+    before = config(app, saved['id'])
+    assert not saved['reasoning_control']['supported']
+    response = client.patch(f"/api/llm/profiles/{saved['id']}/reasoning", json={'reasoning_level': 'high'})
+    assert response.status_code == 409
+    assert config(app, saved['id']) == before
+    assert client.patch('/api/llm/profiles/missing/reasoning', json={'reasoning_level': 'low'}).status_code == 404
 
 
 @pytest.mark.parametrize('body', [

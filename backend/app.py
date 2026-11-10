@@ -22,7 +22,7 @@ from .engine.context.live_writer import LiveDesktopWriter
 from .engine.dax.live_eval import LiveDesktopEvaluator
 from .engine.llm.base import user
 from .powerbi import PowerBIService, context_from_dict
-from .schemas import ApplyInput, CancelGenerationInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, SettingsInput
+from .schemas import ApplyInput, CancelGenerationInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, ReasoningInput, SettingsInput
 from .settings import SettingsService
 from .fields import FieldPreviewInput
 from .reports import reports_for_instances
@@ -149,6 +149,10 @@ def create_app(directory=None):
     @app.put('/api/llm/profiles/{profile_id}')
     def update_llm_profile(profile_id: str, body: LLMProfileInput):
         return settings.save_profile(body, profile_id)
+
+    @app.patch('/api/llm/profiles/{profile_id}/reasoning')
+    def update_llm_reasoning(profile_id: str, body: ReasoningInput):
+        return settings.save_reasoning(profile_id, body)
 
     @app.post('/api/llm/profiles/{profile_id}/activate')
     def activate_llm_profile(profile_id: str):

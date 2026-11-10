@@ -141,6 +141,20 @@ def test_empty_summary_retries_once_with_same_evidence_images_and_budget(setup, 
     assert not app.state.db.all('SELECT * FROM llm_generations')
 
 
+def test_empty_summary_reduces_native_strength_without_disabling_required_thinking(setup, monkeypatch):
+    app, client, conv, provider, queries = wire(setup, monkeypatch, [
+        ('', 'length', True), ('实际总额125。[Q1]', 'stop', True)])
+    provider.can_reduce_reasoning = True
+    provider.can_disable_thinking = False
+    provider.reasoning_level = 'high'
+    events = send(client, conv)
+    assert events[-1]['type'] == 'done'
+    assert len(queries) == 1
+    assert provider.calls[-1][1]['reasoning_level'] == 'low'
+    assert 'enable_thinking' not in provider.calls[-1][1]
+    assert provider.reasoning_level == 'high'
+
+
 def test_two_empty_summaries_stop_and_explain_budget_exhaustion(setup, monkeypatch):
     app, client, conv, provider, queries = wire(setup, monkeypatch, [('', 'length', True)] * 2)
     events = send(client, conv)
