@@ -65,13 +65,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
       conversations.unshift(conversation);return json(conversation);
     }
     if(path==='/api/conversations')return json(conversations);
-    if(path==='/api/artifacts/measure-test/apply'){
+    if(path==='/api/artifacts/measure-test/apply'||path==='/api/artifacts/column-test/apply'){
       const body=JSON.parse(opts.body);writes.push(body);
       if(failWrite){failWrite=false;return new Response(JSON.stringify({detail:'测试：目标度量验证失败'}),{status:409});}
       const result={ok:true,detail:'已写入所选表',name:body.name,home_table:body.home_table,applied_at:'2026-11-10T08:00:00Z',
         validation:{ok:true,run_verified:true,errors:[],warnings:[]}};
       for(const rows of messages.values())for(const message of rows)for(const artifact of message.artifacts||[])
-        if(artifact.id==='measure-test')Object.assign(artifact,result);
+        if(path===`/api/artifacts/${artifact.id}/apply`)Object.assign(artifact,result);
       return json(result);
     }
     const id=path.split('/')[3];
@@ -209,7 +209,9 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.ok(document.querySelector('.history-task.complete'));
     dax.emit({type:'start',message_id:'answer-c2'});dax.emit({type:'delta',text:'DAX 回复。'});
     dax.emit({type:'artifacts',artifacts:[{id:'measure-test',kind:'dax_measure',name:'候选金额',home_table:'事实表',
-      expression:'SUM(事实表[金额])',validation:{ok:true,run_verified:true,errors:[],warnings:[]}}]});
+      expression:'SUM(事实表[金额])',validation:{ok:true,run_verified:true,errors:[],warnings:[]}},
+      {id:'column-test',kind:'dax_column',name:'新金额列',home_table:'事实表',expression:'事实表[金额] * 2',
+        validation:{ok:true,run_verified:true,verification_scope:'row_sample',sample:'50 行',errors:[],warnings:['仅抽样检查']}}]});
     dax.emit({type:'done'});dax.controller.close();await tick();await tick();await tick();
     assert.equal($('#send-button').disabled,false);assert.ok($('#messages').textContent.includes('DAX 回复。'));
     await click('[data-apply="measure-test"]');
@@ -226,6 +228,18 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.deepEqual(writes.at(-1),{name:'自定义金额',home_table:'度量表',overwrite:true});
     assert.equal(modal.open,false);assert.ok($('#messages').textContent.includes('自定义金额'));
     assert.ok($('[data-apply="measure-test"]').textContent.includes('已写入模型'));
+    assert.ok($('#messages').textContent.includes('计算列 · 事实表[新金额列]'));
+    assert.ok($('#messages').textContent.includes('Desktop 行上下文抽样通过'));
+    await click('[data-apply="column-test"]');
+    assert.ok($('#modal-body').textContent.includes('计算列名称')&&$('#modal-body').textContent.includes('所属表'));
+    assert.ok($('#modal-body').textContent.includes('执行完整计算'));
+    assert.equal($('#overwrite-measure'),null);
+    assert.equal($('#write-measure-name').value,'新金额列');assert.equal($('#write-home-table').value,'事实表');
+    $('#write-measure-name').value='实际计算列';$('#write-measure-name').dispatchEvent(new window.Event('input'));
+    await click('#confirm-write');
+    assert.deepEqual(writes.at(-1),{name:'实际计算列',home_table:'事实表',overwrite:false});
+    assert.ok($('#messages').textContent.includes('计算列 · 事实表[实际计算列]'));
+    assert.ok($('[data-apply="column-test"]').textContent.includes('已写入模型'));
     await click('[data-conversation="c1"]');
     assert.equal($('#page-title').textContent,'数据分析助手');
     assert.ok($('#messages').textContent.includes('第一段分析。后台续写。'));

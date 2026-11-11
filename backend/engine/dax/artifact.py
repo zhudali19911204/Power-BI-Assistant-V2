@@ -21,9 +21,9 @@ from ..core.artifact import Artifact, ValidationResult
 from ..context.base import ModelContext
 
 # A qualified column reference: 'Table Name'[Column] or Table[Column].
-_COLUMN_REF = re.compile(r"(?:'((?:[^']|'')+)'|([A-Za-z_][\w]*))\s*\[((?:[^\]]|\]\])+)\]")
+_COLUMN_REF = re.compile(r"(?:'((?:[^']|'')+)'|([^\W\d]\w*))\s*\[((?:[^\]]|\]\])+)\]")
 # Any bracketed token, used to find bare measure references [Measure] that are NOT column refs.
-_BRACKET = re.compile(r"\[([^\]]+)\]")
+_BRACKET = re.compile(r"\[((?:[^\]]|\]\])+)\]")
 
 
 def _code_only(content: str) -> str:
@@ -67,6 +67,9 @@ class DaxMeasureArtifact(Artifact):
         super().__init__(content)
         self.name = name
 
+    def has_bare_reference(self,ctx,name):
+        return ctx.has_measure(name)
+
     def validate(self, ctx: ModelContext) -> ValidationResult:
         errors: list[str] = []
         warnings: list[str] = []
@@ -92,10 +95,10 @@ class DaxMeasureArtifact(Artifact):
         for m in _BRACKET.finditer(code):
             if any(s <= m.start() and m.end() <= e for s, e in column_spans):
                 continue  # this bracket is the [Column] half of a column ref, already handled
-            name = m.group(1).strip()
+            name = m.group(1).strip().replace(']]',']')
             if name == self.name:
                 continue  # the measure referring to itself by name (e.g. "Name = ..." LHS)
-            if not ctx.has_measure(name):
+            if not self.has_bare_reference(ctx,name):
                 warnings.append(f"度量值 [{name}] 不在模型中（若为本次新建/基础度量可忽略）")
 
         # --- cheap structural check: balanced parentheses ---
@@ -110,3 +113,21 @@ class DaxMeasureArtifact(Artifact):
             warnings=warnings,
             run_verified=False,  # static only — live EVALUATE (M6) is what flips this to True
         )
+
+
+class DaxCalculatedColumnArtifact(DaxMeasureArtifact):
+    kind='dax_column'
+
+    def __init__(self,content,name,table):
+        super().__init__(content,name)
+        self.table=table
+
+    def has_bare_reference(self,ctx,name):
+        return ctx.has_column(self.table,name) or ctx.has_measure(name)
+
+    def validate(self,ctx):
+        result=super().validate(ctx)
+        if not self.table or self.table not in ctx.tables:
+            result.ok=False
+            result.errors.append('计算列需要明确模型中的所属表，请使用完整定义：\'表名\'[列名] = 表达式')
+        return result

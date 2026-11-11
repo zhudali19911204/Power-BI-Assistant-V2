@@ -6,8 +6,8 @@ import datetime
 from dataclasses import asdict
 
 from .engine.context.base import Measure
-from .engine.dax.artifact import DaxMeasureArtifact
-from .engine.dax.generate import parse_dax_blocks
+from .engine.dax.artifact import DaxMeasureArtifact, DaxCalculatedColumnArtifact
+from .engine.dax.generate import parse_dax_objects
 from .engine.dax.live_eval import is_table_expression, validate_measure_set
 from .engine.mquery.artifact import MScriptArtifact
 from .engine.mquery.generate import parse_m_blocks
@@ -19,11 +19,11 @@ def candidates(text, mode, query_name=""):
             return []
         return [{"name": query_name, "expression": code, "kind": "m_script"}
                 for code in parse_m_blocks(text)]
-    if not re.search(r"```dax\s*\n", text, re.I):
-        return []
-    return [{"name": name or f"候选度量_{i + 1}", "expression": expression,
-             "kind": "dax_table" if is_table_expression(expression) else "dax_measure"}
-            for i, (name, expression) in enumerate(parse_dax_blocks(text))]
+    objects=parse_dax_objects(text)
+    for i,obj in enumerate(objects):
+        obj.setdefault('kind','dax_table' if is_table_expression(obj['expression']) else 'dax_measure')
+        if not obj['name']:obj['name']=f'候选度量_{i+1}'
+    return objects
 
 
 def validate(ctx, objects, home_table, evaluator=None, points=None):
@@ -34,7 +34,9 @@ def validate(ctx, objects, home_table, evaluator=None, points=None):
     results = []
     for obj in objects:
         cls = MScriptArtifact if obj["kind"] == "m_script" else DaxMeasureArtifact
-        vr = asdict(cls(obj["expression"], obj["name"]).validate(context))
+        artifact=(DaxCalculatedColumnArtifact(obj['expression'],obj['name'],obj.get('home_table',''))
+                  if obj['kind']=='dax_column' else cls(obj['expression'],obj['name']))
+        vr = asdict(artifact.validate(context))
         vr["calibration"] = []
         if not evaluator and vr["ok"]:
             vr["warnings"].append("仅通过静态检查，未经 Desktop 实跑验证")
@@ -48,6 +50,11 @@ def validate(ctx, objects, home_table, evaluator=None, points=None):
         for i, obj in enumerate(objects):
             if obj["kind"] == "dax_table" and results[i]["ok"]:
                 results[i].update(asdict(evaluator.evaluate_table_expr(obj["expression"])))
+            if obj['kind']=='dax_column' and results[i]['ok']:
+                static_warnings=results[i]['warnings']
+                live=evaluator.evaluate_column_expr(obj['expression'],obj['home_table'])
+                results[i].update(asdict(live),warnings=static_warnings+live.warnings)
+                results[i]['verification_scope']='row_sample'
             # A response can include supporting measures; known results refer to the final measure.
             if obj["kind"] != "dax_measure" or not results[i]["ok"] or (indices and i != indices[-1]):
                 continue

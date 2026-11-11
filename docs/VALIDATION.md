@@ -1,5 +1,20 @@
 # 验证记录
 
+## V-1.0.5.3 同步前验证（2026-11-11）
+
+- 完整 Python **447 项通过**，前端 **101 项通过**；Python 编译、JavaScript 语法及依赖检查通过，保留两个已有依赖弃用警告。
+- 本次同步包含计算列识别、行上下文抽样验证与新建写入；仅上传源码与文档，此次复测未重新打包、调用真实大模型或修改实际 Power BI 报表。
+
+## 新建计算列的识别、验证与写入（2026-11-11）
+
+- 识别独立 `dax-column` 代码块及普通 `dax` 块的完整 `'表名'[列名] = 表达式` 赋值，保存 `dax_column` 类型、实际所属表、列名和原始表达式。没有所属表时不猜测首表，要求明确目标；支持中文、转义引号/方括号和名称中的等号。度量值与计算表保持原有流程。
+- 计算列的静态检查接受所属表中的未限定列引用，实际验证用只读 `SELECTCOLUMNS(SAMPLE(...))` 保留行上下文，最多取 50 行、单次命令 20 秒。记录抽样范围，空表明确提示无样本；不用临时物理列或度量值来假装验证计算列，也不把抽样视为全量成功。校准仅应用于度量值。
+- 确认窗口支持修改列名和所属表，结果卡标明“计算列”及“Desktop 行上下文抽样通过”。确认后按最终目标重新抽样，再通过 TOM `CalculatedColumn` 新建，由引擎推断类型；在 `SaveChanges` 前请求 `Calculate`，在同一次保存中提交创建与计算。只支持新建，前后端及原生写入均检查重名，不替换现有列、度量值或层次结构。
+- 写入失败不标记产物已应用；原生失败丢弃本地待提交变更并断开连接，保存失败审计。成功后保存实际列名、所属表、验证和写入时间，同步模型结构供字段树及增量语义使用。写入接口只对用户在确认窗口明确提交的对象执行创建。
+- 完整 Python **447 项通过**（新增 **27 项计算列专项**），前端 **101 项通过**；覆盖识别、混合对象、归属、行上下文、未知引用、抽样/空表/连接错误、生成失败修复、历史复验、修改目标、碰撞、原生创建与计算顺序、失败状态保留，以及实际 `app.js` 卡片和确认窗口。Python 编译、JavaScript 语法及差异空白检查通过，保留两个已有依赖弃用警告。界面采用 DOM 测试，未做原生窗口人工视觉检查。
+- 真实 Desktop **只读**联调通过：常量计算列表达式在实际表的行上下文返回 50 行样本；本地实例化实际 TOM `CalculatedColumn` 并核对类型推断属性和 `Calculate` 枚举。未创建实际模型列、未返回业务取值、未调用大模型或修改现有数据库；物理写入及失败路径由测试替身覆盖，未声称已验证当前业务报表完整写入。脚本：`python -m scripts.verify_calculated_columns`；脱敏报告：`artifacts/calculated-columns-report.json`。未重新打包。
+- 接口依据：[TOM 模型保存](https://learn.microsoft.com/en-us/dotnet/api/microsoft.analysisservices.tabular.model.savechanges?view=analysisservices-dotnet)、[Calculate 计算类型](https://learn.microsoft.com/en-us/dotnet/api/microsoft.analysisservices.tabular.refreshtype?view=analysisservices-dotnet)、[DAX SAMPLE](https://learn.microsoft.com/en-us/dax/sample-function-dax)。
+
 ## V-1.0.5.2 同步前验证（2026-11-11）
 
 - 完整 Python **420 项通过**，前端 **101 项通过**；Python 编译、JavaScript 语法及依赖检查通过，保留两个已有依赖弃用警告。
@@ -152,7 +167,7 @@
 
 ## 自动测试
 
-- `python -m pytest -q`：420 项通过（2026-11-11 V-1.0.5.2 同步前复测）。
+- `python -m pytest -q`：447 项通过（2026-11-11 V-1.0.5.3 同步前复测）。
 - 前端 Node 回归测试：101 项通过，检查度量值写入目标、语义增量更新、思考强度设置、自动重连状态/页面隔离、独立中止/会话隔离/草稿恢复、图片附件/粘贴/预览/顺序/页面归属、流式渲染、排版、组合筛选校准、数据分析、多模型、输出额度与超时配置、后台任务、页面切换、单项口径确认、字段取值预览、语义词典与报表关联和预览返回。
 - JavaScript 入口和图标模块的 `node --check` 通过。
 - Python 编译检查、`pip check` 通过。

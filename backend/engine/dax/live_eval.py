@@ -178,6 +178,24 @@ class LiveDesktopEvaluator:
         shape = f"{nrows}{'+' if nrows >= 50 else ''} 行 × {ncols} 列"
         return ValidationResult(ok=True, sample=shape, run_verified=True)
 
+    def evaluate_column_expr(self,expression:str,home_table:str) -> ValidationResult:
+        """Execute a read-only row-context sample; physical-column constraints are checked on create."""
+        if not self.dll:
+            return ValidationResult(ok=False,errors=['未找到 Power BI 的 ADOMD 客户端 DLL，无法抽样验证计算列'],run_verified=False)
+        table="'"+home_table.replace("'","''")+"'"
+        dax=f'EVALUATE SELECTCOLUMNS ( SAMPLE ( 50, {table}, 1, ASC ), "__pbi_ai_column_value",\n{expression}\n)'
+        connected=False
+        try:
+            with _LiveSession(self.port,self.dll) as session:
+                connected=True
+                rows=session.query(dax,max_rows=50,timeout_seconds=20)
+        except Exception as exc:
+            return ValidationResult(ok=False,errors=[_clean_error(exc)],run_verified=connected)
+        warnings=['仅按所属表行上下文抽样验证；全量行、存储模式及循环依赖仍须以确认写入时的引擎计算结果为准。']
+        if not rows:warnings.append('所属表为空，本次未取得行样本；仅验证查询可执行。')
+        return ValidationResult(ok=True,sample=f'行上下文抽样返回 {len(rows)} 行（最多 50 行）',
+                                warnings=warnings,run_verified=True)
+
     def _run(self, expression: str, home_table: str, value_expr: str) -> ValidationResult:
         if not self.dll:
             # No client DLL → we genuinely cannot run it; report honestly as not run-verified.

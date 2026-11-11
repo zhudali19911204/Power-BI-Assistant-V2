@@ -1,5 +1,5 @@
 """
-Write a measure or a calculated table back into the open Power BI Desktop model via TOM.
+Write measures, calculated columns and calculated tables into an open Desktop model via TOM.
 
 This is the write half of the live connection (read is `LiveDesktopSource`). It uses the Tabular Object
 Model to add/replace a measure on a table, or add/replace a calculated table (e.g. a date table) — exactly
@@ -44,7 +44,7 @@ def _t(name: str) -> Any:
 
 
 class LiveDesktopWriter:
-    """Writes measures / calculated tables into the open Desktop model on `port` (TOM)."""
+    """Writes DAX model objects into the open Desktop model on `port` (TOM)."""
 
     def __init__(self, port: int) -> None:
         self.port = port
@@ -124,6 +124,38 @@ class LiveDesktopWriter:
             return WriteResult(False, f"写入失败：{type(e).__name__}: {str(e).splitlines()[0][:200]}")
         finally:
             _disconnect(server)
+
+    def write_calculated_column(self,table:str,name:str,expression:str) -> WriteResult:
+        """Create a new DAX column and calculate it in one SaveChanges operation; never replace data columns."""
+        try:
+            import System
+            server=self._connect()
+        except Exception as exc:
+            return WriteResult(False,f'连接/加载 TOM 失败：{type(exc).__name__}: {exc}')
+        model=None
+        try:
+            model=server.Databases[0].Model
+            target=next((t for t in model.Tables if t.Name==table),None)
+            if target is None:return WriteResult(False,f'目标表 \'{table}\' 不存在')
+            if any(str(c.Name).casefold()==name.casefold() for c in target.Columns):
+                return WriteResult(False,f'字段 \'{table}\'[{name}] 已存在，请修改列名；计算列仅支持新建')
+            if any(str(m.Name).casefold()==name.casefold() for m in target.Measures) or any(
+                    str(h.Name).casefold()==name.casefold() for h in target.Hierarchies):
+                return WriteResult(False,'所属表中有同名度量值或层次结构，请修改列名')
+            column=System.Activator.CreateInstance(_t('CalculatedColumn'))
+            column.Name=name
+            column.Expression=expression
+            column.IsDataTypeInferred=True
+            target.Columns.Add(column)
+            target.RequestRefresh(System.Enum.Parse(_t('RefreshType'),'Calculate'))
+            model.SaveChanges()
+            return WriteResult(True,f'已创建计算列 \'{table}\'[{name}] 并执行计算（请在 Desktop 中按 Ctrl+S 保存）')
+        except Exception as exc:
+            if model is not None:
+                try:model.UndoLocalChanges()
+                except Exception:pass
+            return WriteResult(False,f'计算列写入或计算失败：{type(exc).__name__}: {str(exc).splitlines()[0][:200]}')
+        finally:_disconnect(server)
 
 
     # NOTE: there is deliberately no `write_m_partition`. Writing Power Query (M) into an OPEN Power BI

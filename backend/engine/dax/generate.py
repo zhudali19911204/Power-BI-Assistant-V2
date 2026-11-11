@@ -24,6 +24,8 @@ _NOISE_LINE = re.compile(r"^\s*(?:[=\-*_#]{3,}.*|#{1,6}\s.*)$")
 # mis-read as a measure-assignment boundary and shatter one measure into garbage fragments.
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT = re.compile(r"(?://|--)[^\n]*")
+_OBJECT_FENCE = re.compile(r'```(dax(?:-column)?)[ \t]*\r?\n(.*?)```',re.DOTALL|re.IGNORECASE)
+_COLUMN_TARGET = re.compile(r"(?:'((?:[^']|'')+)'|([^\W\d]\w*))\s*\[((?:[^\]]|\]\])+)\]")
 
 
 def _strip_comments(code: str) -> str:
@@ -88,6 +90,14 @@ def _split_name_expr(block: str) -> tuple[str, str]:
         elif ch == '"':
             in_str = True
             i += 1
+        elif ch in ("'",'['):
+            closing=']' if ch=='[' else ch
+            i+=1
+            while i<n:
+                if block[i]==closing:
+                    if block[i:i+2]==closing*2:i+=2;continue
+                    i+=1;break
+                i+=1
         elif block.startswith(("//", "--"), i):
             nl = block.find("\n", i)
             i = n if nl == -1 else nl
@@ -101,7 +111,8 @@ def _split_name_expr(block: str) -> tuple[str, str]:
             depth = max(0, depth - 1)
             i += 1
         elif ch == "=" and depth == 0 and (i == 0 or block[i - 1] not in "<>=!") and block[i + 1 : i + 2] != "=":
-            name = _strip_comments(block[:i]).strip().strip("'\"")
+            name = _strip_comments(block[:i]).strip()
+            if not _COLUMN_TARGET.fullmatch(name):name=name.strip("'\"")
             if name.upper().startswith(("VAR ", "RETURN")):
                 return "", block.strip()
             return name, block[i + 1 :].strip()
@@ -134,6 +145,23 @@ def has_dax_block(text: str) -> bool:
 
     Used by calibrated generation to tell a revised measure from a clarifying question."""
     return bool(_DAX_FENCE.search(text) or _ANY_FENCE.search(text))
+
+
+def parse_dax_objects(text: str) -> list[dict]:
+    """A column has an explicit table-qualified assignment; scalar syntax alone is ambiguous."""
+    objects=[]
+    for fence in _OBJECT_FENCE.finditer(text):
+        block='\n'.join(line for line in fence[2].strip().splitlines() if not _NOISE_LINE.match(line)).strip()
+        name,expression=_split_name_expr(block)
+        if not expression:continue
+        target=_COLUMN_TARGET.fullmatch(name)
+        if target:
+            objects.append({'kind':'dax_column','name':target[3].replace(']]',']'),
+                'home_table':(target[1] or target[2]).replace("''", "'"),'expression':expression})
+        elif fence[1].lower()=='dax-column':
+            objects.append({'kind':'dax_column','name':name or '候选计算列','home_table':'','expression':expression})
+        else:objects.append({'name':name,'expression':expression})
+    return objects
 
 
 def _paren_depths(text: str) -> list[int]:

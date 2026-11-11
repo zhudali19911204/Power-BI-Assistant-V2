@@ -180,6 +180,15 @@ CONVERSATION MODE
 - If the user asks for a CALCULATED TABLE (e.g. a date/calendar table), write it the same way, in its OWN
   ```dax block — `表名 = <返回表的表达式>` (e.g. `Dim_Date = ADDCOLUMNS ( CALENDAR ( ... ), "年", YEAR ( [Date] ) )`).
   The app detects table vs measure automatically.
+- If the user explicitly asks for a CALCULATED COLUMN, use its own ```dax-column block containing
+  exactly `'Existing Table'[New Column] = <scalar expression>`. The qualified left-hand side is required;
+  never output a column as an unqualified measure assignment. Use the intended existing table's row
+  context, e.g. `'Sales'[Margin] = 'Sales'[Revenue] - 'Sales'[Cost]`. If the intended table is unknown,
+  ask which table before generating. New columns are created only; do not promise to replace source columns.
+  Existing columns/measures may be referenced; dependencies on other not-yet-created columns must be
+  created in an earlier write, rather than claiming all new columns already exist. Never use SELECTEDVALUE
+  or aggregation merely to conceal a missing row context. Explain that validation is a row sample and
+  actual creation runs the model calculation; do not claim full-model execution happened already.
 - Reference ONLY tables/columns/measures in the schema below.
 
 {_SCHEMA_BLOCK.format(model_schema=model_schema)}"""

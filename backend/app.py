@@ -359,10 +359,12 @@ def create_app(directory=None):
         obj = db.one("SELECT * FROM artifacts WHERE id=?", (artifact_id,))
         if not obj:
             raise HTTPException(404, "代码产物不存在")
-        if obj["kind"] not in ("dax_measure", "dax_table"):
+        if obj["kind"] not in ("dax_measure", "dax_table", "dax_column"):
             raise HTTPException(409, "Power Query 请复制到高级编辑器，不支持外部写回")
-        if obj['kind']!='dax_measure' and (body.name is not None or body.home_table is not None):
-            raise HTTPException(422,'名称与存放表设置仅适用于度量值')
+        if obj['kind'] not in ('dax_measure','dax_column') and (body.name is not None or body.home_table is not None):
+            raise HTTPException(422,'名称与存放表设置仅适用于度量值和计算列')
+        if obj['kind']=='dax_column' and body.overwrite:
+            raise HTTPException(409,'计算列仅支持新建，不覆盖已有字段，请修改列名')
         prior = json.loads(obj["validation"])
         if not prior.get("ok") or not prior.get("run_verified"):
             raise HTTPException(409, "只有实跑验证通过的代码才能写入模型")
@@ -372,6 +374,13 @@ def create_app(directory=None):
             model, ctx = powerbi.require_live(conversation['model_id'], unchanged=True)
             target={**obj,'name':body.name if body.name is not None else obj['name'],
                     'home_table':body.home_table if body.home_table is not None else obj['home_table']}
+            if obj['kind']=='dax_column':
+                if target['home_table'] not in ctx.tables:
+                    raise HTTPException(409,'指定的所属表已不存在，请同步模型后重新选择')
+                if any(c.name.casefold()==target['name'].casefold() for c in ctx.tables[target['home_table']]):
+                    raise HTTPException(409,'所属表中已有同名字段，计算列仅支持新建，请修改列名')
+                if any(m.table==target['home_table'] and m.name.casefold()==target['name'].casefold() for m in ctx.measures):
+                    raise HTTPException(409,'所属表中已有同名度量值，请修改列名')
             if obj['kind']=='dax_measure':
                 if not ctx.has_table(target['home_table']):
                     raise HTTPException(409,'指定的存放表已不存在，请同步模型后重新选择')
@@ -392,9 +401,11 @@ def create_app(directory=None):
                 if ctx.has_table(obj["name"]):
                     raise HTTPException(409, "同名表已存在，请使用新表名；不支持覆盖已有表")
                 result = writer.write_calculated_table(obj["name"], obj["expression"], overwrite=False)
+            elif obj['kind']=='dax_column':
+                result=writer.write_calculated_column(target['home_table'],target['name'],target['expression'])
             else:
                 result = writer.write_measure(target["home_table"], target["name"], target["expression"], overwrite=body.overwrite)
-            payload={**asdict(result),'name':target['name'],'home_table':target['home_table']}
+            payload={**asdict(result),'kind':obj['kind'],'name':target['name'],'home_table':target['home_table']}
             db.audit("write_model", payload, artifact_id)
             if not result.ok:
                 raise HTTPException(409, result.detail)

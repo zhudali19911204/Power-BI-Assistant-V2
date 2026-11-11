@@ -115,9 +115,10 @@ setInterval(()=>{
 
 function artifactCard(obj) {
   const v=obj.validation;const live=v.run_verified&&v.ok;
+  const column=obj.kind==='dax_column';
   const retry=obj.kind!=='m_script'&&obj.message_id?`<button data-revalidate="${esc(obj.message_id)}">${icon('refresh')}重新实跑本组代码</button>`:'';
   const calibration=(v.calibration||[]).map((p,i)=>`<div class="validation-detail">${v.calibration.length===1?'校准结果':`历史校准点 ${i+1}`}：期望 ${esc(p.expected)} / 实际 ${esc(p.actual)} · ${p.matched?'匹配':'未匹配'}</div>`).join('');
-  return `<div class="validation-card ${!v.ok?'failed':!live?'warning':''}"><div class="validation-top">${icon(v.ok?'check':'info')}<strong>${esc(obj.name)}</strong><span class="validation-badge">${live?'Desktop 实跑通过':v.run_verified?'Desktop 实跑未通过':v.ok?'静态检查通过 · 未实跑':'验证未通过'}</span></div>${v.sample!==null&&v.sample!==undefined?`<div class="validation-detail">实跑结果：${esc(typeof v.sample==='object'?JSON.stringify(v.sample):v.sample)}</div>`:''}${v.errors?.length?`<div class="validation-detail">${v.errors.map(esc).join('<br>')}</div>`:''}${v.warnings?.length?`<div class="validation-detail">${v.warnings.map(esc).join('<br>')}</div>`:''}${calibration}${obj.kind==='m_script'?'<div class="validation-detail">复制脚本至 Power Query 高级编辑器，在 Desktop 中应用验证。</div>':live?`<button data-apply="${esc(obj.id)}">${icon(obj.applied_at?'check':'database')}${obj.applied_at?'已写入模型':'审阅并写入模型'}</button>`:''}${retry}</div>`;
+  return `<div class="validation-card ${!v.ok?'failed':!live?'warning':''}"><div class="validation-top">${icon(v.ok?'check':'info')}<strong>${column?'计算列 · '+esc(obj.home_table)+'['+esc(obj.name)+']':esc(obj.name)}</strong><span class="validation-badge">${live?(column?'Desktop 行上下文抽样通过':'Desktop 实跑通过'):v.run_verified?'Desktop 实跑未通过':v.ok?'静态检查通过 · 未实跑':'验证未通过'}</span></div>${v.sample!==null&&v.sample!==undefined?`<div class="validation-detail">实跑结果：${esc(typeof v.sample==='object'?JSON.stringify(v.sample):v.sample)}</div>`:''}${v.errors?.length?`<div class="validation-detail">${v.errors.map(esc).join('<br>')}</div>`:''}${v.warnings?.length?`<div class="validation-detail">${v.warnings.map(esc).join('<br>')}</div>`:''}${calibration}${obj.kind==='m_script'?'<div class="validation-detail">复制脚本至 Power Query 高级编辑器，在 Desktop 中应用验证。</div>':live?`<button data-apply="${esc(obj.id)}">${icon(obj.applied_at?'check':'database')}${obj.applied_at?'已写入模型':'审阅并写入模型'}</button>`:''}${retry}</div>`;
 }
 function renderHistory() {
   const needle=$('#history-search').value.toLowerCase();
@@ -346,18 +347,19 @@ async function send(e) {
 async function reviewWrite(id) {
   if(!available())return;
   const view=state.view,obj=view.messages.flatMap(m=>m.artifacts||[]).find(o=>o.id===id);if(!obj)return;
-  const measure=obj.kind==='dax_measure',tables=Object.keys(view.model.context.tables);
-  showModal('确认写入模型','REVIEW CHANGE',`<p class="notice gold" id="write-target-notice">将${measure?'写入度量值':'创建计算表'} <strong>${esc(obj.name)}</strong>${measure?'，存放于 '+esc(obj.home_table):''}。完成后请在 Desktop 按 Ctrl+S 保存报表。</p>${measure?`<div class="form-row"><label class="form-field">度量值名称<input id="write-measure-name" required maxlength="300" value="${esc(obj.name)}" autocomplete="off"></label><label class="form-field">存放表<select id="write-home-table" required><option value="" ${!tables.includes(obj.home_table)?'selected':''} disabled>请选择存放表</option>${tables.map(table=>`<option value="${esc(table)}" ${table===obj.home_table?'selected':''}>${esc(table)}</option>`).join('')}</select></label></div><p class="field-help">可修改名称，并选择模型中已有的表。确认后将按所选名称和存放表重新验证，再写入模型。</p>`:''}<div class="code-block"><pre><code>${esc(obj.expression)}</code></pre></div>${measure?'<label class="check-label"><input type="checkbox" id="overwrite-measure">如果所选表中存在同名度量值，允许覆盖</label>':'<p class="field-help">仅支持新建计算表，不覆盖同名已有表。</p>'}<div class="modal-actions"><button class="secondary-button" id="cancel-write">取消</button><button class="primary-button" id="confirm-write">确认写入</button></div>`);
-  if(measure){
-    const preview=()=>{$('#write-target-notice').textContent=`将写入度量值 ${$('#write-measure-name').value.trim()||'（未填写名称）'}，存放于 ${$('#write-home-table').value||'（未选择表）'}。完成后请在 Desktop 按 Ctrl+S 保存报表。`;};
+  const measure=obj.kind==='dax_measure',column=obj.kind==='dax_column',hasHome=measure||column,
+    objectLabel=column?'计算列':'度量值',tables=Object.keys(view.model.context.tables);
+  showModal('确认写入模型','REVIEW CHANGE',`<p class="notice gold" id="write-target-notice">将${hasHome?'写入'+objectLabel:'创建计算表'} <strong>${esc(obj.name)}</strong>${hasHome?'，存放于 '+esc(obj.home_table):''}。完成后请在 Desktop 按 Ctrl+S 保存报表。</p>${hasHome?`<div class="form-row"><label class="form-field">${column?'计算列名称':'度量值名称'}<input id="write-measure-name" required maxlength="300" value="${esc(obj.name)}" autocomplete="off"></label><label class="form-field">${column?'所属表':'存放表'}<select id="write-home-table" required><option value="" ${!tables.includes(obj.home_table)?'selected':''} disabled>请选择${column?'所属表':'存放表'}</option>${tables.map(table=>`<option value="${esc(table)}" ${table===obj.home_table?'selected':''}>${esc(table)}</option>`).join('')}</select></label></div><p class="field-help">${column?'确认后按所选表的行上下文重新抽样验证，再创建计算列并执行完整计算。数据类型由引擎推断，计算耗时取决于表大小和表达式。':'可修改名称，并选择模型中已有的表。确认后将按所选名称和存放表重新验证，再写入模型。'}</p>`:''}<div class="code-block"><pre><code>${esc(obj.expression)}</code></pre></div>${measure?'<label class="check-label"><input type="checkbox" id="overwrite-measure">如果所选表中存在同名度量值，允许覆盖</label>':`<p class="field-help">${column?'仅支持新建计算列，不覆盖已有字段；同名时请修改列名。':'仅支持新建计算表，不覆盖同名已有表。'}</p>`}<div class="modal-actions"><button class="secondary-button" id="cancel-write">取消</button><button class="primary-button" id="confirm-write">确认写入</button></div>`);
+  if(hasHome){
+    const preview=()=>{$('#write-target-notice').textContent=`将写入${objectLabel} ${$('#write-measure-name').value.trim()||'（未填写名称）'}，存放于 ${$('#write-home-table').value||'（未选择表）'}。完成后请在 Desktop 按 Ctrl+S 保存报表。`;};
     $('#write-measure-name').oninput=preview;$('#write-home-table').onchange=preview;
   }
   $('#cancel-write').onclick=()=>$('#modal').close();
   $('#confirm-write').onclick=guard(async e=>{
     const body={overwrite:!!$('#overwrite-measure')?.checked};
-    if(measure){
+    if(hasHome){
       body.name=$('#write-measure-name').value.trim();body.home_table=$('#write-home-table').value;
-      if(!body.name||body.name.length>300){toast('请填写 1～300 字的度量值名称',true);$('#write-measure-name').focus();return;}
+      if(!body.name||body.name.length>300){toast(`请填写 1～300 字的${objectLabel}名称`,true);$('#write-measure-name').focus();return;}
       if(!tables.includes(body.home_table)){toast('请选择模型中已有的存放表',true);return;}
     }
     const b=e.currentTarget,fields=$$('input,select',$('#modal-body'));b.disabled=true;b.textContent='重新验证并写入…';fields.forEach(el=>el.disabled=true);
