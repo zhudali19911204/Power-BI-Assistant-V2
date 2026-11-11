@@ -29,7 +29,7 @@ let modalCleanup=null,modalReturn=null,composerImages=null;
 hydrateIcons();
 const messageRenderer=createMessageRenderer({
   root:$('#messages'),scroll:$('#message-scroll'),
-  label:m=>`<span class="message-avatar">${m.role==='user'?'你':icon('sparkles')}</span><span>${m.role==='user'?'你':'Power BI Assistant'}</span>`,
+  label:m=>`<span class="message-avatar">${m.role==='user'?'你':icon('sparkles')}</span><span>${m.role==='user'?'你':'Power BI Assistant'}</span>${m.model_stale?'<small class="validation-badge" title="同步前的回复与结果作为历史保留，后续分析使用最新模型重新取数">同步前回复</small>':''}`,
   content:m=>m.role==='user'?imageGallery(m.images)+'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'&&m.status!=='cancelled'?'':markdown(m.content),
   artifacts:m=>fieldEvidence(m.field_previews||[])+clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join(''),
   status:streamStatus,
@@ -67,9 +67,11 @@ function toast(text,error=false) {
   $('#toasts').append(el);setTimeout(()=>el.remove(),5500);
 }
 const guard = fn => async (...args) => {try {await fn(...args);} catch(e) {toast(e.message,true);}};
-function available() {if(state.view.busy||state.view.loading){toast(state.view.loading?'正在读取此会话':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
+function available() {if(state.view.busy||state.view.loading||state.view.syncing){toast(state.view.syncing?'正在同步当前对话的模型，请稍候':state.view.loading?'正在读取此会话':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
 function renderBusy() {
-  $('#send-button').disabled=state.view.busy||!!state.view.loading||state.view.images.some(img=>img.status==='uploading');
+  $('#send-button').disabled=state.view.busy||state.view.syncing||!!state.view.loading||state.view.images.some(img=>img.status==='uploading');
+  $('#refresh-model').disabled=state.view.busy||state.view.syncing||!!state.view.loading;
+  $('#refresh-model').title=state.view.syncing?'正在同步模型':state.view.busy?'当前对话结束或中止后可同步模型':'同步模型，继续当前对话';
   $('#stop-button').disabled=!state.view.busy||state.view.stopping;
   $('#stop-button').setAttribute('aria-label',state.view.stopping?'正在中止本次生成':'中止本次生成');
   $('#stop-button').title=state.view.stopping?'正在中止本次生成':'中止本次生成，保留已收到的内容';
@@ -96,7 +98,7 @@ function welcome() {
 function renderMessages(forceFollow=false) {
   for(const message of state.view.messages)if(message.clarification){
     message.clarificationDraft=state.view.clarificationDrafts[message.id]||{};
-    message.clarificationLocked=!!(state.view.busy||state.view.loading||message.status!=='complete'||message.clarification.answered||message!==state.view.messages.at(-1));
+    message.clarificationLocked=!!(state.view.busy||state.view.loading||state.view.syncing||message.model_stale||message.status!=='complete'||message.clarification.answered||message!==state.view.messages.at(-1));
   }
   messageRenderer.render(state.view.messages,{
     conversation:state.view.key,
@@ -198,6 +200,33 @@ function showView() {
 function newChat(mode=state.view.mode) {saveDraft();workspace.newChat(mode);showView();$('#prompt').focus();}
 function switchMode(mode) {saveDraft();workspace.switchMode(mode);showView();}
 function useModel(model) {saveDraft();workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)void openSemantics(model.id).catch(error=>toast(error.message,true));}
+async function syncCurrentModel() {
+  const view=state.view;
+  if(!view.model)return openConnections();
+  if(view.model.source==='demo'){toast('当前为示例模型，请连接 Desktop 以读取真实模型');return;}
+  if(!available())return;
+  saveDraft();view.syncing=true;historyRequest++;renderBusy();renderMessages();
+  try {
+    const result=view.conversation?await post(`/conversations/${view.conversation.id}/refresh-model`):
+      {model:await post(`/models/${view.model.id}/refresh`)};
+    // Capture edits typed while the request was running. Navigation saves the
+    // owning draft separately; a late response must never activate another view.
+    if(state.view===view)saveDraft();
+    historyRequest++;
+    view.model=result.model;
+    state.models=[result.model,...state.models.filter(m=>m.id!==result.model.id)];
+    if(result.conversation){
+      workspace.bind(view,result.conversation);
+      state.conversations=state.conversations.map(c=>c.id===result.conversation.id?result.conversation:c);
+      for(const message of view.messages)if(message.role==='assistant')message.model_stale=true;
+    }
+    if(state.view===view)render();else renderHistory();
+    toast('模型已同步，可在原对话继续；历史回复已保留');
+  } finally {
+    view.syncing=false;renderBusy();
+    if(state.view===view)renderMessages();
+  }
+}
 let historyRequest=0;
 async function reloadHistory() {
   const request=++historyRequest,conversations=await api('/conversations');if(request!==historyRequest)return;
@@ -209,7 +238,7 @@ async function reloadHistory() {
   renderHistory();renderBackgroundTasks();
 }
 async function loadConversation(view) {
-  if(view.loading||generation.isRunning(view))return;
+  if(view.loading||view.syncing||generation.isRunning(view))return;
   view.loading=true;if(state.view===view)renderBusy();
   try {
     const [model,messages,status]=await Promise.all([api(`/models/${view.conversation.model_id}`),
@@ -371,7 +400,7 @@ $('#connect-open').onclick=guard(openConnections);$('#calibration-open').onclick
 $('#search-toggle').onclick=()=>{const input=$('#history-search');input.hidden=!input.hidden;if(!input.hidden)input.focus();else{input.value='';renderHistory();}};
 $('#history-search').oninput=renderHistory;$('#field-search').oninput=renderContext;
 $('#toggle-context').onclick=()=>{const panel=$('#context-panel');if(innerWidth<=1050)panel.classList.toggle('mobile-open');else panel.classList.toggle('collapsed');};
-$('#refresh-model').onclick=guard(async()=>{const view=state.view;if(!view.model)return openConnections();if(view.model.source==='demo'){toast('当前为示例模型，请连接 Desktop 以读取真实模型');return;}const model=await post(`/models/${view.model.id}/refresh`);state.models=[model,...state.models.filter(m=>m.id!==model.id)];if(state.view===view){useModel(model);toast('模型已同步，已开启新对话');}else toast('模型已同步，可重新连接后使用');});
+$('#refresh-model').onclick=guard(syncCurrentModel);
 $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.view.conversation)newChat('mquery');state.view.queryName=query;$('#query-select').value=query;};
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{

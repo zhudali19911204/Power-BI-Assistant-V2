@@ -54,7 +54,7 @@ def create_app(directory=None):
     semantics=SemanticService(db,powerbi)
     powerbi.semantics=semantics
     chat = ChatService(db, powerbi)
-    app = FastAPI(title="Power BI Assistant", version="2.0.1", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="Power BI Assistant", version="2.0.2", docs_url="/api/docs", redoc_url=None)
     app.state.license_info = license_info
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
@@ -102,7 +102,7 @@ def create_app(directory=None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "2.0.1", "storage": "sqlite", "platform": "desktop",
+        return {"status": "ok", "version": "2.0.2", "storage": "sqlite", "platform": "desktop",
                 "license": {"type": "trial" if license_info.issued_at is not None else "permanent",
                             "issued_at": license_info.issued_at, "expires_at": license_info.expires_at,
                             "summary": license_info.summary} if license_info else {"type": "development"}}
@@ -261,6 +261,10 @@ def create_app(directory=None):
     def messages(conversation_id: str):
         return chat.messages(conversation_id)
 
+    @app.post('/api/conversations/{conversation_id}/refresh-model')
+    def refresh_conversation_model(conversation_id:str):
+        return chat.refresh_model(conversation_id,settings)
+
     @app.get('/api/conversations/{conversation_id}/generation')
     def generation_status(conversation_id: str):
         chat.conversation(conversation_id)
@@ -294,7 +298,9 @@ def create_app(directory=None):
         conv = chat.conversation(conversation_id)
         text = "# " + conv["title"] + "\n\n"
         for message in chat.messages(conversation_id):
-            text += f"## {'你' if message['role'] == 'user' else '助手'}\n\n{message['content']}\n\n"
+            text += f"## {'你' if message['role'] == 'user' else '助手'}\n\n"
+            if message.get('model_stale'):text+='> 此回复生成于模型同步前，内容和查询结果作为历史保留。\n\n'
+            text += message['content']+'\n\n'
             for picture in message.get('images',[]):
                 row=chat.images.get(picture['id'])
                 import base64
@@ -361,7 +367,9 @@ def create_app(directory=None):
         if not prior.get("ok") or not prior.get("run_verified"):
             raise HTTPException(409, "只有实跑验证通过的代码才能写入模型")
         with powerbi.lock:
-            model, ctx = powerbi.require_live(obj["model_id"], unchanged=True)
+            conversation=db.one('SELECT c.model_id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=?',
+                                (obj['message_id'],))
+            model, ctx = powerbi.require_live(conversation['model_id'], unchanged=True)
             target={**obj,'name':body.name if body.name is not None else obj['name'],
                     'home_table':body.home_table if body.home_table is not None else obj['home_table']}
             if obj['kind']=='dax_measure':
@@ -391,8 +399,8 @@ def create_app(directory=None):
             if not result.ok:
                 raise HTTPException(409, result.detail)
             applied_at=now()
-            db.execute("UPDATE artifacts SET name=?,home_table=?,validation=?,applied_at=? WHERE id=?",
-                       (target['name'],target['home_table'],encode(fresh),applied_at,artifact_id))
+            db.execute("UPDATE artifacts SET name=?,home_table=?,validation=?,applied_at=?,model_id=? WHERE id=?",
+                       (target['name'],target['home_table'],encode(fresh),applied_at,model['id'],artifact_id))
             payload.update(applied_at=applied_at,validation=fresh)
             try:
                 powerbi.update_after_write(model["id"], model["port"])

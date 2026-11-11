@@ -59,12 +59,12 @@ export function createMessageRenderer({root, scroll, label, content, artifacts, 
     const article=document.createElement('article');
     article.className='message '+message.role;
     const heading=document.createElement('div');heading.className='message-label';
-    heading.innerHTML=label(message);
+    const labelSource=label(message);heading.innerHTML=labelSource;
     const body=document.createElement('div');body.className='message-content';
     const cards=document.createElement('div');cards.className='message-artifacts';
     const progress=document.createElement('div');progress.className='stream-status';progress.hidden=true;
     article.append(heading,body,cards,progress);root.appendChild(article);
-    return {article,body,cards,progress,role:message.role,bodySource:null,artifactSource:null};
+    return {article,heading,labelSource,body,cards,progress,role:message.role,bodySource:null,artifactSource:null};
   }
 
   return {
@@ -78,6 +78,8 @@ export function createMessageRenderer({root, scroll, label, content, artifacts, 
       if(welcomeMarkup!==null){root.replaceChildren();welcomeMarkup=null;}
       messages.forEach((message,index)=>{
         const record=records[index]||(records[index]=createRecord(message));
+        const labelSource=label(message);
+        if(record.labelSource!==labelSource){patchHtml(record.heading,labelSource);record.labelSource=labelSource;}
         record.article.classList.toggle('error',message.status==='error');
         record.article.classList.toggle('streaming',message.status==='streaming');
         if(message.id)record.article.dataset.messageId=message.id;

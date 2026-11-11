@@ -130,7 +130,7 @@ class DesktopReconnector:
                     current = load(instance.port)
                     check_cancelled()
                     if connection_schema(asdict(current)) != connection_schema(model['context']):
-                        raise ConnectionIssue('changed', '模型结构已变化，请同步模型并开启新对话；自动重连不会采用旧结构继续执行')
+                        raise ConnectionIssue('changed', '模型结构已变化，请点击右侧“同步模型”，同步后可在当前对话继续')
                     self.bind(model, instance, report)
                     self.healthy(model_id)
                     return service.get(model_id), current

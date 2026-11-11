@@ -5,7 +5,7 @@ export function createWorkspaces() {
   const modes=new Map(),conversations=new Map(),views=new Set();
   function make(mode,model=null,conversation=null) {
     const view={key:`view-${++nextId}`,mode,model,conversation,messages:[],points:[],draft:'',images:[],clarificationDrafts:{},queryName:'',
-      busy:false,stopping:false,status:'',startedAt:0,attention:''};
+      busy:false,syncing:false,stopping:false,status:'',startedAt:0,attention:''};
     views.add(view);if(conversation)conversations.set(conversation.id,view);return view;
   }
   function activate(view) {current=view;modes.set(view.mode,view);view.attention='';return view;}

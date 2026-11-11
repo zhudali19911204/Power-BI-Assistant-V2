@@ -6,7 +6,7 @@
 - 安装完成后，程序每次启动都会自动验证已保存的授权，无需反复输入。使用过程中也会检查试用到期：到期后拒绝新的 API 请求，正在生成的 DAX/M、分析和语义梳理停止并保留已完成的内容；不会因为一直开着软件就无限试用。浏览器预览参数、静默安装参数和数据目录环境变量都不会关闭正式安装版的授权校验。
 - 使用 Ed25519 签名。发布包仅内嵌验证公钥，不包含签发私钥、发码工具、模型 API Key、用户数据库或已激活的授权文件。
 - CD-KEY 较长是正常现象，请完整复制粘贴。机器码以 `PBI2M-` 开头，永久 CD-KEY 以 `PBI2K-` 开头，试用 CD-KEY 以 `PBI2T-` 开头，不要混淆。安装确认页和试用版窗口标题显示到期时间，统一标明 UTC（北京时间为 UTC+8）。
-- `2.0.1` 安装包使用原签发公钥，之前发出的永久 CD-KEY 继续有效；旧 `2.0.0` 安装包不支持试用 CD-KEY，试用客户必须使用新版安装包。
+- 当前 `2.0.2` 安装包沿用 `2.0.1` 的签发公钥和授权规则，之前发出的永久 CD-KEY 继续有效，未到期试用 CD-KEY 保留原到期日；旧 `2.0.0` 安装包不支持试用 CD-KEY，试用客户必须使用新版安装包。
 
 这是授权控制，不是无法破解的程序加密。机器码来自 Windows `MachineGuid` 的产品专用哈希，不上传原始标识；同一 Windows 安装中重装助手不会改变机器码，但重装 Windows 可能需要重新发码。克隆系统或主动修改系统标识可能绕过这种设备绑定。离线永久授权不能远程撤销，也不限制相同系统标识下的重装次数。
 
@@ -16,7 +16,7 @@
 
 ## 你给客户发码
 
-1. 只把 `dist\PowerBIAssistant-Setup-2.0.1.exe` 发给客户。
+1. 只把 `dist\PowerBIAssistant-Setup-2.0.2.exe` 发给客户；操作说明可另附 [详细使用说明](USER_GUIDE.md)。
 2. 客户运行安装包，在“软件授权”页复制机器码发给你。机器码输入框只读，但可以选中后按 Ctrl+C。
 3. 你在项目根目录打开 PowerShell，根据需要运行下面的一条命令。**请复制整行，不要漏掉前面的 Python 路径。**
 
@@ -50,6 +50,8 @@
 ## 试用转永久
 
 为客户原机器码签发 `--type permanent` 的 CD-KEY，让客户先关闭助手，再重新运行新版安装包，选择原安装位置并输入永久密钥。安装程序会更新授权文件，原有模型配置、会话和业务字典不删除。过期试用无需先启动助手即可转永久。
+
+普通版本升级也应关闭助手、备份用户数据，再运行 2.0.2 安装包覆盖原位置并输入本机有效的原 CD-KEY。无需重新初始化发布密钥，也不需要删除用户数据库。新版本包含同步模型后保留原对话的修复；仅更新源码或刷新旧窗口不能更新已安装的 EXE。详见[覆盖升级步骤](USER_GUIDE.md#从旧安装版升级到-202)。
 
 ## 签发私钥：务必备份
 
@@ -101,7 +103,7 @@
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop `
   --public-key "$env:LOCALAPPDATA\PowerBIAssistantPublisher\licensing\public-key.pem" `
-  --version 2.0.1
+  --version 2.0.2
 ```
 
 输出为 `dist\PowerBIAssistant-Setup-<版本>.exe`。`build` 是中间产物；`dist` 下的应用目录和 `LicenseVerifier.exe` 是打包输入，客户只需要 Setup 安装包。
@@ -117,7 +119,7 @@
 静默安装也必须提供本机有效的 CD-KEY 文件，省略或伪造都不能跳过验证：
 
 ```powershell
-.\dist\PowerBIAssistant-Setup-2.0.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART `
+.\dist\PowerBIAssistant-Setup-2.0.2.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART `
   "/LICENSEFILE=C:\Deployment\customer-cdkey.txt"
 ```
 

@@ -92,6 +92,13 @@ class Database:
                     checked_at TEXT NOT NULL, PRIMARY KEY(model_id,literal));
                 CREATE INDEX IF NOT EXISTS field_observations_message ON field_observations(message_id);
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
+                CREATE TABLE IF NOT EXISTS conversation_model_syncs (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                    previous_model_id TEXT NOT NULL REFERENCES models(id),
+                    model_id TEXT NOT NULL REFERENCES models(id),
+                    message_rowid INTEGER NOT NULL, created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS conversation_model_syncs_conversation ON conversation_model_syncs(conversation_id);
                 CREATE INDEX IF NOT EXISTS artifacts_message ON artifacts(message_id);
                 PRAGMA user_version=1;
             """)

@@ -19,6 +19,12 @@ test('actual app navigation keeps background streams, drafts and independent sen
     reasoning_level:'low',reasoning_control:{supported:true}};
   const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
     context:{tables:{事实表:[{name:'金额',dtype:'double'}],度量表:[]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
+  const knownModels=new Map([[model.id,model]]),syncRequests=[];let pendingSync=null,failSync=false;
+  function refreshedModel(previous){
+    const fresh={...previous,id:'synced-'+(knownModels.size),semantics:{status:'inventory',can_answer:true,coverage:1,total:2,confirmed:0},
+      context:{...previous.context,tables:{...previous.context.tables,事实表:[...previous.context.tables.事实表,{name:'同步新增字段'+knownModels.size,dtype:'string'}]}}};
+    knownModels.set(fresh.id,fresh);return fresh;
+  }
   const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
   const imageMeta={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),mime_type:'image/png',width:80,height:40,size:100};
   const uploads=[],cancellations=[],writes=[];let failWrite=true;
@@ -37,11 +43,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
   async function fetchMock(path,opts={}) {
     if(path==='/api/images'&&opts.method==='POST'){uploads.push(opts);return json(imageMeta);}
     if(path==='/api/settings')return json(settings);
-    if(path==='/api/models')return json([model]);
-    if(path==='/api/models/model')return json(model);
-    if(path==='/api/models/model/connection')return json({model_id:'model',live:connectionStatus==='connected',
+    if(path==='/api/models')return json([...knownModels.values()]);
+    const modelPath=path.match(/^\/api\/models\/([^/]+)(?:\/(.*))?$/),modelId=modelPath?.[1];
+    if(modelPath&&!modelPath[2])return json(knownModels.get(modelId));
+    if(modelPath?.[2]==='connection')return json({model_id:modelId,live:connectionStatus==='connected',
       port:connectionPort,connection:{status:connectionStatus,detail:'连接状态测试'}});
-    if(path==='/api/models/model/semantics')return json(semanticProfile);
+    if(modelPath?.[2]==='semantics')return json(semanticProfile);
+    if(modelPath?.[2]==='refresh'){syncRequests.push({modelId});return json(refreshedModel(knownModels.get(modelId)));}
     if(path==='/api/models/model/semantics/build'){
       semanticProfile={...semanticProfile,status:'ready',stage:'测试语义完成',coverage:1,
         entries:semanticProfile.entries.map(e=>({...e,state:'candidate'}))};
@@ -67,6 +75,15 @@ test('actual app navigation keeps background streams, drafts and independent sen
       return json(result);
     }
     const id=path.split('/')[3];
+    if(path.endsWith('/refresh-model')){
+      syncRequests.push({conversationId:id});
+      if(pendingSync){const waiting=pendingSync;pendingSync=null;await waiting;}
+      if(failSync){failSync=false;return new Response(JSON.stringify({detail:'测试：模型暂不可读取'}),{status:409});}
+      const conversation=conversations.find(c=>c.id===id),fresh=refreshedModel(knownModels.get(conversation.model_id));
+      conversation.model_id=fresh.id;
+      for(const message of messages.get(id)||[])if(message.role==='assistant')message.model_stale=true;
+      return json({conversation,model:fresh});
+    }
     if(path.endsWith('/cancel')){
       cancellations.push({id,...JSON.parse(opts.body)});
       const record=streams.get(id);
@@ -185,6 +202,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('#send-button').disabled,true);
     await click('[data-mode="dax"]');assert.equal($('#prompt').value,'DAX 页面草稿');
     await send('DAX 请求');const dax=streams.get('c2');assert.ok(dax);assert.equal($('#send-button').disabled,true);
+    assert.equal($('#refresh-model').disabled,true);
     analysis.emit({type:'done'});analysis.controller.close();await tick();await tick();await tick();
     assert.equal($('#page-title').textContent,'DAX 助手');assert.equal($('#send-button').disabled,true);
     assert.ok(!$('#messages').textContent.includes('第一段分析'));
@@ -271,6 +289,52 @@ test('actual app navigation keeps background streams, drafts and independent sen
       current.emit({type:'start',message_id:'delta-'+status});current.emit({type:'delta',text:'按可用语义回答。'});
       current.emit({type:'done'});current.controller.close();await tick();await tick();await tick();
     }
+
+    // Synchronization keeps the conversation, history and edits, even after navigation.
+    const conversationCount=conversations.length;
+    const unsentImage=new window.Event('paste',{bubbles:true,cancelable:true});
+    Object.defineProperty(unsentImage,'clipboardData',{value:{items:[{kind:'file',type:'image/png',getAsFile:()=>imageFile}]}});
+    $('#prompt').dispatchEvent(unsentImage);await tick();await tick();
+    assert.equal($('[data-image-drafts]').querySelectorAll('.image-draft').length,1);
+    draft('同步前草稿');let releaseSync;
+    pendingSync=new Promise(resolve=>{releaseSync=resolve;});
+    await click('#refresh-model');assert.equal($('#send-button').disabled,true);
+    assert.equal($('#refresh-model').disabled,true);
+    draft('同步期间继续输入的草稿');await click('[data-mode="dax"]');draft('另一个页面的草稿');
+    const foreignTree=$('#model-tree').firstChild;
+    releaseSync();await tick();await tick();await tick();
+    assert.equal($('#page-title').textContent,'DAX 助手');assert.equal($('#prompt').value,'另一个页面的草稿');
+    assert.equal($('#model-tree').firstChild,foreignTree);
+    await click('[data-conversation="c1"]');
+    assert.equal($('#prompt').value,'同步期间继续输入的草稿');assert.equal(conversations.length,conversationCount);
+    assert.equal(syncRequests.at(-1).conversationId,'c1');assert.ok($('#model-tree').textContent.includes('同步新增字段'));
+    assert.ok($('#messages').textContent.includes('第一段分析。后台续写。'));
+    assert.ok($('#messages').textContent.includes('同步前回复'));
+    assert.equal($('[data-image-drafts]').querySelectorAll('.image-draft').length,1);
+    const imageDraft=$('[data-image-drafts]').querySelector('.image-draft');
+    const imageKey=imageDraft.dataset.imageKey,imageSource=imageDraft.querySelector('img').getAttribute('src');
+    const article=$('#messages').querySelector('article.message.assistant');
+    const contentNode=article.querySelector('.message-content'),caption=$('#conversation-caption').textContent;
+    await click('#refresh-model');
+    assert.equal($('#messages').querySelector('article.message.assistant'),article);
+    assert.equal(article.querySelector('.message-content'),contentNode);
+    assert.equal($('[data-image-drafts]').querySelector('.image-draft').dataset.imageKey,imageKey);
+    assert.equal($('[data-image-drafts]').querySelector('img').getAttribute('src'),imageSource);
+    assert.equal($('#conversation-caption').textContent,caption);
+    assert.equal($('#prompt').value,'同步期间继续输入的草稿');assert.equal(conversations.length,conversationCount);
+    failSync=true;const successfulModel=conversations.find(c=>c.id==='c1').model_id;
+    await click('#refresh-model');
+    assert.equal(conversations.find(c=>c.id==='c1').model_id,successfulModel);
+    assert.equal($('#send-button').disabled,false);assert.equal($('#refresh-model').disabled,false);
+    assert.equal($('#prompt').value,'同步期间继续输入的草稿');
+    await send('同步后在原对话继续');const followup=streams.get('c1');
+    assert.equal(conversations.length,conversationCount);assert.equal(followup.body.content,'同步后在原对话继续');
+    followup.emit({type:'start',message_id:'after-sync'});followup.emit({type:'delta',text:'使用新结构继续回答。'});
+    followup.emit({type:'done'});followup.controller.close();await tick();await tick();await tick();
+    assert.ok(!$('#messages').lastElementChild.querySelector('.message-label').textContent.includes('同步前回复'));
+    await click('#new-chat');draft('尚未发送的草稿');await click('#refresh-model');
+    assert.equal(conversations.length,conversationCount);assert.equal($('#prompt').value,'尚未发送的草稿');
+    assert.ok(syncRequests.at(-1).modelId);
   } finally {
     Object.defineProperty(selectProto,'value',valueDescriptor);
     for(const [key,descriptor] of Object.entries(savedGlobals)){

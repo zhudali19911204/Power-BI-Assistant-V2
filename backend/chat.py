@@ -33,6 +33,7 @@ class ChatService:
         self.progress = {}
         self.active_messages = {}
         self.cancellations = {}
+        self.syncing = set()
         self.analysis=AnalysisService(self)
         self.semantics=getattr(powerbi,'semantics',None)
         self.images=ImageStore(db)
@@ -43,13 +44,60 @@ class ChatService:
             raise HTTPException(404, "会话不存在")
         return row
 
+    def model_sync(self,conversation_id):
+        return self.db.one('SELECT * FROM conversation_model_syncs WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1',
+                           (conversation_id,))
+
+    def model_sync_notice(self,conversation_id):
+        sync=self.model_sync(conversation_id)
+        if not sync:return ''
+        return ('\n模型同步提示：本会话已于 '+sync['created_at']+' 更新到当前模型快照。'
+                '同步前的回复、公式和查询结果保留作历史参考，不代表当前模型状态。'
+                '以本轮提供的模型结构、语义定义和实际查询结果为准；已删除的对象不能继续引用。'
+                '用户追问当前数据时重新查询，不把历史数值当作本轮实测结论。')
+
+    def refresh_model(self,conversation_id,settings):
+        self.conversation(conversation_id)
+        with self.mutex:lock=self.locks.setdefault(conversation_id,threading.Lock())
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409,'本对话正在生成或同步，请完成或中止后再同步模型')
+        with self.mutex:self.syncing.add(conversation_id)
+        try:
+            with self.powerbi.lock:
+                conv=self.conversation(conversation_id)
+                model=self.powerbi.refresh(conv['model_id'])
+                if self.semantics:self.semantics.on_connect(model,settings)
+                ctx=context_from_dict(model['context'])
+                profile=self.semantics.get(model['id']) if self.semantics else {}
+                affected={(e['table'],e['name']) for e in profile.get('entries',[])
+                          if e['kind']=='column' and e['state']=='unresolved' and e.get('change',{}).get('kind')=='modified'}
+                stamp=now()
+                with self.db.connection() as db:
+                    cutoff=db.execute('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE conversation_id=?',
+                                      (conversation_id,)).fetchone()[0]
+                    db.execute('UPDATE conversations SET model_id=?,updated_at=? WHERE id=?',
+                               (model['id'],stamp,conversation_id))
+                    db.execute('INSERT INTO conversation_model_syncs VALUES (?,?,?,?,?,?)',
+                               (uid(),conversation_id,conv['model_id'],model['id'],cutoff,stamp))
+                    bindings=db.execute('SELECT * FROM conversation_bindings WHERE conversation_id=?',(conversation_id,)).fetchall()
+                    for binding in bindings:
+                        table,column=binding['table_name'],binding['column_name']
+                        if table is not None and (not ctx.has_column(table,column) or (table,column) in affected):
+                            db.execute('DELETE FROM conversation_bindings WHERE conversation_id=? AND literal=?',
+                                       (conversation_id,binding['literal']))
+                return {'model':self.powerbi.get(model['id']),'conversation':self.conversation(conversation_id)}
+        finally:
+            with self.mutex:
+                self.syncing.discard(conversation_id)
+                lock.release()
+
     def generation_status(self, conversation_id):
         lock = self.locks.get(conversation_id)
         message_id = self.active_messages.get(conversation_id)
         token = self.cancellations.get(conversation_id)
-        return {'running': bool(lock and lock.locked()), 'message_id': message_id,
+        return {'running': bool(lock and lock.locked() and conversation_id not in self.syncing), 'message_id': message_id,
                 'generation_id': token.id if token else None, 'stopping': bool(token and token.event.is_set()),
-                'progress': self.progress.get(message_id, {})}
+                'syncing':conversation_id in self.syncing,'progress': self.progress.get(message_id, {})}
 
     def cancel(self, conversation_id, generation_id):
         self.conversation(conversation_id)
@@ -71,7 +119,11 @@ class ChatService:
 
     def messages(self, conversation_id):
         self.conversation(conversation_id)
-        rows = self.db.all("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (conversation_id,))
+        rows = self.db.all("SELECT rowid AS message_rowid,* FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (conversation_id,))
+        sync=self.model_sync(conversation_id)
+        for message in rows:
+            message['model_stale']=bool(sync and message['role']=='assistant' and message['message_rowid']<=sync['message_rowid'])
+            message.pop('message_rowid')
         lock = self.locks.get(conversation_id)
         active = bool(lock and lock.locked())
         last_user = max((i for i, m in enumerate(rows) if m['role'] == 'user'), default=-1)
@@ -122,10 +174,18 @@ class ChatService:
             lock = self.locks.setdefault(conversation_id, threading.Lock())
         if not lock.acquire(blocking=False):
             raise HTTPException(409, "该会话正在生成，请等待完成")
+        if self.conversation(conversation_id)['model_id']!=conv['model_id']:
+            lock.release()
+            raise HTTPException(409,'模型刚完成同步，请重试本条消息；输入内容会保留')
         token = CancellationToken(body.generation_id or uid())
         with self.mutex: self.cancellations[conversation_id] = token
         try:
             if body.clarification_reply:
+                sync=self.model_sync(conversation_id)
+                question=self.db.one('SELECT rowid AS message_rowid FROM messages WHERE id=? AND conversation_id=?',
+                                     (body.clarification_reply.message_id,conversation_id))
+                if sync and question and question['message_rowid']<=sync['message_rowid']:
+                    raise HTTPException(409,'模型已同步，请重新描述当前需求，旧口径问题不再继续提交')
                 content=resolve_answer(self.db,conversation_id,body.clarification_reply)
                 if self.semantics:self.semantics.capture_answer(conv,body,ctx)
                 body=body.model_copy(update={'content':content})
@@ -187,14 +247,16 @@ class ChatService:
         if not objects or any(o['kind']=='m_script' for o in objects):
             raise HTTPException(409,'仅支持重新验证 DAX 度量值和计算表')
         with self.powerbi.lock:
+            conv=self.conversation(message['conversation_id'])
             model,ctx=self.powerbi.require_live(conv['model_id'],unchanged=True)
             points=next((json.loads(o['validation']).get('calibration',[]) for o in reversed(objects)
                          if o['kind']=='dax_measure'),[])
             results=validate(ctx,objects,objects[0]['home_table'],LiveDesktopEvaluator(model['port']),points)
             with self.db.connection() as db:
                 for obj,result in zip(objects,results):
-                    db.execute('UPDATE artifacts SET validation=? WHERE id=?',(encode(result),obj['id']))
+                    db.execute('UPDATE artifacts SET validation=?,model_id=? WHERE id=?',(encode(result),model['id'],obj['id']))
                     obj['validation']=result
+                    obj['model_id']=model['id']
         return {'model':self.powerbi.get(model['id']),'artifacts':objects}
 
     def stream(self, conv, model, ctx, body, home, provider, lock):
@@ -232,6 +294,7 @@ class ChatService:
                        '只有明确要求编写、修改或优化代码时才生成新的完整 DAX/M 脚本。')
             system += '\n'+QUESTION_RULES
             system += '\n'+IMAGE_RULES
+            system += self.model_sync_notice(conv['id'])
             if self.semantics:
                 system += '\n'+self.semantics.prompt(model['id'])
                 system += self.semantics.value_context(conv,body.content)

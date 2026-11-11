@@ -283,7 +283,7 @@ class AnalysisService:
             yield encode({'type':'start','message_id':message_id})+'\n'
             yield encode({'type':'model','model_id':model['id'],'live':True})+'\n'
             messages=self.chat.images.llm_messages(history,user_id,body.content)
-            planner=plan_system(ctx)+'\n'+IMAGE_RULES
+            planner=plan_system(ctx)+'\n'+IMAGE_RULES+self.chat.model_sync_notice(conv['id'])
             if self.chat.semantics:
                 planner+='\n'+self.chat.semantics.prompt(model['id'])
                 planner+=self.chat.semantics.value_context(conv,body.content)
