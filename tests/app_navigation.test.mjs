@@ -8,6 +8,9 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 test('actual app navigation keeps background streams, drafts and independent send controls',async()=>{
   const html=await readFile(new URL('../frontend/index.html',import.meta.url),'utf8');
   const {window,document}=parseHTML(html),savedGlobals={};
+  assert.deepEqual([...document.querySelectorAll('.workspace-nav [data-mode]')].map(button=>button.dataset.mode),
+    ['mquery','dax','analysis']);
+  assert.equal(document.querySelector('.workspace-nav .active').dataset.mode,'dax');
   const selectProto=window.HTMLSelectElement.prototype;
   const valueDescriptor=Object.getOwnPropertyDescriptor(selectProto,'value');
   Object.defineProperty(selectProto,'value',{configurable:true,get(){return [...this.options].find(o=>o.selected)?.value||this.options[0]?.value||'';},
