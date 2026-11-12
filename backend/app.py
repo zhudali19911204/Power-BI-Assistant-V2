@@ -27,6 +27,7 @@ from .settings import SettingsService
 from .fields import FieldPreviewInput
 from .reports import reports_for_instances
 from .semantics import SemanticBuildInput, SemanticEdit, SemanticReuseInput, SemanticService
+from .business_dictionary import BusinessEdit, OverviewEdit
 from .streaming import BackgroundStream
 from .validation import validate
 from .images import MAX_UPLOAD_BYTES
@@ -229,6 +230,26 @@ def create_app(directory=None):
     @app.post('/api/models/{model_id}/semantics/reuse')
     def reuse_semantics(model_id:str,body:SemanticReuseInput):
         return semantics.reuse(model_id,body.source_model_id)
+
+    @app.put('/api/models/{model_id}/semantics/business/overview')
+    def edit_business_overview(model_id:str,body:OverviewEdit):
+        return semantics.business.edit(model_id,body)
+
+    @app.post('/api/models/{model_id}/semantics/business/items')
+    def create_business_item(model_id:str,body:BusinessEdit):
+        return semantics.business.edit(model_id,body)
+
+    @app.put('/api/models/{model_id}/semantics/business/items/{item_id}')
+    def edit_business_item(model_id:str,item_id:str,body:BusinessEdit):
+        return semantics.business.edit(model_id,body,item_id)
+
+    @app.delete('/api/models/{model_id}/semantics/business/items/{item_id}')
+    def delete_business_item(model_id:str,item_id:str,revision:int|None=None):
+        return semantics.business.delete(model_id,item_id,revision)
+
+    @app.post('/api/models/{model_id}/semantics/business/suggest')
+    def suggest_business_dictionary(model_id:str,body:SemanticBuildInput):
+        return semantics.business.start(model_id,settings,body.llm_profile_id)
 
     @app.put('/api/models/{model_id}/semantics/{entry_id}')
     def edit_semantics(model_id:str,entry_id:str,body:SemanticEdit):

@@ -12,7 +12,7 @@ export function analysisEvidence(queries) {
     return `<details class="analysis-evidence ${query.ok?'':'failed'}" data-evidence="${esc(query.id)}">
       <summary>${icon(query.ok?'database':'info')}<strong>${esc(query.label)} · ${esc(query.title)}</strong><span>${query.attempt>1?`重试 ${query.attempt-1} · `:''}${query.ok?`${query.row_count} 行${query.truncated?' · 已截断':''}`:query.run_verified?'查询未通过':'查询未执行'}</span>${icon('chevron-down')}</summary>
       <div class="analysis-evidence-body">
-        <div class="analysis-query-meta">${query.ok?'Desktop 真实查询':'查询记录'} · ${esc(query.seconds)} 秒 · ${esc(query.created_at)}</div>
+        <div class="analysis-query-meta">${query.ok?'Desktop 真实查询':'查询记录'}${query.batch?` · 第 ${esc(query.batch)} 批`:''} · ${esc(query.seconds)} 秒 · ${esc(query.created_at)}</div>
         ${query.ok?(rows.length?`<div class="analysis-result-table"><table><thead><tr>${columns.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${preview.map(row=>`<tr>${columns.map(c=>`<td>${cell(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'<p class="analysis-empty-result">查询成功，但没有符合条件的数据。不能据此将业务指标认定为零。</p>'):`<p class="analysis-query-error">${esc(query.error)}</p>`}
         ${(query.warnings||[]).map(w=>`<p class="analysis-result-note">${esc(w)}</p>`).join('')}
         ${rows.length>preview.length?`<p class="analysis-result-note">预览前 ${preview.length} 行，已保留 ${rows.length} 行。下载可查看本次保留的全部结果。</p>`:''}

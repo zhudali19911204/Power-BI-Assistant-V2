@@ -20,12 +20,13 @@ test('analysis is a distinct mode with data overview, trend and contribution pro
 });
 
 test('query evidence displays actual cells, executable query and CSV download',()=>{
-  const root=element(analysisEvidence([query()]));
+  const root=element(analysisEvidence([query({batch:2})]));
   assert.equal(root.querySelectorAll('tbody tr').length,1);
   assert.ok(root.textContent.includes('125'));
   assert.equal(root.querySelector('code').textContent,'EVALUATE ROW("Amount",125)');
   assert.equal(root.querySelector('a').getAttribute('href'),'/api/analysis/test-id/csv');
   assert.equal(root.querySelector('[data-apply]'),null);
+  assert.ok(root.querySelector('.analysis-query-meta').textContent.includes('第 2 批'));
 });
 
 test('truncated and empty results are explicit, not shown as zero or full data',()=>{

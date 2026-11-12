@@ -170,13 +170,27 @@ frontend/app.js: syncCurrentModel()
 每个对象分开保存：
 
 - `facts`：名称、类型、关系、公式、Description、显示格式、来源等模型事实。
-- `business_name / meaning / role / unit / aliases`：业务定义。
+- `business_name / meaning / role / unit / aliases / usage_notes`：业务定义及适用边界。
 - `state`：`unresolved`（未知或需更新）、`candidate`（候选）、`confirmed`（用户确认）。
 - `source / reviewed_at`，以及变化原因和 `previous_definition`。
 
 词典级 `status` 为 `inventory / building / ready / error`，还有 `metadata_status`、`coverage`、`pending_ids`、复用来源和变化摘要。
 
-**`ready` 不代表所有定义已由用户确认；`can_answer` 也不等于 `status == ready`。** 已有候选、确认或历史定义时，DAX／分析可继续用当前结构和可用语义回答；未知口径按需澄清。首次完全没有解释时才要求先建立词典。M 模式没有此语义前置条件。
+**`ready` 不代表所有定义已由用户确认；`can_answer` 也不等于 `status == ready`。** 已有对象候选、确认、历史定义，或可用业务总览／词条时，DAX／分析可继续用当前结构和可用语义回答；未知口径按需澄清。首次完全没有解释时才要求先建立词典。M 模式没有此语义前置条件。
+
+### 业务总览、跨对象术语和分析约定
+
+[business_dictionary.py](../backend/business_dictionary.py) 在原 `model_semantics.payload` 内维护 `business_dictionary`，不新增第二份模型事实表。`version=1`；首次读取旧记录补空业务词典和对象 `usage_notes`。`overview` 保存业务全貌；`items` 的 `kind` 为 `term / convention`，带别名、说明、适用范围、对象引用、可选列筛选、业务依据、候选／确认／待复核状态和审阅时间。全局 `revision` 用于编辑冲突检查，`deleted_ids` 防止历史复用恢复已删词条。
+
+API 位于 `/api/models/{model_id}/semantics/business`：`PUT /overview`、`POST /items`、`PUT/DELETE /items/{id}`、`POST /suggest`。引用必须是当前模型真实对象；筛选只能引用列，支持 `eq / in`，值按字符串保存。业务规则不修改原生关系或 DAX。新增词条上限 500；单词条关联最多 20 个对象、10 组筛选。
+
+`_align()` 使用本次实际变更集合使引用受影响对象的业务记录失效，避免累计 UI 变更清单反复撤销刚确认的定义；业务总览在模型变化后保守转为待复核。历史复用深拷贝业务记录，目标词典的手动修改和删除优先。同一报表跨运行复用遵循现有报表身份匹配，不因结构相似就关联其他业务报表。
+
+“生成业务候选”使用独立后台任务及诊断阶段 `business_dictionary`，输入模型对象约 45,000 字符，轮流选择表、度量、列并声明遗漏数；JSON 结果最多八项，强制保持候选，不接受虚构对象或 AI 生成的筛选值。任务写回前比较模型 fingerprint 和词典 revision，冲突时丢弃本次建议，已有记录保持不变。用户编辑不被后台候选覆盖；服务重启后中断任务显式标错，可重试。
+
+业务术语通过临时 `search_aliases` 参与对象检索，不写回对象业务别名，也不改变对象确认状态。总览提供全局业务背景，相关术语和范围命中的约定按预算装入 `business_dictionary` 提示词块；失效记录只输出待复核标记，省略旧含义及筛选值。约定可用于用户未指定的条件，显式要求和 DAX 优先。未命中词典的问题仍可组合真实模型对象查询。分析总结复用规划时的语义快照，实际数值仍来自 `evidence`。这些约束通过上下文指导生成，不是一个能证明业务正确性的查询编译器。
+
+前端 [business_dictionary.js](../frontend/business_dictionary.js) 提供表单和展示组件，[semantics.js](../frontend/semantics.js) 统一管理三个视图、请求和后台轮询。编辑期间不重建表单；各列表保留滚动位置，提交携带打开编辑时的 revision，冲突保留输入并提示返回刷新。
 
 ### 生成与增量复用
 
@@ -270,15 +284,20 @@ AI 回复
 
 [analysis.py](../backend/analysis.py)不是普通 DAX 聊天的别名，而是独立流程：
 
-1. AI 返回 `AnalysisPlan` JSON：`scope / clarification / field_checks / queries`。
-2. 如需字段证据，读取真实取值，再请求规划；最多两轮取值检查，不重复已完成项。
+1. AI 返回 `AnalysisPlan` JSON：`scope / clarification / field_checks / queries / needs_more / remaining_questions / assessment`。根据问题复杂度先规划必要的一批查询，简单问题优先一条聚合。
+2. 如需字段证据，读取真实取值，再请求规划；整轮最多两轮取值检查，跨业务查询批次共享，不重复已完成项。
 3. 口径仍不清楚时保存确认卡，不编造查询。
 4. `readonly_query()` 检查只读形状和禁用语句；每条只允许一个 `EVALUATE`。
-5. 在 Desktop 顺序执行查询，立即保存成功或失败记录。可识别的连接中断最多重连重试一次；失败查询可再请求一次代码修复。
-6. 汇总阶段只依据本轮成功 evidence，引用 `[Q1]` 等来源；无成功结果时直接说明无法分析。
-7. 总结没有任何正文且结束原因可重试时，复用相同结果和图片最多重试一次，并在支持时降为低强度；不重新执行查询。
+5. 在 Desktop 顺序执行本批查询，立即保存成功或失败记录，以及所属 `batch` 和口径 `scope`。可识别的连接中断最多重连重试一次；失败查询可再请求一次代码修复。
+6. 计划声明需要继续、存在未解决问题，或本批有部分失败／结果截断时，检查时间和数量额度，再以 `analysis_continue` 阶段评估本轮真实 evidence。证据足够则停止，不足则只补查下一批；续查保持原口径，需改变口径时返回确认卡。整批失败、重复查询、连接变化或查询等待超时会停止补查，已有成功结果仍可总结。
+7. 汇总阶段只依据本轮成功 evidence，引用 `[Q1]` 等来源，编号跨批次连续；停止原因、未解决问题及未成功查询由应用补充说明。无成功结果时直接说明无法分析。
+8. 总结没有任何正文且结束原因可重试时，复用相同结果和图片最多重试一次，并在支持时降为低强度；不重新执行查询。
 
-规划、字段取值、查询、修复和总结共享分析流程的 deadline；进入分析前的共用语义取证另有等待限制。DAX/M 则是每次生成调用应用时限，不能把两种模式的超时范围混为一谈。
+规划、字段取值、查询、修复和总结共享分析流程的 deadline。[analysis_budget.py](../backend/analysis_budget.py) 预留 `min(180 秒, 总时限 × 25%)` 给总结；所有查询阶段的生成和等待均受扣除预留后的时间约束。下一条查询／下一轮规划还须通过近期耗时估计（保守取较慢观察值并留 20% 余量）的准入检查。总结可以使用全部剩余时间，预留不保证上游模型一定完成输出。进入分析前的共用语义取证另有等待限制。DAX/M 则是每次生成调用应用时限，不能把两种模式的超时范围混为一谈。
+
+每批最多 4 条，单轮最多 12 条新业务查询、4 批、18 次应用查询调用（含 DAX 修复重试，底层连接恢复重试仍单独按原策略处理）。字段取值不占业务查询条数，但共享查询阶段时间。查询去重忽略代码空白、注释及非引用代码大小写，保留字符串值和引用标识符；不会把不同筛选字符串合并。修复也不能重复已执行或本批待执行的相同 DAX。
+
+续查上下文按查询均分约 48,000 字符预算，每份结果最多 16 行；总结使用约 96,000 字符预算。只提供同一 Q 编号的最新执行尝试，并标记 `context_truncated / shown_rows / query_text_truncated`；单元格不会被裁成另一个值。此裁剪仅影响生成上下文，数据库、依据卡与 CSV 保留原结果及所有尝试。后续规划格式错误或修复超时不会丢弃先前成功结果；取消信号仍直接终止，不触发新总结。
 
 空结果不等于零；TopN、样例和截断记录不能支持总体总额。查询结果按模型当前可读范围返回，不等于 Desktop 视觉对象的数据。
 
@@ -398,7 +417,7 @@ provider 内部还会产生 `activity`、`metadata`，分别用于上游活动�
 | DAX/M 历史 | 最多最近 20 条完整消息、60000 字符预算 | [chat.py](../backend/chat.py) |
 | 分析历史 | 最多最近 16 条完整消息、40000 字符预算 | [analysis.py](../backend/analysis.py) |
 | DAX/M 候选与修复 | 单次最多 20 个对象，初次生成后最多两轮修复 | [chat.py](../backend/chat.py) |
-| 分析结果 | 一份计划最多 4 条查询；每条最多保留 200 行、30 列、24000 字节行数据 | [analysis.py](../backend/analysis.py) |
+| 分析结果 | 每批最多 4 条；单轮最多 12 条、4 批、18 次应用执行尝试（含修复）；每条最多保留 200 行、30 列、24000 字节行数据 | [analysis.py](../backend/analysis.py)、[analysis_budget.py](../backend/analysis_budget.py) |
 | 语义生成 | 每批 20 对象；本批返回格式失败最多再请求一次 | [semantics.py](../backend/semantics.py) |
 | 注入语义 | 按问题匹配最多 32 个起点并扩展依赖；条目 50000 字符预算，附缺失对象与关系信息；无匹配时按表概览 | [semantic_retrieval.py](../backend/semantic_retrieval.py) |
 | 校准 | 一个预期值，最多 10 个 AND 条件，仅度量值 | [schemas.py](../backend/schemas.py)、[validation.py](../backend/validation.py) |

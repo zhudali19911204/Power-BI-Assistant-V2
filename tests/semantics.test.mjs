@@ -22,6 +22,18 @@ async function fixture(initial=profile()) {
   const api=async(path,opts={})=>{
     calls.push({path,...opts});
     if(path==='/settings')return {name:'模型服务',model:'test-model',base_url:'https://service.example/v1',active_profile_id:'selected'};
+    if(path.includes('/business/')) {
+      current.business_dictionary??={revision:0,overview:null,items:[],generation:{status:'idle'}};
+      const data=current.business_dictionary,body=opts.body?JSON.parse(opts.body):{};
+      if(path.endsWith('/suggest')){data.generation={status:'building',stage:'生成业务候选中'};return structuredClone(current);}
+      if(body.revision!==undefined&&body.revision!==data.revision)throw new Error('业务词典已更新，请返回列表刷新后再编辑');
+      const record={...body,state:body.confirmed?'confirmed':'candidate',source:'用户编辑'};
+      if(path.endsWith('/overview'))data.overview=record;
+      else if(opts.method==='POST')data.items.push({...record,id:'business-'+data.revision});
+      else if(opts.method==='DELETE')data.items=data.items.filter(e=>e.id!==path.split('/').at(-1).split('?')[0]);
+      else {const index=data.items.findIndex(e=>e.id===path.split('/').at(-1));data.items[index]={...record,id:data.items[index].id};}
+      data.revision++;return structuredClone(current);
+    }
     if(opts.method==='PUT'){
       const body=JSON.parse(opts.body),id=path.split('/').at(-1);
       const e=current.entries.find(e=>e.id===id);Object.assign(e,body,{state:body.confirmed?'confirmed':'candidate'});
@@ -33,8 +45,113 @@ async function fixture(initial=profile()) {
   };
   const manager=await mountSemanticWorkbench(root,{api,modelId:'model',onUpdate:p=>updates.push(p),onPreview:(...a)=>previews.push(a)});
   async function click(selector){root.querySelectorAll('form').forEach(f=>f.reportValidity=()=>true);root.querySelector(selector).click();await tick();}
-  return {root,dialog,window,calls,updates,previews,manager,click};
+  return {root,dialog,window,calls,updates,previews,manager,click,setProfile(value){current=structuredClone(value);}};
 }
+
+function choose(root,name,value) {
+  const options=[...root.querySelectorAll(`[name="${name}"] option`)];
+  options.forEach(option=>option.selected=false);
+  options.find(option=>option.value===value).selected=true;
+}
+
+test('business overview saves locally and is confirmed separately from candidate generation',async()=>{
+  const f=await fixture();
+  try {
+    await f.click('[data-semantic-tab="overview"]');
+    assert.ok(f.root.textContent.includes('模型业务总览'));
+    assert.ok(!f.calls.some(c=>c.path.endsWith('/suggest')));
+    await f.click('[data-business-overview]');
+    f.root.querySelector('[name="description"]').value='工厂费用及库存分析';
+    f.root.querySelector('[name="topics"]').value='费用\n库存';
+    f.root.querySelector('[name="source_note"]').value='报表负责人确认';
+    await f.click('[data-business-confirm]');
+    const call=f.calls.find(c=>c.path.endsWith('/business/overview'));
+    assert.equal(call.method,'PUT');
+    assert.deepEqual(JSON.parse(call.body),{description:'工厂费用及库存分析',topics:['费用','库存'],source_note:'报表负责人确认',confirmed:true,revision:0});
+    assert.ok(f.root.textContent.includes('用户已确认'));
+    assert.ok(f.root.textContent.includes('工厂费用及库存分析'));
+    await f.click('[data-business-suggest]');
+    assert.equal(JSON.parse(f.calls.at(-1).body).llm_profile_id,'selected');
+    assert.equal(f.root.querySelector('[data-business-suggest]').disabled,true);
+  } finally {f.manager.dispose();}
+});
+
+test('business terms support several object roles, literal filters and preserved list position',async()=>{
+  const f=await fixture();
+  try {
+    await f.click('[data-semantic-tab="business"]');
+    f.dialog.scrollTop=450;
+    await f.click('[data-business-new="term"]');
+    f.root.querySelector('[name="title"]').value='人力费用';
+    f.root.querySelector('[name="meaning"]').value='用于按成本中心分析实际费用';
+    f.root.querySelector('[name="aliases"]').value='人工费，人员成本';
+    await f.click('[data-business-add-target]');
+    choose(f.root.querySelector('[data-business-target]'),'object_id','two');
+    f.root.querySelector('[name="purpose"]').value='费用金额指标';
+    await f.click('[data-business-add-target]');
+    choose(f.root.querySelectorAll('[data-business-target]')[1],'object_id','one');
+    await f.click('[data-business-add-filter]');
+    const row=f.root.querySelector('[data-business-filter]');
+    choose(row,'object_id','one');choose(row,'operator','in');
+    row.querySelector('[name="values"]').value='0257\n0810';
+    assert.ok(!row.querySelector('option[value="two"]'));
+    await f.click('[data-business-confirm]');
+    const call=f.calls.find(c=>c.path.endsWith('/business/items')),body=JSON.parse(call.body);
+    assert.equal(body.targets.length,2);
+    assert.deepEqual(body.filters,[{object_id:'one',operator:'in',values:['0257','0810']}]);
+    assert.deepEqual(body.aliases,['人工费','人员成本']);
+    assert.equal(f.dialog.scrollTop,450);
+    assert.ok(f.root.textContent.includes('人力费用'));
+    await f.click('[data-business-edit]');
+    assert.equal(f.root.querySelectorAll('[data-business-target]').length,2);
+    await f.click('[data-business-remove]');
+    assert.equal(f.root.querySelectorAll('[data-business-target]').length,1);
+    await f.click('[data-business-back]');
+    await f.click('[data-business-delete]');
+    assert.ok(!f.calls.some(c=>c.method==='DELETE'));
+    await f.click('[data-business-delete-confirm]');
+    assert.ok(f.calls.some(c=>c.method==='DELETE'));
+    assert.ok(f.root.textContent.includes('尚无业务术语'));
+  } finally {f.manager.dispose();}
+});
+
+test('analysis conventions save object scope as candidates and tab navigation keeps object list state',async()=>{
+  const f=await fixture();
+  try {
+    const search=f.root.querySelector('[data-semantic-search]');search.value='成本中心';
+    search.dispatchEvent(new f.window.Event('input',{bubbles:true}));f.dialog.scrollTop=620;
+    await f.click('[data-semantic-tab="business"]');
+    await f.click('[data-business-new="convention"]');
+    f.root.querySelector('[name="title"]').value='费用分析时间';f.root.querySelector('[name="meaning"]').value='用户未指定日期时使用业务过账月';
+    choose(f.root,'scope','objects');
+    f.root.querySelector('[name="scope"]').dispatchEvent(new f.window.Event('change',{bubbles:true}));
+    assert.equal(f.root.querySelector('[data-business-scope-objects]').hidden,false);
+    choose(f.root,'scope_object_ids','two');
+    const form=f.root.querySelector('form');form.reportValidity=()=>true;
+    form.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+    const call=f.calls.find(c=>c.path.endsWith('/business/items')),body=JSON.parse(call.body);
+    assert.equal(body.confirmed,false);assert.equal(body.kind,'convention');assert.deepEqual(body.scope_object_ids,['two']);
+    await f.click('[data-semantic-tab="objects"]');
+    assert.equal(f.dialog.scrollTop,620);
+    assert.equal(f.root.querySelector('[data-semantic-search]').value,'成本中心');
+  } finally {f.manager.dispose();}
+});
+
+test('background business generation preserves editor text and rejects saving a stale revision',async()=>{
+  const data={revision:0,overview:null,items:[],generation:{status:'building',stage:'正在生成'}};
+  const f=await fixture(profile({business_dictionary:data}));
+  try {
+    await f.click('[data-semantic-tab="overview"]');await f.click('[data-business-overview]');
+    f.root.querySelector('[name="description"]').value='尚未提交的手工编辑';
+    f.setProfile(profile({business_dictionary:{...data,revision:1,generation:{status:'ready',stage:'生成完成'}}}));
+    await new Promise(resolve=>setTimeout(resolve,1850));
+    assert.equal(f.root.querySelector('[name="description"]').value,'尚未提交的手工编辑');
+    assert.equal(f.root.querySelector('[data-business-suggest]').disabled,false);
+    await f.click('[data-business-confirm]');
+    assert.ok(f.root.textContent.includes('业务词典已更新'));
+    assert.equal(f.root.querySelector('[name="description"]').value,'尚未提交的手工编辑');
+  } finally {f.manager.dispose();}
+});
 
 test('dictionary distinguishes model facts, candidate meaning and confirmed business definitions',async()=>{
   const f=await fixture();

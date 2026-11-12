@@ -24,6 +24,7 @@ from .values import ValueEvidence, codes_in
 from .reports import normalize_name, normalize_path, same_report, schema_signature
 from .semantic_diff import reconcile, source_snapshot
 from .semantic_retrieval import retrieve
+from . import business_dictionary as business
 
 
 SEMANTIC_RULES = '''语义依据规则：表列名、数据类型、关系、公式和取值是模型事实；字段业务含义、单位和业务别名可能尚未确认。
@@ -43,6 +44,7 @@ class SemanticEdit(BaseModel):
     meaning: str = Field(default='', max_length=1500)
     role: str = Field(default='', max_length=120)
     unit: str = Field(default='', max_length=100)
+    usage_notes: str = Field(default='', max_length=1500)
     aliases: list[str] = Field(default_factory=list, max_length=15)
     confirmed: bool = False
 
@@ -62,6 +64,7 @@ class Suggestion(BaseModel):
     meaning: str = Field(default='', max_length=1500)
     role: str = Field(default='', max_length=120)
     unit: str = Field(default='', max_length=100)
+    usage_notes: str = Field(default='', max_length=1500)
     aliases: list[str] = Field(default_factory=list, max_length=15)
 
 
@@ -75,7 +78,7 @@ def object_id(kind, table, name):
 
 
 def can_answer(profile):
-    return profile['status']=='ready' or bool(profile.get('has_history')) or any(
+    return business.has_knowledge(profile) or profile['status']=='ready' or bool(profile.get('has_history')) or any(
         e['state'] in ('candidate','confirmed') or e.get('previous_definition')
         for e in profile['entries'])
 
@@ -94,7 +97,7 @@ def inventory(ctx):
         entries.append({'kind':'measure','table':measure.table,'name':measure.name,'facts':{'expression':measure.expression}})
     for entry in entries:
         entry.update(id=object_id(entry['kind'],entry['table'],entry['name']),business_name='',meaning='',
-                     role='',unit='',aliases=[],state='unresolved',source='尚未解释',reviewed_at=None)
+                     role='',unit='',usage_notes='',aliases=[],state='unresolved',source='尚未解释',reviewed_at=None)
     return entries
 
 
@@ -110,6 +113,7 @@ class SemanticService:
         self.lock=threading.RLock()
         self.jobs={}
         self.values=ValueEvidence(db,powerbi)
+        self.business=business.BusinessDictionary(self)
 
     def _store(self,model_id,profile):
         profile['updated_at']=now()
@@ -121,9 +125,11 @@ class SemanticService:
             row=self.db.one('SELECT * FROM model_semantics WHERE model_id=?',(model['id'],))
             if row and row['fingerprint']==model['fingerprint']:
                 profile=json.loads(row['payload'])
+                migrated=business.migrate(profile)
                 if 'source_snapshot' not in profile:
                     profile['source_snapshot']=source_snapshot(model['context'])
-                    self._store(model['id'],profile)
+                    migrated=True
+                if migrated:self._store(model['id'],profile)
                 return profile
             if ctx is None:
                 from .powerbi import context_from_dict
@@ -134,8 +140,9 @@ class SemanticService:
                      'stage':'已整理模型事实，等待语义梳理','error':'','entries':entries,
                      'overview':'字段名和结构已读取；业务含义和单位仍需梳理与审阅。',
                      'coverage':0,'metadata_status':'pending','updated_at':now(),
-                     'source_snapshot':source_snapshot(model['context'])}
+                     'source_snapshot':source_snapshot(model['context']), 'business_dictionary':business.empty()}
             if previous:
+                business.migrate(previous)
                 old={e['id']:e for e in previous['entries']}
                 for entry in entries:
                     entry['facts']={**old.get(entry['id'],{}).get('facts',{}),**entry['facts']}
@@ -149,6 +156,8 @@ class SemanticService:
         has_history=bool(previous.get('has_history')) or any(
             e['state'] in ('candidate','confirmed') or e.get('previous_definition') for e in previous['entries'])
         entries,changes,removed=reconcile(entries,previous['entries'],before,model['context'])
+        profile['entries']=entries
+        business.align(profile,previous,changes['items'])
         # Structural and extended metadata reads happen in separate steps. Accumulate
         # their deltas instead of hiding an earlier change when a later read finds one.
         items={item['id']:item for item in previous.get('changes',{}).get('items',[])} if previous is profile else {}
@@ -196,6 +205,10 @@ class SemanticService:
             profile=self.ensure(model)
             if profile['status']=='building' and model_id not in self.jobs:
                 profile.update(status='error',stage='上次语义梳理已中断，可重新开始',error='本地服务已重启，尚未完成的字段仍需梳理')
+                self._store(model_id,profile)
+            generation=profile['business_dictionary']['generation']
+            if generation['status']=='building' and model_id not in self.business.jobs:
+                generation.update(status='error',stage='上次业务候选生成已中断，可重新生成',error='本地服务已重启，已有业务词典已保留')
                 self._store(model_id,profile)
             return profile
 
@@ -255,6 +268,8 @@ class SemanticService:
 
     def _reuse_from(self,model,profile,source,matched_by,metadata_read=True):
         edits={e['id']:e for e in profile['entries'] if e.get('reviewed_at')}
+        destination=profile['business_dictionary']
+        business.migrate(source['profile'])
         if not metadata_read:
             prior={e['id']:e for e in source['profile']['entries']}
             for entry in profile['entries']:
@@ -262,6 +277,7 @@ class SemanticService:
         self._align(profile,profile['entries'],model,previous=source['profile'],before=source['context'],metadata_read=metadata_read)
         # Explicit edits to the destination dictionary win over historical association.
         profile['entries']=[edits.get(e['id'],e) for e in profile['entries']]
+        business.merge_destination(profile,destination)
         reused=profile['changes']['preserved']
         pending=[e['id'] for e in profile['entries'] if e['state']=='unresolved']
         name=model.get('report',{}).get('name') or source['name']
@@ -442,6 +458,7 @@ class SemanticService:
             if any(not alias.strip() or len(alias)>100 for alias in body.aliases):raise HTTPException(422,'业务别名每项为 1～100 字')
             entry.update(**body.model_dump(exclude={'confirmed'}),state='confirmed' if body.confirmed else 'candidate',
                          source='用户确认' if body.confirmed else '用户编辑 · 待确认',reviewed_at=now())
+            p['business_dictionary']['revision']+=1
             p['pending_ids']=[e['id'] for e in p['entries'] if e['state']=='unresolved']
             p['coverage']=len(p['entries'])-len(p['pending_ids'])
             if not p['pending_ids'] and p.get('metadata_status')=='read' and p['status']!='building':
@@ -459,9 +476,10 @@ class SemanticService:
 
     def prompt(self,model_id,question='',*,history=(),bindings=()):
         p=self.get(model_id)
-        selection=retrieve(p['entries'],self.powerbi.get(model_id)['context'],question,
+        selection=retrieve(business.search_entries(p),self.powerbi.get(model_id)['context'],question,
                            history=history,bindings=bindings)
-        return (SEMANTIC_RULES+'\n增量语义使用规则：词典更新未完成时仍正常回答，使用当前模型结构与未变化的定义。'
+        knowledge=business.select(p,selection,question)
+        return (SEMANTIC_RULES+business.RULES+'\n增量语义使用规则：词典更新未完成时仍正常回答，使用当前模型结构与未变化的定义。'
             '新增或变更条目的历史确认已失效；不要套用旧含义、单位或别名。只有问题依赖未知业务含义时才逐项澄清，'
             '或根据当前模型事实和实际查值回答并说明不确定性，不要求用户先重建整份语义层。'
             'metadata_status 不是 read 时，扩展元数据尚未核对完整，沿用的历史解释需注明此限制。'
@@ -474,7 +492,7 @@ class SemanticService:
             '\n模型语义词典（未确认建议不可视为事实）：\n'+encode(
                 {'status':p['status'],'metadata_status':p.get('metadata_status','pending'),
                  'pending':sum(e['state']=='unresolved' for e in p['entries']),
-                 **selection}))
+                 **selection,'business_dictionary':knowledge}))
 
     def bindings(self,conversation_id):
         return self.db.all('SELECT literal,table_name,column_name FROM conversation_bindings WHERE conversation_id=?',(conversation_id,))

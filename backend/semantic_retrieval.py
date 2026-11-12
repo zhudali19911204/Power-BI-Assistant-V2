@@ -57,7 +57,7 @@ def _identity(entry):
 
 def _public(entry):
     result = {k: entry.get(k, '') for k in
-              ('kind', 'table', 'name', 'business_name', 'meaning', 'role', 'unit', 'aliases', 'state', 'source')}
+              ('kind', 'table', 'name', 'business_name', 'meaning', 'role', 'unit', 'usage_notes', 'aliases', 'state', 'source')}
     result.update({key: entry.get('facts', {}).get(key, '') for key in
                    ('description', 'format_string', 'actual_dtype', 'source_column')})
     if entry['state'] == 'unresolved' and entry.get('change'):
@@ -83,9 +83,9 @@ def retrieve(entries, context, question='', *, history=(), bindings=(), max_char
     frequency = Counter()
     for e in entries:
         by_table[e['table']].append(e['id'])
-        labels = [e['name'], e.get('business_name', ''), *e.get('aliases', [])]
+        labels = [e['name'], e.get('business_name', ''), *e.get('aliases', []), *e.get('search_aliases', [])]
         names = set().union(*(_tokens(label) for label in labels))
-        description = _tokens(e.get('meaning', '') + ' ' + e.get('facts', {}).get('description', ''))
+        description = _tokens(e.get('meaning', '') + ' ' + e.get('usage_notes', '') + ' ' + e.get('facts', {}).get('description', ''))
         documents[e['id']] = (labels, names, description)
         frequency.update(names | description)
     idf = {word: math.log(1 + (len(entries) + 1) / (count + 1)) for word, count in frequency.items()}

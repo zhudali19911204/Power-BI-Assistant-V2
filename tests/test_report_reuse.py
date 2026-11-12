@@ -12,6 +12,7 @@ from backend.engine.context.base import Column, Measure, ModelContext, Relations
 from backend.powerbi import context_from_dict, fingerprint
 from backend.reports import report_from_window, reports_for_instances, schema_signature
 from backend.semantics import SemanticEdit, object_id
+from backend.business_dictionary import BusinessEdit, OverviewEdit
 from tests.test_semantics import DictionaryProvider, wait_ready
 
 
@@ -67,6 +68,40 @@ def connect(client,port,**body):
     r=client.post('/api/models/connect',json={'port':port,**body})
     assert r.status_code==200,r.text
     return r.json()
+
+
+def test_business_knowledge_follows_same_report_and_rechecks_changed_formula(setup):
+    app,client,state,engine,built=setup
+    old=connect(client,engine());built(old)
+    business=app.state.semantics.business
+    business.edit(old['id'],OverviewEdit(description='工厂销售分析',confirmed=True))
+    term=BusinessEdit(kind='term',title='销售实绩',meaning='用于销售分析',confirmed=True,
+                      targets=[{'object_id':object_id('measure','Sales','Actual')}])
+    business.edit(old['id'],term)
+    new=connect(client,engine(port=61111,pid=77))
+    data=app.state.semantics.get(new['id'])['business_dictionary']
+    assert data['overview']['state']=='confirmed' and data['items'][0]['state']=='confirmed'
+    changed=context();changed.measures[0].expression="SUM('Sales'[Amount]) * 2"
+    newer=connect(client,engine(port=62222,pid=88,ctx=changed))
+    data=app.state.semantics.get(newer['id'])['business_dictionary']
+    assert data['overview']['state']=='unresolved' and data['items'][0]['state']=='unresolved'
+    unrelated=connect(client,engine(name='另一份报表',path=r'E:\Other\另一份报表.pbix',port=63333,pid=99))
+    assert app.state.semantics.get(unrelated['id'])['business_dictionary']['items']==[]
+
+
+def test_reassociating_history_preserves_business_edits_and_deleted_records(setup):
+    app,client,state,engine,built=setup
+    old=connect(client,engine());built(old)
+    business=app.state.semantics.business
+    body=BusinessEdit(kind='convention',title='默认分析范围',meaning='用户未指定时的范围说明',confirmed=True)
+    first=business.edit(old['id'],body)['business_dictionary']['items'][0]
+    second=business.edit(old['id'],body.model_copy(update={'title':'删除测试'}))['business_dictionary']['items'][1]
+    new=connect(client,engine(port=61111,pid=77))
+    business.edit(new['id'],body.model_copy(update={'meaning':'当前报表修改后的定义'}),first['id'])
+    business.delete(new['id'],second['id'])
+    p=app.state.semantics.reuse(new['id'],old['id'])
+    assert len(p['business_dictionary']['items'])==1
+    assert p['business_dictionary']['items'][0]['meaning']=='当前报表修改后的定义'
 
 
 def test_reopened_report_reuses_dictionary_after_app_restart_and_new_pid_port(setup):

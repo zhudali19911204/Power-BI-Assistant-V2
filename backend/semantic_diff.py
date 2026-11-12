@@ -7,7 +7,7 @@ from .engine.dax.artifact import _code_only
 from .engine.mquery.artifact import _strip_strings_comments
 
 
-DEFINITION_KEYS = ('business_name', 'meaning', 'role', 'unit', 'aliases', 'state', 'source', 'reviewed_at')
+DEFINITION_KEYS = ('business_name', 'meaning', 'role', 'unit', 'aliases', 'usage_notes', 'state', 'source', 'reviewed_at')
 FACT_LABELS = {'columns': '表内字段', 'date_table': '日期表标记', 'dtype': '数据类型',
     'actual_dtype': '实际数据类型', 'relationships': '关系', 'expression': '公式',
     'description': '模型描述', 'format_string': '显示格式', 'source_column': '源字段',
@@ -133,14 +133,14 @@ def reconcile(entries, previous, before_context, after_context):
             result.append(saved)
         else:
             entry = copy.deepcopy(entry)
-            entry.update(business_name='', meaning='', role='', unit='', aliases=[], state='unresolved',
+            entry.update(business_name='', meaning='', role='', unit='', aliases=[], usage_notes='', state='unresolved',
                          source='模型已变化 · 待更新' if prior else '尚未解释', reviewed_at=None)
             entry['change'] = {'kind': 'modified' if prior else 'added', 'reasons': reasons[entry['id']]}
             if prior:
                 if prior['state'] in ('candidate','confirmed') or prior.get('previous_definition'):
                     entry['previous_definition'] = copy.deepcopy(prior.get('previous_definition')
                         if prior['state']=='unresolved' and prior.get('previous_definition') else
-                        {k: prior[k] for k in DEFINITION_KEYS})
+                        {k: prior.get(k, '') for k in DEFINITION_KEYS})
                 if prior['state']=='unresolved' and prior.get('change'):
                     entry['change']={'kind':prior['change']['kind'],
                         'reasons':list(dict.fromkeys(prior['change']['reasons']+entry['change']['reasons']))}

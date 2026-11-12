@@ -77,12 +77,14 @@ def test_configured_budget_reaches_planning_repair_and_summary(setup, monkeypatc
     monkeypatch.setattr(analysis_module, 'completion_events', observed)
     events = send(client, conv)
     assert events[-1]['type'] == 'done'
-    assert len(deadlines) == 3 and all(1100 < timeout <= 1200 for timeout in deadlines)
+    assert len(deadlines) == 3
+    assert all(1000 < timeout <= 1020 for timeout in deadlines[:2])
+    assert 1100 < deadlines[2] <= 1200  # Only summary may consume the reserved 180 seconds.
 
 
 def test_truncated_data_has_app_generated_caveat_even_if_model_omits_it(setup,monkeypatch):
     app,client,conv=setup
-    provider=Provider([plan(),'本次可查看部分结果。'])
+    provider=Provider([plan(),json.dumps({'queries':[],'assessment':'按现有样本说明限制'}),'本次可查看部分结果。'])
     monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:{**result(),'truncated':True})
     send(client,conv)

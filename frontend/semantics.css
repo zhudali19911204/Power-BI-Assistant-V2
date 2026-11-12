@@ -21,6 +21,13 @@
 .semantic-facts p>span{white-space:pre-wrap}
 .semantic-entry-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .semantic-entry-actions .secondary-button{font-size:10px;padding:7px 11px}
+.semantic-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 12px}
+.semantic-tabs button{font-size:11px}
+[data-business-form] fieldset{border:1px solid #e5e9ed;border-radius:8px;margin:14px 0;padding:12px;min-width:0}
+[data-business-form] legend{font-size:12px;padding:0 5px}
+.business-reference{padding:10px 0;border-bottom:1px solid #e5e9ed;margin-bottom:10px}
+.business-reference select,[data-business-form] select{max-width:100%;min-width:0}
+[data-business-form] [hidden]{display:none}
 .semantic-error,.semantic-feedback.error{color:#ab796a;background:#fcf4f1}
 .semantic-error,.semantic-feedback{font-size:11px;line-height:1.9;padding:10px 12px;border-radius:6px;overflow-wrap:anywhere}
 .semantic-feedback{color:#648b72;background:#f2f8f4}
