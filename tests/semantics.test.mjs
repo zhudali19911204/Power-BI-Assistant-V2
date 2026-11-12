@@ -11,8 +11,14 @@ function profile(extra={}) {return {model_id:'model',status:'ready',stage:'语�
   entries:[entry('one'),entry('two',{kind:'measure',table:'Fact',name:'Actual Amount',state:'unresolved',meaning:'',facts:{expression:'SUM(Fact[Amount])'}})],...extra};}
 
 async function fixture(initial=profile()) {
-  const {document,window}=parseHTML('<html><body><section></section></body></html>');
-  const root=document.querySelector('section'),calls=[],updates=[],previews=[];let current=structuredClone(initial);
+  const {document,window}=parseHTML('<html><body><dialog><section></section></dialog></body></html>');
+  const root=document.querySelector('section'),dialog=document.querySelector('dialog'),calls=[],updates=[],previews=[];let current=structuredClone(initial);
+  // Model the browser clamping the dialog's scroll offset as its long list is
+  // replaced with shorter content. LinkeDOM itself has no layout engine.
+  let proto=root,html;
+  while(proto&&!html){html=Object.getOwnPropertyDescriptor(proto,'innerHTML');proto=Object.getPrototypeOf(proto);}
+  Object.defineProperty(root,'innerHTML',{configurable:true,get(){return html.get.call(this);},
+    set(value){html.set.call(this,value);dialog.scrollTop=0;}});
   const api=async(path,opts={})=>{
     calls.push({path,...opts});
     if(path==='/settings')return {name:'模型服务',model:'test-model',base_url:'https://service.example/v1',active_profile_id:'selected'};
@@ -27,7 +33,7 @@ async function fixture(initial=profile()) {
   };
   const manager=await mountSemanticWorkbench(root,{api,modelId:'model',onUpdate:p=>updates.push(p),onPreview:(...a)=>previews.push(a)});
   async function click(selector){root.querySelectorAll('form').forEach(f=>f.reportValidity=()=>true);root.querySelector(selector).click();await tick();}
-  return {root,window,calls,updates,previews,manager,click};
+  return {root,dialog,window,calls,updates,previews,manager,click};
 }
 
 test('dictionary distinguishes model facts, candidate meaning and confirmed business definitions',async()=>{
@@ -55,6 +61,82 @@ test('business meaning can be edited and explicitly confirmed without replacing 
     assert.ok(f.root.textContent.includes('用户已确认'));
     assert.equal(f.updates.at(-1).confirmed,1);
     assert.equal(f.root.querySelectorAll('[data-semantic-entry]').length,2);
+  } finally {f.manager.dispose();}
+});
+
+for(const action of ['back','save','confirm'])test(`returning from semantic edit via ${action} keeps the list position and expanded facts`,async()=>{
+  const f=await fixture();
+  try {
+    const search=f.root.querySelector('[data-semantic-search]');search.value='成本中心';
+    search.dispatchEvent(new f.window.Event('input',{bubbles:true}));
+    const pending=f.root.querySelector('[data-semantic-pending]');pending.checked=action!=='confirm';
+    pending.dispatchEvent(new f.window.Event('change',{bubbles:true}));
+    f.root.querySelector('[data-semantic-entry="one"] details').setAttribute('open','');
+    f.dialog.scrollTop=680;
+    await f.click('[data-edit-semantic="one"]');
+    assert.equal(f.dialog.scrollTop,0);
+    f.dialog.scrollTop=125;
+    if(action==='back')await f.click('[data-semantic-back]');
+    else if(action==='confirm')await f.click('[data-confirm-semantic]');
+    else {
+      const form=f.root.querySelector('form');form.reportValidity=()=>true;
+      form.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+    }
+    assert.equal(f.dialog.scrollTop,680);
+    assert.equal(f.root.querySelector('[data-semantic-search]').value,'成本中心');
+    assert.equal(f.root.querySelector('[data-semantic-pending]').hasAttribute('checked'),action!=='confirm');
+    assert.ok(f.root.querySelector('[data-semantic-entry="one"] details').hasAttribute('open'));
+    assert.equal(f.calls.some(call=>call.method==='PUT'),action!=='back');
+  } finally {f.manager.dispose();}
+});
+
+test('confirming a pending-only entry keeps the filter and returns to remaining entries',async()=>{
+  const f=await fixture(profile({entries:[entry('one'),entry('two',{name:'Next Code'})]}));
+  try {
+    const pending=f.root.querySelector('[data-semantic-pending]');pending.checked=true;
+    pending.dispatchEvent(new f.window.Event('change',{bubbles:true}));f.dialog.scrollTop=480;
+    await f.click('[data-edit-semantic="one"]');await f.click('[data-confirm-semantic]');
+    assert.equal(f.dialog.scrollTop,480);
+    assert.equal(f.root.querySelector('[data-semantic-pending]').hasAttribute('checked'),true);
+    assert.equal(f.root.querySelector('[data-semantic-entry="one"]'),null);
+    assert.ok(f.root.querySelector('[data-semantic-entry="two"]'));
+  } finally {f.manager.dispose();}
+});
+
+test('save feedback keeps the same visible entry anchored as the header grows',async()=>{
+  const f=await fixture(),proto=f.window.HTMLElement.prototype;
+  const original=Object.getOwnPropertyDescriptor(proto,'getBoundingClientRect');
+  Object.defineProperty(proto,'getBoundingClientRect',{configurable:true,value(){
+    if(this===f.dialog)return {top:0,bottom:600};
+    if(this.hasAttribute('data-semantic-entry')){
+      const index=[...this.parentElement.children].indexOf(this);
+      const feedback=f.root.querySelector('[data-semantic-feedback]');
+      const top=240+index*250+(feedback&&!feedback.hidden?40:0)-f.dialog.scrollTop;
+      return {top,bottom:top+250};
+    }
+    return {top:0,bottom:0};
+  }});
+  try {
+    f.dialog.scrollTop=360;
+    const before=f.root.querySelector('[data-semantic-entry="one"]').getBoundingClientRect().top;
+    await f.click('[data-edit-semantic="one"]');await f.click('[data-confirm-semantic]');
+    assert.equal(f.root.querySelector('[data-semantic-entry="one"]').getBoundingClientRect().top,before);
+    assert.equal(f.dialog.scrollTop,400);
+  } finally {
+    f.manager.dispose();
+    if(original)Object.defineProperty(proto,'getBoundingClientRect',original);else delete proto.getBoundingClientRect;
+  }
+});
+
+test('background semantic refresh keeps the list position and expanded facts',async()=>{
+  const f=await fixture(profile({status:'building'}));
+  try {
+    f.dialog.scrollTop=720;
+    f.root.querySelector('[data-semantic-entry="one"] details').setAttribute('open','');
+    await new Promise(resolve=>setTimeout(resolve,1850));
+    assert.ok(f.calls.filter(call=>call.path==='/models/model/semantics').length>=2);
+    assert.equal(f.dialog.scrollTop,720);
+    assert.ok(f.root.querySelector('[data-semantic-entry="one"] details').hasAttribute('open'));
   } finally {f.manager.dispose();}
 });
 

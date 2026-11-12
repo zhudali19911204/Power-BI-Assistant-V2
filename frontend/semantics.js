@@ -38,7 +38,32 @@ function editMarkup(entry) {
 
 export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},onPreview=()=>{}}) {
   let profile,service,editing=null,filter='',onlyPending=false,onlyChanges=false,busy=false,timer=null,disposed=false,paused=false;
-  function feedback(text,error=false) {const el=$('[data-semantic-feedback]',root);if(el){el.textContent=text;el.hidden=false;el.classList.toggle('error',error);}}
+  const scroll=root.closest('dialog')||root;
+  let listView=null;
+  function captureListView() {
+    if(!$('[data-semantic-entries]',root))return null;
+    const entries=[...root.querySelectorAll('[data-semantic-entry]')];
+    const expanded=new Map(entries.map(entry=>[entry.dataset.semanticEntry,
+      [...entry.querySelectorAll('details')].flatMap((details,index)=>details.hasAttribute('open')?[index]:[])]));
+    const viewport=scroll.getBoundingClientRect?.();
+    const anchor=viewport&&entries.find(entry=>{const rect=entry.getBoundingClientRect?.();return rect&&rect.bottom>viewport.top&&rect.top<viewport.bottom;});
+    return {top:scroll.scrollTop||0,expanded,deltaOpen:!!$('.semantic-delta details[open]',root),
+      anchor:anchor?{id:anchor.dataset.semanticEntry,offset:anchor.getBoundingClientRect().top-viewport.top}:null};
+  }
+  function restoreListView(view) {
+    if(!view)return;
+    const entries=[...root.querySelectorAll('[data-semantic-entry]')];
+    for(const entry of entries)for(const [index,details] of [...entry.querySelectorAll('details')].entries())
+      details.toggleAttribute('open',view.expanded.get(entry.dataset.semanticEntry)?.includes(index)||false);
+    $('.semantic-delta details',root)?.toggleAttribute('open',view.deltaOpen);
+    scroll.scrollTop=view.top;
+    const anchor=view.anchor&&entries.find(entry=>entry.dataset.semanticEntry===view.anchor.id);
+    if(anchor)scroll.scrollTop+=anchor.getBoundingClientRect().top-scroll.getBoundingClientRect().top-view.anchor.offset;
+  }
+  function feedback(text,error=false) {
+    const el=$('[data-semantic-feedback]',root),view=captureListView();
+    if(el){el.textContent=text;el.hidden=false;el.classList.toggle('error',error);restoreListView(view);}
+  }
   function list() {
     const changed=new Set((profile.changes?.items||[]).map(e=>e.id));
     const entries=profile.entries.filter(e=>(!onlyPending||e.state!=='confirmed')&&(!onlyChanges||changed.has(e.id))&&
@@ -46,6 +71,7 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
     $('[data-semantic-entries]',root).innerHTML=entries.map(entryMarkup).join('')||'<p class="notice">没有匹配的条目。</p>';
   }
   function render() {
+    listView=captureListView()||listView;
     const summary=semanticSummary(profile);
     const delta=profile.changes;
     const buildDisabled=profile.status==='building'||(summary.pending===0&&profile.status==='ready');
@@ -58,7 +84,7 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
       <div class="semantic-tools"><button type="button" class="primary-button" data-build-semantics ${buildDisabled?'disabled':''}>${icon('sparkles')}${profile.status==='building'?'正在后台梳理…':buildDisabled?'语义层已是最新':delta?`仅梳理待更新 ${summary.pending} 项`:profile.coverage>0?`继续梳理（剩余 ${summary.pending} 项）`:'开始梳理模型语义'}</button><span>点击后仅将待梳理对象的结构、公式和描述及相关关系发送至 ${esc(service?.name||service?.model||'当前模型服务')}（${esc(service?.base_url||'Anthropic 官方服务')}）解释含义；不修改 Desktop。</span></div>
       ${profile.status!=='ready'&&profile.status!=='building'&&profile.reuse_candidates?.length?`<div class="semantic-tools"><label class="form-field">关联已有词典（模型结构相同）<select data-semantic-history>${profile.reuse_candidates.map(c=>`<option value="${esc(c.model_id)}">${esc(c.name)}${c.path?' · '+esc(c.path):''} · ${c.coverage}/${c.total} 项</option>`).join('')}</select></label><button type="button" class="secondary-button" data-reuse-semantics>关联并复用</button><span>旧版未记录报表名称，或存在多个可能的词典时，选择已保存的词典；关联只读取本机记录，不调用大模型。</span></div>`:''}
       <section data-semantic-content>${editing?editMarkup(editing):`<div class="semantic-filter"><input type="search" data-semantic-search value="${esc(filter)}" placeholder="搜索表、字段、业务名称或含义" aria-label="搜索语义词典"><label><input type="checkbox" data-semantic-pending ${onlyPending?'checked':''}>只看待确认项</label>${delta?`<label><input type="checkbox" data-semantic-changes ${onlyChanges?'checked':''}>只看本次变更</label>`:''}</div><div data-semantic-entries></div>`}</section>`;
-    if(!editing)list();
+    if(!editing){list();restoreListView(listView);}else scroll.scrollTop=0;
   }
   function schedule() {
     clearTimeout(timer);
