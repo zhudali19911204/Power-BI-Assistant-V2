@@ -103,11 +103,14 @@ def test_failed_field_read_is_saved_as_failure_and_never_as_an_empty_success(set
 
 def test_duplicate_checks_cannot_loop_forever(setup,monkeypatch):
     app,client,conv=setup
-    provider=Provider([check_plan(),check_plan()]);calls=[]
+    provider=Provider([check_plan(),check_plan(),check_plan()]);calls=[]
     monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     monkeypatch.setattr(app.state.chat.analysis.fields,'preview',lambda *a,**k:(calls.append(1),profile())[1])
     events=send(client,conv)
-    assert len(calls)==1 and len(provider.calls)==2 and events[-1]['type']=='error'
+    assert len(calls)==1 and len(provider.calls)==3 and events[-1]['type']=='done'
+    saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert saved['clarification'] and 'personnel' in saved['content']
+    assert '重复读取' in saved['clarification']['context']
 
 
 def test_more_than_four_checks_run_in_one_request_across_two_rounds(setup,monkeypatch):
@@ -121,7 +124,7 @@ def test_more_than_four_checks_run_in_one_request_across_two_rounds(setup,monkey
     monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:pytest.fail('No metrics before confirmation'))
     events=send(client,conv)
     assert calls==[(c['table'],c['column']) for c in checks+more] and events[-1]['type']=='done'
-    assert len(provider.calls)==3 and '没有固定项数上限' in provider.calls[1][1][-1].content
+    assert len(provider.calls)==3 and '剩余 6 项' in provider.calls[1][1][-1].content
     saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
     assert saved['status']=='complete' and len(saved['field_previews'])==8
     assert saved['clarification'] and not saved['analysis']
@@ -144,14 +147,15 @@ def test_implicit_checks_are_not_truncated_to_four_fields():
     assert len(AnalysisService.implicit_checks(plan,ctx,'分析费用'))==7
 
 
-def test_discovery_round_limit_is_independent_of_the_number_of_checked_fields(setup,monkeypatch):
+def test_third_round_can_continue_to_business_queries(setup,monkeypatch):
     app,client,conv=setup
     batches=[[{'table':'产品','column':f'Field{i}'} for i in range(6)],
              [{'table':'客户','column':'地区'}],[{'table':'日期','column':'年份'}]]
-    provider=Provider([json.dumps({'field_checks':batch}) for batch in batches]);calls=[]
+    provider=Provider([*[json.dumps({'field_checks':batch}) for batch in batches],plan(),'实际125。[Q1]']);calls=[]
     monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     monkeypatch.setattr(app.state.chat.analysis.fields,'preview',lambda *a,**k:(calls.append(1),profile())[1])
-    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:pytest.fail('Unverified metrics must not run'))
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:result())
     events=send(client,conv)
-    assert len(calls)==7 and events[-1]['type']=='error'
-    assert '已完成两轮' in events[-1]['text']
+    assert len(calls)==8 and events[-1]['type']=='done'
+    saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert len(saved['analysis'])==1 and len(saved['field_previews'])==8

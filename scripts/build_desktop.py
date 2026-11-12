@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--public-key", type=Path)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
     parser.add_argument("--iscc", type=Path)
-    parser.add_argument("--version", default="2.0.2")
+    parser.add_argument("--version", default="2.0.4")
     args = parser.parse_args(argv)
     try:
         if sys.platform != "win32" or struct.calcsize("P") != 8:

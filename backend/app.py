@@ -63,7 +63,7 @@ def create_app(directory=None):
                 if row and row['model_id']==model_id:return True
         return False
     semantics.in_use=dictionary_in_use
-    app = FastAPI(title="Power BI Assistant", version="2.0.2", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="Power BI Assistant", version="2.0.4", docs_url="/api/docs", redoc_url=None)
     app.state.license_info = license_info
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
@@ -111,7 +111,7 @@ def create_app(directory=None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "2.0.2", "storage": "sqlite", "platform": "desktop",
+        return {"status": "ok", "version": "2.0.4", "storage": "sqlite", "platform": "desktop",
                 "license": {"type": "trial" if license_info.issued_at is not None else "permanent",
                             "issued_at": license_info.issued_at, "expires_at": license_info.expires_at,
                             "summary": license_info.summary} if license_info else {"type": "development"}}

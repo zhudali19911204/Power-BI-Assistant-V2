@@ -127,16 +127,16 @@ def test_continuation_can_check_a_field_before_running_its_next_batch(setup,monk
     assert len(saved(app,client,conv)['field_previews'])==1
 
 
-def test_field_discovery_limit_is_shared_across_query_batches(setup,monkeypatch):
+def test_field_discovery_can_continue_after_two_rounds_across_query_batches(setup,monkeypatch):
     one=check_plan()
     two=encode({'field_checks':[{'table':'客户','column':'地区'}]})
     three=encode({'field_checks':[{'table':'日期','column':'年份'}]})
-    app,client,conv,provider,calls=wire(setup,monkeypatch,[one,two,batch(more=True),three,'已有结果125。[Q1]'])
+    app,client,conv,provider,calls=wire(setup,monkeypatch,[one,two,batch(more=True),three,batch(2),'已有结果125。[Q1][Q2]'])
     checked=[]
     monkeypatch.setattr(app.state.chat.analysis.fields,'preview',lambda *a,**k:(checked.append(1),field_profile())[1])
     assert send(client,conv)[-1]['type']=='done'
-    assert len(checked)==2 and len(calls)==1
-    assert '已完成两轮' in saved(app,client,conv)['content']
+    assert len(checked)==3 and len(calls)==2
+    assert 'Q2' in saved(app,client,conv)['content']
 
 
 def test_followup_clarification_keeps_existing_results_and_waits_for_user(setup,monkeypatch):

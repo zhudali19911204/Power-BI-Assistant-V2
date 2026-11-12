@@ -20,6 +20,7 @@ class AnalysisBudget:
         self.summary_reserve = min(180, total * .25)
         self.planning_seconds = min(10, total * .02)
         self.query_seconds = min(5, total * .01)
+        self.field_seconds = min(3, total * .01)
 
     def remaining(self, *, summary=False):
         return max(0, self.deadline - self.clock() - (0 if summary else self.summary_reserve))
@@ -28,6 +29,13 @@ class AnalysisBudget:
         # Recent slow work is more informative than a fast early query.
         if kind == 'query':self.query_seconds = max(self.query_seconds, seconds)
         elif kind == 'plan':self.planning_seconds = max(self.planning_seconds, seconds)
+        elif kind == 'field':self.field_seconds = max(self.field_seconds, seconds)
+
+    def can_review_fields(self):
+        return self.remaining() >= self.planning_seconds * 1.2
+
+    def can_check_field(self):
+        return self.remaining() >= (self.field_seconds + self.planning_seconds) * 1.2
 
     def can_query(self):
         return self.remaining() >= self.query_seconds * 1.2

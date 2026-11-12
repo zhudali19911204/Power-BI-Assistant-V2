@@ -37,21 +37,23 @@
 - 示例模型只用于体验及静态检查，不能冒充真实取数或实跑。
 - 可视化看板生成、多个看板组合、原生 Power BI 报表页面生成目前**尚未实现**。
 
-### 源码与安装包不是同一版本快照
+### 当前发行版本
 
-本文描述 **2026-11-11 当前源码**。最近已验证的安装包是 **2.0.2**，构建于 2026-11-10，包含“同步模型后保留原对话”、语义增量更新及度量值写入目标选择。
+本文描述 **2026-11-12 当前源码**。最新安装包为 **2.0.4**，包含计算列、按问题检索语义、业务词典扩展与自定义名称、独立词典管理页面、分批数据分析及按时间和已有证据继续字段查值。
 
-计算列能力及之后的菜单调整属于后续源码变更，**不会自动进入已有安装包**。源码提交标签、API 版本字符串与安装包构建时间不能相互替代；交付范围以[验证记录](docs/VALIDATION.md)为准。
+2.0.4 已包含字段查值优化：取消固定两轮限制，复用完整取值，达到预算后利用已有证据继续查询或生成候选确认问题。
+
+后续修改源码**不会自动更新已有安装包**。源码提交标签、API 版本字符串与安装包构建时间不能相互替代；交付范围及校验值以[验证记录](docs/VALIDATION.md)为准。
 
 ## 快速开始
 
 ### 安装版用户
 
-1. 从可信发布者获取 `PowerBIAssistant-Setup-2.0.2.exe`，按机器码申请永久或 7 天试用 CD-KEY。
+1. 从可信发布者获取 `PowerBIAssistant-Setup-2.0.4.exe`，按机器码申请永久或 7 天试用 CD-KEY。
 2. 安装后打开助手，配置自己的模型服务；安装包不附带其他用户的 Key、报表或历史会话。
 3. 在本机 Power BI Desktop 打开目标报表，再通过助手连接。
 
-安装版不需要 Python 或 Node.js，需要 Windows 10/11 和 Edge WebView2 Runtime。升级前关闭助手、备份数据，使用有效原 CD-KEY 覆盖原安装位置；旧永久授权继续有效，试用到期日不重置。详见[覆盖升级步骤](docs/USER_GUIDE.md#从旧安装版升级到-202)。
+安装版不需要 Python 或 Node.js，需要 Windows 10/11 和 Edge WebView2 Runtime。升级前关闭助手、备份数据，使用有效原 CD-KEY 覆盖原安装位置；旧永久授权继续有效，试用到期日不重置。详见[覆盖升级步骤](docs/USER_GUIDE.md#从旧安装版升级到-204)。
 
 ### 源码运行
 
@@ -137,7 +139,7 @@ node --test --test-isolation=none tests\app_navigation.test.mjs tests\workspaces
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-.\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop --version 2.0.2
+.\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop --version 2.0.4
 ```
 
 同版本构建会覆盖对应本地产物；发布新改动前应统一版本并确认输出路径。构建脚本只需要公钥，**不要重新生成签发密钥来做普通升级**。只向客户分发安装包和使用说明，不分发源码、发码工具、签发私钥或用户数据。

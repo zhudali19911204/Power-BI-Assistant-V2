@@ -2,7 +2,7 @@
   #error ReleaseDir must point to the PyInstaller output directory.
 #endif
 #ifndef AppVersion
-  #define AppVersion "2.0.2"
+  #define AppVersion "2.0.4"
 #endif
 #ifndef InstallerAppId
   #define InstallerAppId "{{34648710-F74C-44F7-BB72-73CD0B346D4C}"
