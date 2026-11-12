@@ -12,7 +12,7 @@ function profile(extra={}) {return {model_id:'model',status:'ready',stage:'语�
 
 async function fixture(initial=profile()) {
   const {document,window}=parseHTML('<html><body><dialog><section></section></dialog></body></html>');
-  const root=document.querySelector('section'),dialog=document.querySelector('dialog'),calls=[],updates=[],previews=[];let current=structuredClone(initial);
+  const root=document.querySelector('section'),dialog=document.querySelector('dialog'),calls=[],updates=[],previews=[],managed=[];let current=structuredClone(initial);
   // Model the browser clamping the dialog's scroll offset as its long list is
   // replaced with shorter content. LinkeDOM itself has no layout engine.
   let proto=root,html;
@@ -22,6 +22,8 @@ async function fixture(initial=profile()) {
   const api=async(path,opts={})=>{
     calls.push({path,...opts});
     if(path==='/settings')return {name:'模型服务',model:'test-model',base_url:'https://service.example/v1',active_profile_id:'selected'};
+    if(path.startsWith('/semantic-dictionaries'))return {dictionaries:(current.reuse_candidates||[]).map(c=>({...c,group:c.model_id,updated_at:'saved-revision',confirmed:0,business_count:0})),target_busy:false};
+    if(path.includes('/reuse-preview?'))return {source_model_id:'saved-dictionary',source_name:'采购费用',source_updated_at:'saved-revision',metadata_status:'read',changes:{preserved:2,added:0,modified:0,removed:0,items:[]},dictionary_notice:{status:'current',message:'可用定义已核对'}};
     if(path.includes('/business/')) {
       current.business_dictionary??={revision:0,overview:null,items:[],generation:{status:'idle'}};
       const data=current.business_dictionary,body=opts.body?JSON.parse(opts.body):{};
@@ -43,9 +45,9 @@ async function fixture(initial=profile()) {
     if(path.endsWith('/reuse')){current={...current,status:'ready',stage:'已复用本地词典',coverage:current.entries.length};return structuredClone(current);}
     return structuredClone(current);
   };
-  const manager=await mountSemanticWorkbench(root,{api,modelId:'model',onUpdate:p=>updates.push(p),onPreview:(...a)=>previews.push(a)});
+  const manager=await mountSemanticWorkbench(root,{api,modelId:'model',onUpdate:p=>updates.push(p),onPreview:(...a)=>previews.push(a),onManageDictionaries:id=>managed.push(id)});
   async function click(selector){root.querySelectorAll('form').forEach(f=>f.reportValidity=()=>true);root.querySelector(selector).click();await tick();}
-  return {root,dialog,window,calls,updates,previews,manager,click,setProfile(value){current=structuredClone(value);}};
+  return {root,dialog,window,calls,updates,previews,managed,manager,click,setProfile(value){current=structuredClone(value);}};
 }
 
 function choose(root,name,value) {
@@ -306,18 +308,29 @@ test('a matched report displays its saved name and path without starting another
   } finally {f.manager.dispose();}
 });
 
-test('legacy dictionary selection reuses a concrete saved model without calling build',async()=>{
+test('business review notice stays visible after object coverage is complete and opens affected records',async()=>{
+  const notice={status:'needs_update',message:'业务词典需更新：1 项业务记录待复核',pending_objects:0,pending_business:1};
+  const f=await fixture(profile({entries:[entry('one')],dictionary_notice:notice,business_dictionary:{revision:1,
+    overview:{description:'模型已变化的业务总览',topics:[],source:'用户编辑',state:'unresolved'},items:[],generation:{status:'idle'}}}));
+  try {
+    assert.ok(f.root.textContent.includes(notice.message));
+    assert.deepEqual(f.updates.at(-1).dictionary_notice,notice);
+    await f.click('[data-review-business]');
+    assert.ok(f.root.querySelector('[data-business-overview]'));
+    assert.ok(f.root.textContent.includes('模型已变化的业务总览'));
+  } finally{f.manager.dispose();}
+});
+
+test('model maintenance has three views and opens dictionary management through an independent action',async()=>{
   const f=await fixture(profile({status:'inventory',coverage:0,reuse_candidates:[
     {model_id:'saved-dictionary',name:'采购费用',path:'E:\\Reports\\采购费用.pbix',coverage:2,total:2}]}));
   try {
-    f.root.querySelector('[data-semantic-history] option').setAttribute('selected','');
-    await f.click('[data-reuse-semantics]');
-    const call=f.calls.find(c=>c.path.endsWith('/reuse'));
-    assert.equal(call.path,'/models/model/semantics/reuse');
-    assert.deepEqual(JSON.parse(call.body),{source_model_id:'saved-dictionary'});
-    assert.equal(f.updates.at(-1).status,'ready');
-    assert.ok(f.root.textContent.includes('已关联本地历史词典'));
-    assert.equal(f.root.querySelector('[data-semantic-history]'),null);
+    assert.deepEqual([...f.root.querySelectorAll('[data-semantic-tab]')].map(b=>b.dataset.semanticTab),['overview','business','objects']);
+    assert.ok(!f.root.querySelector('.semantic-tabs [data-manage-dictionaries]'));
+    await f.click('[data-manage-dictionaries]');
+    assert.deepEqual(f.managed,['model']);
+    assert.equal(f.root.querySelector('[data-dictionary-library]'),null);
+    assert.equal(f.calls.filter(c=>c.path.includes('/semantic-dictionaries')||c.path.endsWith('/reuse')).length,0);
     assert.equal(f.calls.filter(c=>c.path.endsWith('/build')).length,0);
   } finally {f.manager.dispose();}
 });
@@ -344,7 +357,7 @@ test('a fully current dictionary cannot accidentally trigger a full rebuild',asy
   const f=await fixture(profile({entries:[entry('one')],coverage:1}));
   try {
     assert.equal(f.root.querySelector('[data-build-semantics]').disabled,true);
-    assert.ok(f.root.querySelector('[data-build-semantics]').textContent.includes('语义层已是最新'));
+    assert.ok(f.root.querySelector('[data-build-semantics]').textContent.includes('对象语义已是最新'));
     assert.equal(f.calls.filter(c=>c.path.endsWith('/build')).length,0);
   } finally {f.manager.dispose();}
 });

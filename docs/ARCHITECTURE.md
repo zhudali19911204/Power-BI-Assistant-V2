@@ -190,7 +190,25 @@ API 位于 `/api/models/{model_id}/semantics/business`：`PUT /overview`、`POST
 
 业务术语通过临时 `search_aliases` 参与对象检索，不写回对象业务别名，也不改变对象确认状态。总览提供全局业务背景，相关术语和范围命中的约定按预算装入 `business_dictionary` 提示词块；失效记录只输出待复核标记，省略旧含义及筛选值。约定可用于用户未指定的条件，显式要求和 DAX 优先。未命中词典的问题仍可组合真实模型对象查询。分析总结复用规划时的语义快照，实际数值仍来自 `evidence`。这些约束通过上下文指导生成，不是一个能证明业务正确性的查询编译器。
 
-前端 [business_dictionary.js](../frontend/business_dictionary.js) 提供表单和展示组件，[semantics.js](../frontend/semantics.js) 统一管理三个视图、请求和后台轮询。编辑期间不重建表单；各列表保留滚动位置，提交携带打开编辑时的 revision，冲突保留输入并提示返回刷新。
+前端 [business_dictionary.js](../frontend/business_dictionary.js) 提供表单和展示组件，[semantics.js](../frontend/semantics.js) 管理业务总览、业务词条、对象词典三个当前模型视图，以及请求和后台轮询。历史词典通过独立的“词典管理”动作打开，不属于模型视图标签。管理页显示时隐藏并暂停模型工作台；返回后恢复原视图、筛选和位置，再读取当前关联状态。业务编辑提交携带打开编辑时的 revision，冲突保留输入并提示返回刷新。
+
+### 历史词典目录、差异预览和删除
+
+[dictionary_library.py](../backend/dictionary_library.py) 复用 `model_semantics` 保存的模型版本，不新建重复的定义存储。目录接口 `GET /api/semantic-dictionaries?current_model_id=...` 按保存版本返回名称、路径、时间、覆盖、业务记录数量、同名对象数、结构是否一致和忙碌状态；界面按报表路径／名称／已记录引擎身份归组。只包含有业务解释或可复核历史的版本，不把全空初始清单当作已建词典。
+
+`PUT /api/semantic-dictionaries/{id}/name` 接受 `{name, updated_at}`。名称为 1～160 字单行文本，保存到 profile 的 `dictionary_name / dictionary_name_source / dictionary_name_edited_at`；不改变报表身份、原生对象或业务定义。更新以时间戳进行 SQL 条件检查，梳理／生成期间拒绝命名。目录和预览优先显示自定义名称，并单独返回 `report_name`。连接／同步复用时继承名称，目标显式命名优先；同一报表的用户命名沿后续版本保留。名称不参与报表身份匹配。
+
+`dictionary_content_updated_at` 记录词典内容版本时间；常规 `_store()` 更新该时间，纯重命名保留原值。目录返回 `saved_at` 用于展示内容保存时间，`updated_at` 继续作为包括名称编辑的并发版本令牌。`_history()` 按内容时间选择来源，防止命名旧版本后自动复用旧业务定义。旧记录缺少内容时间时回退到原保存时间。
+
+管理页由 [dictionaries.css](../frontend/dictionaries.css) 独立样式控制：默认展示当前／最新一行，其他版本收起；名称、对象／业务记录统计、保存时间及操作分列，窄屏重新排布。日期固定按 Asia/Shanghai 格式化到分钟，原始时间戳仅用于并发令牌及时间属性。重命名使用行内表单，冲突保留草稿；刷新后更新版本令牌，再次保存只修改名称。路径、名称、错误和差异文本均转义显示。
+
+`GET /api/models/{id}/semantics/reuse-preview?source_model_id=...` 在深拷贝上调用与实际复用一致的对齐过程，返回对象变化明细及复用后的业务待复核数量，不保存预览结果。`POST .../semantics/reuse` 允许不同结构的历史词典，仍保留目标已审阅定义；旧定义失效规则不放宽。传入预览中的 `source_updated_at` 时，来源版本变化则返回 409。连接后自动关联继续按已有报表身份策略进行，不按结构相同就自动共享其他命名报表的定义。
+
+比较 M／计算表来源使用来源词典的 `source_snapshot`；这能覆盖模型被原地写入更新后、词典尚未再次对齐的情况。不能直接把已更新的来源模型上下文当成词典当年的依据。
+
+`dictionary_notice` 同时反映对象解释与业务记录的待更新状态，附加在完整词典和模型语义摘要中。业务记录仍失效时，即使对象语义覆盖已经完成也继续提示；完整扩展元数据未核对时标为 `unverified`。前端 [dictionaries.js](../frontend/dictionaries.js) 提供独立的历史目录、搜索、预览、关联和逐版本删除；入口位于连接窗口和模型工作台右上方“词典管理”。`showModal(...,{wide:true})` 仅对模型语义和词典管理启用加宽样式，其他弹窗恢复默认宽度；嵌套的字段预览沿用当前窗口宽度。
+
+`DELETE /api/semantic-dictionaries/{id}?current_model_id=...&updated_at=...` 仅删除对应 `model_semantics` 行，不删除模型、消息或其他版本。按当前目标、语义／业务候选后台任务和 Chat 会话锁阻止删除正在使用的版本，关联到忙碌目标也被拒绝；客户端携带保存时间，并在 SQL DELETE 中再次限定版本防止并发更新被误删。已关联副本独立保存，删除来源后仍可使用；旧会话重新生成时若其自身词典被删除，则需重新建立或关联。目录和关联操作不调用外部模型。
 
 ### 生成与增量复用
 

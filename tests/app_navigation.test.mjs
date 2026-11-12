@@ -30,7 +30,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
   }
   const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
   const imageMeta={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),mime_type:'image/png',width:80,height:40,size:100};
-  const uploads=[],cancellations=[],writes=[];let failWrite=true;
+  const uploads=[],cancellations=[],writes=[],dictionaryDeletes=[],dictionaryAssociations=[];let failWrite=true;
   const intervals=[];let connectionStatus='connected',connectionPort=51413;
   let semanticProfile={model_id:'model',status:'inventory',stage:'本地事实已整理',error:'',coverage:0,entries:[{
     id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'unresolved',business_name:'金额',
@@ -47,6 +47,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
     if(path==='/api/images'&&opts.method==='POST'){uploads.push(opts);return json(imageMeta);}
     if(path==='/api/settings')return json(settings);
     if(path==='/api/models')return json([...knownModels.values()]);
+    if(path==='/api/desktop/instances')return json([]);
+    if(path.includes('/semantics/reuse-preview?'))return json({source_model_id:'saved-history',source_name:'历史费用模型',source_updated_at:'saved-revision',metadata_status:'read',changes:{preserved:1,added:0,modified:0,removed:0,items:[]}});
+    if(path.endsWith('/semantics/reuse')){dictionaryAssociations.push(JSON.parse(opts.body));return json(semanticProfile);}
+    if(path.startsWith('/api/semantic-dictionaries/')){dictionaryDeletes.push(path);return json({detail:'历史词典已删除'});}
+    if(path.startsWith('/api/semantic-dictionaries'))return json({dictionaries:dictionaryDeletes.length?[]:[{
+      model_id:'saved-history',name:'历史费用模型',group:'history-group',updated_at:'saved-revision',total:1,coverage:1,
+      confirmed:1,business_count:1,shared_objects:1,same_schema:true}],target_busy:false});
     const modelPath=path.match(/^\/api\/models\/([^/]+)(?:\/(.*))?$/),modelId=modelPath?.[1];
     if(modelPath&&!modelPath[2])return json(knownModels.get(modelId));
     if(modelPath?.[2]==='connection')return json({model_id:modelId,live:connectionStatus==='connected',
@@ -153,7 +160,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('#semantic-workbench'),dictionary);assert.equal(dictionary.hidden,false);
     assert.equal($('[data-semantic-search]'),dictionarySearch);assert.equal(dictionarySearch.value,'金额');
     assert.equal($('[data-semantic-pending]'),pendingOnly);assert.equal(pendingOnly.checked,true);
-    assert.equal(modal.scrollTop,275);assert.equal($('#modal-title').textContent,'模型语义层 · 业务词典');
+    assert.equal(modal.scrollTop,275);assert.equal($('#modal-title').textContent,'模型语义层');
     assert.equal($('#field-preview'),null);assert.ok(modal.open);
     await click('[data-semantic-preview="amount"]');
     await click('#modal-close');
@@ -165,12 +172,29 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.ok(cancel.defaultPrevented);assert.ok(modal.open);assert.equal(dictionary.hidden,false);
     finishPreview();await tick();await tick();
     assert.equal($('#semantic-workbench'),dictionary);assert.equal($('#field-preview'),null);
-    assert.equal($('#modal-title').textContent,'模型语义层 · 业务词典');
+    assert.equal($('#modal-title').textContent,'模型语义层');
+    assert.ok(modal.classList.contains('wide-modal'));
+    assert.equal(document.querySelectorAll('#semantic-workbench [data-semantic-tab]').length,3);
+    await click('[data-manage-dictionaries]');
+    assert.equal($('#modal-title').textContent,'业务词典管理');
+    assert.ok(dictionary.hidden);assert.ok($('#dictionary-library'));
+    assert.equal(document.querySelectorAll('#dictionary-library [data-semantic-tab]').length,0);
+    await click('[data-dictionary-back-to-model]');await tick();
+    assert.equal($('#modal-title').textContent,'模型语义层');assert.equal(dictionary.hidden,false);
+    assert.equal($('[data-semantic-search]').value,'金额');assert.equal($('[data-semantic-pending]').hasAttribute('checked'),true);
+    assert.equal(modal.scrollTop,275);
+    await click('[data-manage-dictionaries]');await click('#modal-close');await tick();
+    assert.ok(modal.open);assert.equal(dictionary.hidden,false);assert.equal($('#dictionary-library'),null);
+    await click('[data-manage-dictionaries]');await click('[data-dictionary-preview="saved-history"]');
+    await click('[data-dictionary-associate]');await tick();
+    assert.deepEqual(dictionaryAssociations,[{source_model_id:'saved-history',source_updated_at:'saved-revision'}]);
+    assert.equal($('#modal-title').textContent,'模型语义层');assert.equal(dictionary.hidden,false);
     const dictionaryPreviewCount=previewCalls.length;
     await click('#modal-close');
     assert.equal(modal.open,false);
     draft('预览不改动这段草稿');
     await click('[data-preview-column="金额"]');
+    assert.equal(modal.classList.contains('wide-modal'),false);
     assert.equal(previewCalls.length,dictionaryPreviewCount+1);
     assert.deepEqual(previewCalls.at(-1),{table:'事实表',column:'金额',search:'',limit:50});
     assert.equal($('[data-field-back]'),null);
@@ -352,6 +376,16 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await click('#new-chat');draft('尚未发送的草稿');await click('#refresh-model');
     assert.equal(conversations.length,conversationCount);assert.equal($('#prompt').value,'尚未发送的草稿');
     assert.ok(syncRequests.at(-1).modelId);
+    await click('#connect-open');
+    assert.ok($('#manage-dictionaries'));
+    await click('#manage-dictionaries');
+    assert.ok($('#dictionary-library').textContent.includes('历史费用模型'));
+    await click('[data-dictionary-delete="saved-history"]');
+    assert.equal(dictionaryDeletes.length,0);
+    await click('[data-dictionary-delete-confirm="saved-history"]');
+    assert.equal(dictionaryDeletes.length,1);
+    await click('#modal-close');
+    assert.equal($('#prompt').value,'尚未发送的草稿');
   } finally {
     Object.defineProperty(selectProto,'value',valueDescriptor);
     for(const [key,descriptor] of Object.entries(savedGlobals)){

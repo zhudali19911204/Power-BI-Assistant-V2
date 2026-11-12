@@ -25,6 +25,7 @@ from .reports import normalize_name, normalize_path, same_report, schema_signatu
 from .semantic_diff import reconcile, source_snapshot
 from .semantic_retrieval import retrieve
 from . import business_dictionary as business
+from .dictionary_library import DictionaryLibrary, display_name, notice as dictionary_notice
 
 
 SEMANTIC_RULES = '''语义依据规则：表列名、数据类型、关系、公式和取值是模型事实；字段业务含义、单位和业务别名可能尚未确认。
@@ -55,6 +56,7 @@ class SemanticBuildInput(BaseModel):
 
 class SemanticReuseInput(BaseModel):
     source_model_id: str = Field(min_length=1,max_length=64)
+    source_updated_at: str | None = Field(default=None,max_length=64)
 
 
 class Suggestion(BaseModel):
@@ -114,9 +116,13 @@ class SemanticService:
         self.jobs={}
         self.values=ValueEvidence(db,powerbi)
         self.business=business.BusinessDictionary(self)
+        self.in_use=lambda model_id:False
+        self.library=DictionaryLibrary(self)
 
     def _store(self,model_id,profile):
+        profile['dictionary_notice']=dictionary_notice(profile)
         profile['updated_at']=now()
+        profile['dictionary_content_updated_at']=profile['updated_at']
         self.db.execute('INSERT OR REPLACE INTO model_semantics VALUES (?,?,?,?)',
             (model_id,profile['fingerprint'],encode(profile),profile['updated_at']))
 
@@ -143,6 +149,7 @@ class SemanticService:
                      'source_snapshot':source_snapshot(model['context']), 'business_dictionary':business.empty()}
             if previous:
                 business.migrate(previous)
+                profile.update({key:previous[key] for key in ('dictionary_name','dictionary_name_source','dictionary_name_edited_at') if key in previous})
                 old={e['id']:e for e in previous['entries']}
                 for entry in entries:
                     entry['facts']={**old.get(entry['id'],{}).get('facts',{}),**entry['facts']}
@@ -210,6 +217,13 @@ class SemanticService:
             if generation['status']=='building' and model_id not in self.business.jobs:
                 generation.update(status='error',stage='上次业务候选生成已中断，可重新生成',error='本地服务已重启，已有业务词典已保留')
                 self._store(model_id,profile)
+            profile['dictionary_notice']=dictionary_notice(profile)
+            if profile.get('reuse'):
+                source=self.db.one('SELECT payload FROM model_semantics WHERE model_id=?',(profile['reuse']['source_model_id'],))
+                source_profile=json.loads(source['payload']) if source else None
+                profile['reuse']['source_deleted']=not bool(source_profile and can_answer(source_profile))
+                if source_profile and source_profile.get('dictionary_name'):
+                    profile['reuse']['source_name']=source_profile['dictionary_name']
             return profile
 
     def summary(self,model_id,expected=None):
@@ -218,7 +232,8 @@ class SemanticService:
         p=json.loads(row['payload'])
         return {k:p[k] for k in ('status','stage','coverage')} | {
             'total':len(p['entries']),'confirmed':sum(e['state']=='confirmed' for e in p['entries']),
-            'can_answer':can_answer(p),'pending':sum(e['state']=='unresolved' for e in p['entries'])}
+            'can_answer':can_answer(p),'pending':sum(e['state']=='unresolved' for e in p['entries']),
+            'dictionary_notice':dictionary_notice(p)}
 
     def start(self,model_id,settings,profile_id=None):
         with self.lock:
@@ -243,7 +258,7 @@ class SemanticService:
             return profile
 
     def _history(self,model_id):
-        rows=self.db.all('SELECT s.model_id,s.payload,m.context,m.name,r.payload AS report_payload '
+        rows=self.db.all('SELECT s.model_id,s.payload,s.updated_at,m.context,m.name,r.payload AS report_payload '
             'FROM model_semantics s JOIN models m ON m.id=s.model_id '
             'LEFT JOIN model_reports r ON r.model_id=s.model_id WHERE s.model_id!=? ORDER BY s.updated_at DESC',(model_id,))
         for row in rows:
@@ -251,6 +266,7 @@ class SemanticService:
             row['context']=json.loads(row['context'])
             row['report']=json.loads(row['report_payload']) if row['report_payload'] else row['profile'].get('report_identity',{})
             row['signature']=schema_signature(row['context'])
+        rows.sort(key=lambda row:row['profile'].get('dictionary_content_updated_at',row['updated_at']),reverse=True)
         # Only validated, completed batches are stored, so even a running revision
         # can supply preserved definitions and its remaining pending objects.
         return [r for r in rows if can_answer(r['profile'])]
@@ -266,7 +282,7 @@ class SemanticService:
             old['profile']['report_identity']=report
             self._store(old['model_id'],old['profile'])
 
-    def _reuse_from(self,model,profile,source,matched_by,metadata_read=True):
+    def _reuse_from(self,model,profile,source,matched_by,metadata_read=True,*,persist=True):
         edits={e['id']:e for e in profile['entries'] if e.get('reviewed_at')}
         destination=profile['business_dictionary']
         business.migrate(source['profile'])
@@ -274,10 +290,18 @@ class SemanticService:
             prior={e['id']:e for e in source['profile']['entries']}
             for entry in profile['entries']:
                 entry['facts']={**prior.get(entry['id'],{}).get('facts',{}),**entry['facts']}
-        self._align(profile,profile['entries'],model,previous=source['profile'],before=source['context'],metadata_read=metadata_read)
+        self._align(profile,profile['entries'],model,previous=source['profile'],
+            before=source['profile'].get('source_snapshot',source['context']),metadata_read=metadata_read)
         # Explicit edits to the destination dictionary win over historical association.
         profile['entries']=[edits.get(e['id'],e) for e in profile['entries']]
         business.merge_destination(profile,destination)
+        if profile.get('dictionary_name_source')!='user':
+            if source['profile'].get('dictionary_name'):
+                name_source=source['profile'].get('dictionary_name_source','inherited') if same_report(model.get('report',{}),source['report']) else 'inherited'
+                profile.update(dictionary_name=source['profile']['dictionary_name'],dictionary_name_source=name_source,
+                    dictionary_name_edited_at=source['profile'].get('dictionary_name_edited_at'))
+            else:
+                for key in ('dictionary_name','dictionary_name_source','dictionary_name_edited_at'):profile.pop(key,None)
         reused=profile['changes']['preserved']
         pending=[e['id'] for e in profile['entries'] if e['state']=='unresolved']
         name=model.get('report',{}).get('name') or source['name']
@@ -287,11 +311,12 @@ class SemanticService:
             report_identity=model.get('report',{}),error='' if metadata_read else profile.get('error',''),
             stage=f'已复用报表“{name}”的语义词典 · {reused} 项' if ready else f'已复用 {reused} 项，{len(pending)} 项需梳理或核对',
             reuse={'source_model_id':source['model_id'],'report_name':name,'matched_by':matched_by,
-                   'reused':reused,'pending':len(pending),'matched_at':now()})
-        self._store(model['id'],profile)
+                   'source_name':display_name(source),'source_path':source['report'].get('path',''),
+                   'source_updated_at':source['updated_at'],'reused':reused,'pending':len(pending),'matched_at':now()})
+        if persist:self._store(model['id'],profile)
         return profile
 
-    def on_connect(self,model,settings,source_model_id=None):
+    def on_connect(self,model,settings,source_model_id=None,source_updated_at=None):
         instance=next((i for i in find_instances() if i.port==model['port']),None)
         identity=f"{instance.pid}:{instance.port}" if instance else None
         with self.lock:
@@ -318,20 +343,19 @@ class SemanticService:
             signature=schema_signature(model['context'])
             exact=[r for r in history if r['signature']==signature]
             candidates=[];seen=set()
-            for row in exact:
-                if row['profile']['status']!='ready':continue
+            for row in history:
                 report=row['report']
                 key=normalize_path(report.get('path')) or ('name:'+normalize_name(report['name']) if report.get('name') else
                     'engine:'+(row['profile'].get('connection_identity') or row['model_id']))
                 if key in seen:continue
                 seen.add(key)
-                candidates.append({'model_id':row['model_id'],'name':report.get('name') or row['name'],
-                    'path':report.get('path',''),'coverage':row['profile']['coverage'],'total':len(row['profile']['entries'])})
+                candidates.append({'model_id':row['model_id'],'name':display_name(row),
+                    'path':report.get('path',''),'coverage':row['profile']['coverage'],'total':len(row['profile']['entries']),
+                    'same_schema':row['signature']==signature,'updated_at':row['updated_at']})
             profile['reuse_candidates']=candidates[:12]
             source=None;matched_by=''
             if source_model_id:
-                source=next((r for r in exact if r['model_id']==source_model_id),None)
-                if not source:raise HTTPException(409,'所选历史词典与当前模型结构不一致，不能直接关联')
+                source=self.library.source(model['id'],source_model_id,source_updated_at)
                 matched_by='user_selection'
             elif profile['status']!='ready':
                 report=model.get('report',{})
@@ -357,12 +381,12 @@ class SemanticService:
             self._store(model['id'],profile)
         return profile
 
-    def reuse(self,model_id,source_model_id):
+    def reuse(self,model_id,source_model_id,source_updated_at=None):
         with self.lock:
-            if model_id in self.jobs:raise HTTPException(409,'语义梳理正在进行，请完成后再关联历史词典')
+            if self.library.busy(model_id):raise HTTPException(409,'当前模型正在梳理或生成，请完成后再关联历史词典')
         with self.powerbi.lock:
             model,_=self.powerbi.require_live(model_id,unchanged=True)
-        return self.on_connect(model,None,source_model_id)
+        return self.on_connect(model,None,source_model_id,source_updated_at)
 
     def _merge(self,model_id,expected,updates=None,**changes):
         with self.lock:

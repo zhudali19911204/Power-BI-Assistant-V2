@@ -28,6 +28,7 @@ from .fields import FieldPreviewInput
 from .reports import reports_for_instances
 from .semantics import SemanticBuildInput, SemanticEdit, SemanticReuseInput, SemanticService
 from .business_dictionary import BusinessEdit, OverviewEdit
+from .dictionary_library import DictionaryNameEdit
 from .streaming import BackgroundStream
 from .validation import validate
 from .images import MAX_UPLOAD_BYTES
@@ -55,6 +56,13 @@ def create_app(directory=None):
     semantics=SemanticService(db,powerbi)
     powerbi.semantics=semantics
     chat = ChatService(db, powerbi)
+    def dictionary_in_use(model_id):
+        for conversation_id,lock in list(chat.locks.items()):
+            if lock.locked():
+                row=db.one('SELECT model_id FROM conversations WHERE id=?',(conversation_id,))
+                if row and row['model_id']==model_id:return True
+        return False
+    semantics.in_use=dictionary_in_use
     app = FastAPI(title="Power BI Assistant", version="2.0.2", docs_url="/api/docs", redoc_url=None)
     app.state.license_info = license_info
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
@@ -229,7 +237,23 @@ def create_app(directory=None):
 
     @app.post('/api/models/{model_id}/semantics/reuse')
     def reuse_semantics(model_id:str,body:SemanticReuseInput):
-        return semantics.reuse(model_id,body.source_model_id)
+        return semantics.reuse(model_id,body.source_model_id,body.source_updated_at)
+
+    @app.get('/api/semantic-dictionaries')
+    def semantic_dictionaries(current_model_id:str|None=None):
+        return semantics.library.catalog(current_model_id)
+
+    @app.get('/api/models/{model_id}/semantics/reuse-preview')
+    def preview_semantic_reuse(model_id:str,source_model_id:str):
+        return semantics.library.preview(model_id,source_model_id)
+
+    @app.delete('/api/semantic-dictionaries/{dictionary_id}')
+    def delete_semantic_dictionary(dictionary_id:str,current_model_id:str|None=None,updated_at:str|None=None):
+        return semantics.library.delete(dictionary_id,current_model_id=current_model_id,updated_at=updated_at)
+
+    @app.put('/api/semantic-dictionaries/{dictionary_id}/name')
+    def rename_semantic_dictionary(dictionary_id:str,body:DictionaryNameEdit):
+        return semantics.library.rename(dictionary_id,body)
 
     @app.put('/api/models/{model_id}/semantics/business/overview')
     def edit_business_overview(model_id:str,body:OverviewEdit):

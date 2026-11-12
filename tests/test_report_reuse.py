@@ -281,14 +281,17 @@ def test_fallback_manual_report_name_is_persisted_and_reused(setup):
     assert new['semantics']['status']=='ready'
 
 
-def test_incompatible_or_unknown_manual_dictionary_is_rejected(setup):
+def test_manual_dictionary_with_model_differences_is_allowed_and_unknown_source_is_rejected(setup):
     app,client,state,engine,built=setup
     old=connect(client,engine());built(old)
     changed=context();changed.tables['Sales'].append(Column('New','string','Sales'))
     new=connect(client,engine(port=60001,pid=77,ctx=changed))
-    for source in (old['id'],'unknown-id'):
-        response=client.post(f"/api/models/{new['id']}/semantics/reuse",json={'source_model_id':source})
-        assert response.status_code==409
+    response=client.post(f"/api/models/{new['id']}/semantics/reuse",json={'source_model_id':old['id']})
+    assert response.status_code==200
+    assert response.json()['dictionary_notice']['status']=='needs_update'
+    assert response.json()['pending_ids']
+    response=client.post(f"/api/models/{new['id']}/semantics/reuse",json={'source_model_id':'unknown-id'})
+    assert response.status_code==404
 
 
 def test_manual_association_preserves_current_user_review(setup):

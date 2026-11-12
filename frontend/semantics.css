@@ -40,3 +40,44 @@
 .semantic-delta ul{padding-left:20px;max-height:220px;overflow:auto}
 .semantic-delta li{margin:6px 0;overflow-wrap:anywhere}
 .semantic-change-note{color:#a18b40;background:#fff9e8;border-radius:4px;padding:6px 8px;font-size:10px;line-height:1.8}
+
+dialog.wide-modal{width:1120px;max-width:calc(100vw - 32px);max-height:92dvh;padding:28px 32px;scrollbar-gutter:stable}
+.wide-modal .modal-heading{margin-bottom:18px}
+.semantic-model-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:16px}
+.semantic-model-heading>div{min-width:0}
+.semantic-section-label{font-size:10px;color:#8b929c}
+.semantic-model-heading h3{font-size:16px;font-weight:550;line-height:1.5;margin:4px 0;color:#465361;overflow-wrap:anywhere}
+.semantic-model-path{font-size:10px;line-height:1.7;color:#939da7;margin:3px 0 0;overflow-wrap:anywhere}
+.semantic-library-action{flex-shrink:0}
+.semantic-library-action .icon{width:14px;height:14px}
+.semantic-status-grid{display:grid;gap:12px;margin:12px 0}
+.semantic-status-grid.has-delta{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.semantic-status-grid>.semantic-progress,.semantic-status-grid>.semantic-delta{margin:0;min-width:0}
+.semantic-status-grid .semantic-delta{padding:10px 14px;font-size:10px}
+.semantic-status-grid .semantic-progress{padding:11px 14px}
+.semantic-binding{font-size:10px;line-height:1.7;margin:7px 0 0;color:#939da7;overflow-wrap:anywhere}
+.semantic-model-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;margin:12px 0;line-height:1.8;overflow-wrap:anywhere}
+.semantic-model-notice .text-link{flex-shrink:0}
+.semantic-current-note{font-size:10px;color:#648b72;background:#f2f8f4;border-radius:5px}
+.semantic-model-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0;color:#939da7;font-size:10px}
+.semantic-help{font-size:10px;line-height:1.8;flex:1;min-width:140px}
+.semantic-help summary{cursor:pointer;color:#9d8b53}
+.semantic-help p{margin:7px 0;overflow-wrap:anywhere}
+.semantic-tabs{padding-top:14px;border-top:1px solid #e7e9ed;margin:14px 0 16px}
+.semantic-entry-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+.semantic-entry-grid>.semantic-entry{margin:0;min-width:0}
+.semantic-entry-grid>.notice{grid-column:1/-1}
+@media(max-width:850px){
+  .semantic-entry-grid{grid-template-columns:minmax(0,1fr)}
+  .semantic-status-grid.has-delta{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:600px){
+  dialog.wide-modal{max-width:calc(100vw - 24px);max-height:94dvh;padding:20px}
+  .semantic-model-heading{align-items:flex-start;gap:12px}
+  .semantic-model-heading h3{font-size:14px}
+  .semantic-model-notice{align-items:flex-start;flex-direction:column;gap:4px}
+  .semantic-tabs{gap:6px}
+  .semantic-tabs button{font-size:10px;padding:9px 11px}
+  .semantic-model-tools{align-items:flex-start;gap:10px}
+  .semantic-help{flex-basis:100%}
+}
