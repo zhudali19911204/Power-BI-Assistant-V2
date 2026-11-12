@@ -23,6 +23,7 @@ from .generation import generation_recorder
 from .values import ValueEvidence, codes_in
 from .reports import normalize_name, normalize_path, same_report, schema_signature
 from .semantic_diff import reconcile, source_snapshot
+from .semantic_retrieval import retrieve
 
 
 SEMANTIC_RULES = '''语义依据规则：表列名、数据类型、关系、公式和取值是模型事实；字段业务含义、单位和业务别名可能尚未确认。
@@ -456,24 +457,24 @@ class SemanticService:
             raise HTTPException(409,'请先完成模型语义梳理：打开右侧“模型语义层”查看进度或开始梳理，再进行 DAX 和数据分析')
         return profile
 
-    def prompt(self,model_id):
+    def prompt(self,model_id,question='',*,history=(),bindings=()):
         p=self.get(model_id)
-        entries=[{k:e[k] for k in ('kind','table','name','business_name','meaning','role','unit','aliases','state','source')}
-                 | {key:e['facts'].get(key,'') for key in ('description','format_string','actual_dtype','source_column')}
-                 | ({'semantic_change':e['change']} if e['state']=='unresolved' and e.get('change') else {})
-                 for e in sorted(p['entries'],key=lambda e:e['state']!='confirmed')]
-        selected=[];size=0
-        for entry in entries:
-            text=encode(entry)
-            if size+len(text)>50000:break
-            selected.append(entry);size+=len(text)
+        selection=retrieve(p['entries'],self.powerbi.get(model_id)['context'],question,
+                           history=history,bindings=bindings)
         return (SEMANTIC_RULES+'\n增量语义使用规则：词典更新未完成时仍正常回答，使用当前模型结构与未变化的定义。'
             '新增或变更条目的历史确认已失效；不要套用旧含义、单位或别名。只有问题依赖未知业务含义时才逐项澄清，'
             '或根据当前模型事实和实际查值回答并说明不确定性，不要求用户先重建整份语义层。'
-            'metadata_status 不是 read 时，扩展元数据尚未核对完整，沿用的历史解释需注明此限制。'+'\n模型语义词典（未确认建议不可视为事实）：\n'+encode(
+            'metadata_status 不是 read 时，扩展元数据尚未核对完整，沿用的历史解释需注明此限制。'
+            '\n语义检索规则：下方只包含与当前问题、近期用户追问及对象依赖有关的定义；历史助手回复不作为检索依据。'
+            '匹配只表示相关性，不代表业务口径已确认；未选入的对象仍可能存在，完整结构以真实模型为准。'
+            'retrieval.mode 为 fallback/overview 时是模型概览，不代表已准确定位用户指标。'
+            'omitted_relevant 或 omitted_relationships 大于零时，相关上下文未全部装入；检查 missing，'
+            '不得声称已取得完整定义，若缺失内容影响本题口径则说明限制并按需澄清。'
+            'relationships 仅补充关系路径，必须结合单双向、激活状态和 DAX 判断筛选是否生效，不能据此替用户选择日期口径。'
+            '\n模型语义词典（未确认建议不可视为事实）：\n'+encode(
                 {'status':p['status'],'metadata_status':p.get('metadata_status','pending'),
                  'pending':sum(e['state']=='unresolved' for e in p['entries']),
-                 'entries':selected,'omitted':len(entries)-len(selected)}))
+                 **selection}))
 
     def bindings(self,conversation_id):
         return self.db.all('SELECT literal,table_name,column_name FROM conversation_bindings WHERE conversation_id=?',(conversation_id,))

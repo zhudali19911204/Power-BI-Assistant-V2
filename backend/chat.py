@@ -296,9 +296,10 @@ class ChatService:
             system += '\n'+IMAGE_RULES
             system += self.model_sync_notice(conv['id'])
             if self.semantics:
-                system += '\n'+self.semantics.prompt(model['id'])
+                bindings=self.semantics.bindings(conv['id'])
+                system += '\n'+self.semantics.prompt(model['id'],user_text,history=history,bindings=bindings)
                 system += self.semantics.value_context(conv,body.content)
-                system += '\n用户确认的本会话编号映射（不沿用助手自己的猜测）：'+encode(self.semantics.bindings(conv['id']))
+                system += '\n用户确认的本会话编号映射（不沿用助手自己的猜测）：'+encode(bindings)
             yield encode({"type": "start", "message_id": assistant_id}) + "\n"
             yield encode({'type':'model','model_id':model['id'],'live':model['live']})+'\n'
             logger.info('Chat %s stream started', assistant_id)

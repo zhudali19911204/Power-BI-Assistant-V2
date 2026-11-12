@@ -285,9 +285,10 @@ class AnalysisService:
             messages=self.chat.images.llm_messages(history,user_id,body.content)
             planner=plan_system(ctx)+'\n'+IMAGE_RULES+self.chat.model_sync_notice(conv['id'])
             if self.chat.semantics:
-                planner+='\n'+self.chat.semantics.prompt(model['id'])
+                bindings=self.chat.semantics.bindings(conv['id'])
+                planner+='\n'+self.chat.semantics.prompt(model['id'],body.content,history=history,bindings=bindings)
                 planner+=self.chat.semantics.value_context(conv,body.content)
-                planner+='\n本会话用户确认的编号映射：'+encode(self.chat.semantics.bindings(conv['id']))
+                planner+='\n本会话用户确认的编号映射：'+encode(bindings)
             yield status('正在根据真实模型规划分析查询')
             planning_messages=messages[:];seen=set()
             user_text='\n'.join(m.content for m in messages if m.role=='user')

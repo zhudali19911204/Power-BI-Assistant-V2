@@ -1,6 +1,6 @@
 # 技术架构与开发接手指南
 
-本文面向接手开发的工程师与 agent，描述 **2026-11-11 当前源码实际实现**，不是未来功能设计。操作步骤见[使用说明](USER_GUIDE.md)，部署见[授权与发布说明](LICENSING.md)，测试历史见[验证记录](VALIDATION.md)。本文件是阅读入口，不会自动注入应用的模型请求，也不替代源码中的运行时提示词。
+本文面向接手开发的工程师与 agent，描述 **2026-11-12 当前源码实际实现**，不是未来功能设计。操作步骤见[使用说明](USER_GUIDE.md)，部署见[授权与发布说明](LICENSING.md)，测试历史见[验证记录](VALIDATION.md)。本文件是阅读入口，不会自动注入应用的模型请求，也不替代源码中的运行时提示词。
 
 ## 章节导航
 
@@ -190,6 +190,18 @@ frontend/app.js: syncCurrentModel()
 - M 动态引用和关系传播采用保守处理；这不是完整 DAX/M 编译器或全量运行时依赖图。
 
 用户显式开始梳理后，后台只处理待更新对象，每批 20 项；AI 返回 JSON，校验 ID 集合和字段形状，格式失败最多补一次请求。逐批持久化，重试从剩余对象继续。`expected fingerprint` 防止旧任务覆盖新结构。
+
+### 按问题选择语义
+
+`SemanticService.prompt(model_id, question, history=..., bindings=...)` 通过 [semantic_retrieval.py](../backend/semantic_retrieval.py) 在本地选择本轮定义，不增加模型请求或向量服务。DAX/M 生成和分析规划均传入当前问题、原有预算内的历史消息及会话编号映射。
+
+- 优先匹配明确的表列引用、用户确认的编号映射、对象名、业务名和别名；再用中文二字片段、英文词及描述中的词项重合补充召回。已确认状态仅用于相关性相同的排序，不会让无关定义挤掉明确命中对象。
+- 当前明确指定新指标时切换主题；维度或短句追问最多回看最近 4 条用户消息，在最近明确指标处停止。历史助手回复和 `previous_definition` 不作为检索依据，检索不会将候选定义提升为已确认口径。
+- 最多选 32 个匹配起点，补充可静态识别的多层 DAX 依赖、所属表、连接命中表的最短关系路径和日期上下文。同长路径以及路径上的平行活动／非活动关系均保留，不代替用户选择日期角色。关系检索仅说明结构连接，不能证明实际筛选传播有效。
+- 条目序列化预算为 50000 字符；先装入匹配对象及依赖，再装入辅助上下文。单项放不下时继续尝试后续条目。`retrieval` 记录模式、匹配数、已用预算、遗漏相关对象数、最多 20 个缺失对象和最多 64 条关系及其遗漏数量。
+- 无匹配时按表轮流选取概览，避免只覆盖排序靠前的大表；明确标为 `fallback`，无问题文本时标为 `overview`。完整模型结构仍由原路径注入，语义未选中不等于对象不存在。
+
+这是可检查的词项检索，不是 embedding 相似度搜索；没有共同词项或已维护别名的同义表达可能无法命中。依赖识别复用现有静态解析能力，动态 DAX/M 语义不属于完整覆盖。
 
 ### 查值不等于确认
 
@@ -388,7 +400,7 @@ provider 内部还会产生 `activity`、`metadata`，分别用于上游活动�
 | DAX/M 候选与修复 | 单次最多 20 个对象，初次生成后最多两轮修复 | [chat.py](../backend/chat.py) |
 | 分析结果 | 一份计划最多 4 条查询；每条最多保留 200 行、30 列、24000 字节行数据 | [analysis.py](../backend/analysis.py) |
 | 语义生成 | 每批 20 对象；本批返回格式失败最多再请求一次 | [semantics.py](../backend/semantics.py) |
-| 注入语义 | 当前按确认优先顺序加入，条目文本约 50000 字符上限，附省略数量；不是向量检索 | [semantics.py](../backend/semantics.py) |
+| 注入语义 | 按问题匹配最多 32 个起点并扩展依赖；条目 50000 字符预算，附缺失对象与关系信息；无匹配时按表概览 | [semantic_retrieval.py](../backend/semantic_retrieval.py) |
 | 校准 | 一个预期值，最多 10 个 AND 条件，仅度量值 | [schemas.py](../backend/schemas.py)、[validation.py](../backend/validation.py) |
 | 计算列验证 | 最多 50 行、20 秒；抽样而非全量计算 | [live_eval.py](../backend/engine/dax/live_eval.py) |
 | 编号检查 | 最多 96 个候选字段；分批，单命令最多 5 秒、单编号约 15 秒 | [values.py](../backend/values.py) |
@@ -441,7 +453,7 @@ provider 内部还会产生 `activity`、`metadata`，分别用于上游活动�
 | 菜单、导航、异步归属、草稿 | [index.html](../frontend/index.html)、[app.js](../frontend/app.js)、[workspaces.js](../frontend/workspaces.js) | `app_navigation.test.mjs`、`workspaces.test.mjs` |
 | 流式渲染、断流、中止、后台 | [streaming.py](../backend/streaming.py)、[cancellation.py](../backend/cancellation.py)、[messages.js](../frontend/messages.js)、[stream.js](../frontend/stream.js) | `test_streaming.py`、`test_background_generation.py`、`test_cancellation.py`、`stream.test.mjs`、`messages.test.mjs` |
 | 模型连接、同步、历史恢复 | [powerbi.py](../backend/powerbi.py)、[reconnection.py](../backend/reconnection.py)、[chat.py](../backend/chat.py) | `test_reconnection.py`、`test_model_recovery.py`、`test_conversation_sync.py`、`connections.test.mjs`、`app_navigation.test.mjs` |
-| 语义及结构变化 | [semantics.py](../backend/semantics.py)、[semantic_diff.py](../backend/semantic_diff.py)、[reports.py](../backend/reports.py) | `test_semantics.py`、`test_semantic_incremental.py`、`test_report_reuse.py`、`semantics.test.mjs` |
+| 语义及结构变化 | [semantics.py](../backend/semantics.py)、[semantic_retrieval.py](../backend/semantic_retrieval.py)、[semantic_diff.py](../backend/semantic_diff.py)、[reports.py](../backend/reports.py) | `test_semantic_retrieval.py`、`test_semantics.py`、`test_semantic_incremental.py`、`test_report_reuse.py`、`semantics.test.mjs` |
 | 字段证据、口径确认 | [fields.py](../backend/fields.py)、[values.py](../backend/values.py)、[clarifications.py](../backend/clarifications.py) | `test_fields.py`、`test_value_grounding.py`、`test_field_discovery.py`、`test_clarifications.py`、对应前端测试 |
 | DAX 解析、验证与写入 | [validation.py](../backend/validation.py)、[engine/dax/](../backend/engine/dax/)、[live_writer.py](../backend/engine/context/live_writer.py)、[app.py](../backend/app.py) | `test_validation.py`、`test_write_target.py`、`test_calculated_columns.py`、`test_api.py`、`app_navigation.test.mjs` |
 | 分析查询和结论 | [analysis.py](../backend/analysis.py) | `test_analysis.py`、`test_analysis_boundaries.py`、`test_generation_diagnostics.py`、`analysis.test.mjs` |
