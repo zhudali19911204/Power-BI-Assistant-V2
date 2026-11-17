@@ -19,11 +19,13 @@
   <link rel="stylesheet" href="/assets/connections.css">
   <link rel="stylesheet" href="/assets/analysis_templates.css">
   <link rel="stylesheet" href="/assets/code_blocks.css">
+  <link rel="stylesheet" href="/assets/layout.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
+      <div id="sidebar-resizer" class="context-resizer sidebar-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="sidebar" aria-label="调整左侧导航栏宽度" aria-describedby="sidebar-resize-help" title="拖动调节左栏宽度，双击恢复默认"></div><span class="sr-only" id="sidebar-resize-help">左右方向键调节宽度，Shift 加大步长，Home 最窄，End 最宽，双击恢复默认。</span>
       <a class="brand" href="/" aria-label="Power BI Assistant 首页"><span class="brand-mark"><i></i><i></i><i></i></span><span>Power BI<span class="brand-sub">ASSISTANT</span></span><span class="version">V2</span></a>
       <button class="new-chat" id="new-chat"><span data-icon="plus"></span> 新建对话 <kbd>Ctrl K</kbd></button>
       <div class="section-label">工作空间</div>
@@ -45,7 +47,7 @@
       <header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="slash">/</span><strong id="page-title">DAX 助手</strong></div><div class="topbar-actions"><span class="desktop-tag"><span data-icon="monitor"></span>桌面工作台</span><button class="connection-button" id="connect-open"><span class="status-dot"></span><span id="connection-label">连接 Power BI</span><span data-icon="chevron-down"></span></button></div></header>
       <div class="workspace">
         <section class="conversation-panel">
-          <div class="conversation-toolbar"><span class="workspace-caption" id="conversation-caption">从想法到可靠的数据逻辑</span><div><button class="icon-button" id="export-chat" aria-label="导出当前对话" title="导出对话"><span data-icon="download"></span></button><button class="icon-button" id="toggle-context" aria-label="切换模型面板" title="模型面板"><span data-icon="panel"></span></button></div></div>
+          <div class="conversation-toolbar"><span class="workspace-caption" id="conversation-caption">从想法到可靠的数据逻辑</span><div><button class="icon-button" id="export-chat" aria-label="导出当前对话" title="导出对话"><span data-icon="download"></span></button><button class="icon-button" id="toggle-context" aria-controls="context-panel" aria-expanded="true" aria-label="切换模型面板" title="模型面板"><span data-icon="panel"></span></button></div></div>
           <div id="background-generations" class="background-generations" role="status" aria-live="polite" hidden></div>
           <button type="button" class="text-link template-return" id="template-return" hidden>← 返回原草稿</button>
           <div class="message-scroll" id="message-scroll"><div id="messages"></div></div>
@@ -61,12 +63,20 @@
             <p class="composer-note"><span class="tiny-dot"></span>模型在本机读取 · AI 在服务器推理 · 写入前由你确认</p>
           </div>
         </section>
-        <aside class="context-panel" id="context-panel"><div class="context-header"><span><span data-icon="layers"></span>模型上下文</span><button class="icon-button" id="refresh-model" title="同步模型" aria-label="同步模型"><span data-icon="refresh"></span></button></div><div id="model-summary"></div><div class="context-tabs" role="tablist" aria-label="模型内容"><button class="active" data-context-tab="tables" role="tab" aria-selected="true">结构</button><button data-context-tab="relations" role="tab" aria-selected="false">关系</button><button data-context-tab="queries" role="tab" aria-selected="false">查询</button></div><input class="field-search" id="field-search" placeholder="搜索表、字段或度量值" aria-label="搜索模型字段"><div id="model-tree" class="model-tree"></div><div class="context-bottom"><span data-icon="info"></span><span>点击字段，插入引用<br>生成内容会自动检查模型引用</span></div></aside>
+        <aside class="context-panel" id="context-panel">
+          <div id="context-resizer" class="context-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="context-panel" aria-label="调整模型面板宽度" aria-describedby="context-resize-help" title="拖动调节宽度，双击恢复默认"></div><span class="sr-only" id="context-resize-help">左右方向键调节宽度，Shift 加大步长，Home 最窄，End 最宽，双击恢复默认。</span>
+          <div class="context-header"><span><span data-icon="layers"></span>模型上下文</span><button class="icon-button" id="refresh-model" title="同步模型" aria-label="同步模型"><span data-icon="refresh"></span></button></div><div id="model-summary"></div><div class="context-tabs" role="tablist" aria-label="模型内容"><button class="active" data-context-tab="tables" role="tab" aria-selected="true">结构</button><button data-context-tab="relations" role="tab" aria-selected="false">关系</button><button data-context-tab="queries" role="tab" aria-selected="false">查询</button></div><input class="field-search" id="field-search" placeholder="搜索表、字段或度量值" aria-label="搜索模型字段"><div id="model-tree" class="model-tree"></div><div class="context-bottom"><span data-icon="info"></span><span>点击字段，插入引用<br>生成内容会自动检查模型引用</span></div></aside>
       </div>
     </main>
   </div>
   <dialog id="modal"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow"></span><h2 id="modal-title"></h2></div><button class="icon-button" id="modal-close" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div id="modal-body"></div></dialog>
   <div id="toasts" class="toasts" aria-live="polite"></div>
+  <dialog id="table-reader" class="table-reader" aria-labelledby="table-reader-title">
+    <div class="modal-heading"><h2 id="table-reader-title">分析结果表格</h2><button type="button" class="icon-button" data-table-reader-close aria-label="关闭表格阅读" autofocus><span data-icon="close"></span></button></div>
+    <div class="table-reader-summary" data-table-reader-summary></div>
+    <div class="analysis-result-table" data-table-reader-body tabindex="0" role="region" aria-label="分析结果表格，可横向或纵向滚动"></div>
+    <div class="table-reader-footer"><span>显示本次查询保存的结果，未重新查询。按 Esc 返回。</span><a class="analysis-download" data-table-reader-download download>下载本次结果 CSV</a></div>
+  </dialog>
   <dialog id="code-reader" class="code-reader" aria-labelledby="code-reader-title">
     <div class="modal-heading"><h2 id="code-reader-title">代码阅读</h2><button type="button" class="icon-button" data-code-reader-close aria-label="关闭代码阅读"><span data-icon="close"></span></button></div>
     <p data-code-reader-note hidden>代码正在生成，这里显示打开时的内容。关闭后可查看最新代码。</p>

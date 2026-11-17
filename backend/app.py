@@ -23,7 +23,7 @@ from .engine.context.live_writer import LiveDesktopWriter
 from .engine.dax.live_eval import LiveDesktopEvaluator
 from .engine.llm.base import user
 from .powerbi import PowerBIService, context_from_dict
-from .schemas import ApplyInput, CancelGenerationInput, ConnectInput, ConversationInput, LLMProfileInput, MessageInput, ReasoningInput, SettingsInput
+from .schemas import ApplyInput, CancelGenerationInput, ConnectInput, ConversationInput, LayoutInput, LLMProfileInput, MessageInput, ReasoningInput, SettingsInput
 from .settings import SettingsService
 from .fields import FieldPreviewInput
 from .reports import reports_for_instances
@@ -144,6 +144,23 @@ def create_app(directory=None):
         try:os.startfile('ms-screenclip:')
         except OSError as exc:raise HTTPException(409,'未能打开 Windows 截图工具，请使用 Win+Shift+S 后粘贴图片') from exc
         return {'ok':True,'detail':'截图后回到输入框按 Ctrl+V 添加图片'}
+
+    @app.get('/api/ui/layout')
+    def get_layout():
+        row = db.one('SELECT context_width,sidebar_width FROM ui_layout WHERE id=1')
+        return row if row else LayoutInput().model_dump()
+
+    @app.put('/api/ui/layout')
+    def save_layout(body: LayoutInput):
+        # Desktop uses a random port and private WebView storage on each launch.
+        # Persist UI preferences independently of model service credentials.
+        with db.connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT context_width,sidebar_width FROM ui_layout WHERE id=1').fetchone()
+            values = (dict(row) if row else LayoutInput().model_dump()) | body.model_dump(exclude_unset=True)
+            connection.execute('INSERT OR REPLACE INTO ui_layout (id,context_width,sidebar_width) VALUES (1,?,?)',
+                               (values['context_width'], values['sidebar_width']))
+        return values
 
     @app.get("/api/settings")
     def get_settings():

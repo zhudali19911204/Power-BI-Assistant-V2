@@ -19,6 +19,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
   Object.assign(scroll,{scrollHeight:1000,clientHeight:400,scrollTop:600,scrollTo({top}){this.scrollTop=top;}});
   const modal=document.querySelector('#modal');modal.showModal=()=>{modal.open=true;};modal.close=()=>{modal.open=false;modal.dispatchEvent(new window.Event('close'));};
   const reader=document.querySelector('#code-reader');reader.showModal=()=>{reader.open=true;};reader.close=()=>{reader.open=false;reader.dispatchEvent(new window.Event('close'));};
+  const tableReader=document.querySelector('#table-reader');tableReader.showModal=()=>{tableReader.open=true;};tableReader.close=()=>{tableReader.open=false;tableReader.dispatchEvent(new window.Event('close'));};
+  const layoutWrites=[];
   const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务',
     reasoning_level:'low',reasoning_control:{supported:true}};
   const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
@@ -60,6 +62,10 @@ test('actual app navigation keeps background streams, drafts and independent sen
       model_id:'model',source_message_id:'template-run-answer',defaults:{}});
     if(path==='/api/images'&&opts.method==='POST'){uploads.push(opts);return json(imageMeta);}
     if(path==='/api/settings')return json(settings);
+    if(path==='/api/ui/layout'){
+      if(opts.method==='PUT')layoutWrites.push(JSON.parse(opts.body));
+      return json({context_width:360,sidebar_width:300});
+    }
     if(path==='/api/llm/profiles')return json([]);
     if(path==='/api/models')return json([...knownModels.values()]);
     if(path==='/api/desktop/instances')return json([]);
@@ -153,6 +159,17 @@ test('actual app navigation keeps background streams, drafts and independent sen
   async function send(text){draft(text);$('#composer-form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();}
   try {
     await import('../frontend/app.js?navigation-test');await tick();await tick();
+    assert.equal($('#context-resizer').getAttribute('aria-valuenow'),'360');
+    assert.equal($('#sidebar-resizer').getAttribute('aria-valuenow'),'300');
+    await click('#toggle-context');assert.equal($('#toggle-context').getAttribute('aria-expanded'),'false');
+    await click('#toggle-context');assert.equal($('#toggle-context').getAttribute('aria-expanded'),'true');
+    const resizeKey=new window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(resizeKey,{key:'ArrowLeft'});
+    $('#context-resizer').dispatchEvent(resizeKey);await tick();assert.deepEqual(layoutWrites,[{context_width:376}]);
+    const leftResizeKey=new window.Event('keydown',{bubbles:true,cancelable:true});Object.assign(leftResizeKey,{key:'ArrowRight'});
+    $('#sidebar-resizer').dispatchEvent(leftResizeKey);await tick();
+    assert.equal($('#sidebar-resizer').getAttribute('aria-valuenow'),'316');
+    assert.equal($('#context-resizer').getAttribute('aria-valuenow'),'376');
+    assert.deepEqual(layoutWrites.at(-1),{sidebar_width:316});
     assert.equal($('#connection-label').textContent,'Desktop 已连接');
     assert.equal($('#active-llm').textContent,'test-service · 低强度');
     const treeNode=$('#model-tree').firstChild;draft('重连期间保留的草稿');
@@ -165,6 +182,10 @@ test('actual app navigation keeps background streams, drafts and independent sen
     // Service configuration is an editor: dismissing IME or using a chat shortcut
     // must not close it and discard the unsaved fields.
     await click('#settings-open');await click('[data-add]');
+    assert.ok(modal.classList.contains('model-settings-modal'));
+    assert.equal($('[data-model-advanced]').hasAttribute('open'),false);
+    assert.ok($('.model-editor-footer [data-save-use]'));
+    assert.equal($('.model-editor-scroll [data-save-use]'),null);
     const serviceName=$('[name="name"]');serviceName.value='尚未保存的服务配置';
     $('[name="api_key"]').value='test-only-unsaved-key';
     function appKey(target,options,handled=false){
@@ -201,6 +222,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await send('先建立词典再生成');
     assert.equal(streams.size,0);assert.equal($('#prompt').value,'先建立词典再生成');
     assert.ok($('#semantic-workbench'));
+    assert.equal(modal.classList.contains('model-settings-modal'),false);
     assert.ok($('#semantic-workbench').textContent.includes('业务口径待确认'));
     await click('[data-build-semantics]');
     assert.ok($('#semantic-workbench').textContent.includes('测试语义完成'));
@@ -506,6 +528,12 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await tick();await tick();await tick();await tick();
     assert.equal(modal.open,false);assert.equal($('#conversation-caption').textContent,'月度分析模板');
     assert.ok($('#messages').textContent.includes('模板运行取得新结果'));
+    const resultEvidence=$('[data-evidence="template-query"]');resultEvidence.setAttribute('open','');
+    await click('[data-table-expand="template-query"]');assert.equal(tableReader.open,true);
+    assert.equal($('#table-reader td').textContent,'250');
+    appKey($('#table-reader'),{});assert.equal($('#conversation-caption').textContent,'月度分析模板');
+    await click('[data-table-reader-close]');assert.equal(tableReader.open,false);
+    assert.equal($('[data-evidence="template-query"]'),resultEvidence);assert.ok(resultEvidence.hasAttribute('open'));
     await click('[data-save-analysis-template="template-run-answer"]');
     assert.equal($('[name="prompt"]').value,'分析 2026-11 的金额');
     await click('#modal-close');await click('#template-return');

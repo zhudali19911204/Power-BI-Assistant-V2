@@ -1,4 +1,5 @@
 const paths = {
+  expand:'<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
   chart:'<path d="M3 3v18h18M7 16v-5m5 5V7m5 9v-8"/>',
   code:'<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 20"/>',

@@ -7,6 +7,11 @@ from .engine.llm.diagnostics import DEFAULT_MAX_TOKENS
 from .engine.llm.reasoning import ReasoningLevel
 
 
+class LayoutInput(BaseModel):
+    context_width: int | None = Field(default=None, ge=240, le=520, strict=True)
+    sidebar_width: int | None = Field(default=None, ge=215, le=400, strict=True)
+
+
 class SettingsInput(BaseModel):
     provider: Literal["openai_compat", "claude"] = "openai_compat"
     model: str = Field(default="", max_length=160)

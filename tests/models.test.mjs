@@ -12,7 +12,7 @@ const profile=(id,extra={})=>({id,name:id,model:id,provider:'openai_compat',base
 async function fixture(initial=[profile('qwen'),profile('deepseek')]) {
   const {document,window}=parseHTML('<html><body><section></section></body></html>');
   const root=document.querySelector('section'),calls=[],settings=[];
-  let profiles=structuredClone(initial),active=profiles.find(p=>p.active)?.id||null,testError='',reasoningError='',reasoningWait;
+  let profiles=structuredClone(initial),active=profiles.find(p=>p.active)?.id||null,testError='',saveError='',testWait,reasoningError='',reasoningWait;
   const current=()=>({...profiles.find(p=>p.id===active),active_profile_id:active});
   async function api(path,opts={}) {
     calls.push({path,...opts});
@@ -30,6 +30,7 @@ async function fixture(initial=[profile('qwen'),profile('deepseek')]) {
       active=path.split('/')[3];profiles.forEach(p=>p.active=p.id===active);return current();
     }
     if(path.endsWith('/test')) {
+      if(testWait)await testWait;
       if(testError)throw new Error(testError);
       return {ok:true,detail:'模型服务连接成功'};
     }
@@ -39,6 +40,7 @@ async function fixture(initial=[profile('qwen'),profile('deepseek')]) {
       profiles.forEach(p=>p.active=p.id===active);return current();
     }
     if(opts.method==='POST'||opts.method==='PUT') {
+      if(saveError)throw new Error(saveError);
       const data=JSON.parse(opts.body),id=opts.method==='POST'?'added':path.split('/').at(-1);
       const old=profiles.find(p=>p.id===id),saved=profile(id,{...old,...data,name:data.name||data.model,active:id===active,
         has_key:data.clear_key?false:!!(data.api_key||old?.has_key)});
@@ -63,6 +65,8 @@ async function fixture(initial=[profile('qwen'),profile('deepseek')]) {
     form.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();
   }
   return {root,calls,settings,click,input,choose,submit,failTest:message=>{testError=message;},
+    failSave:message=>{saveError=message;},
+    deferTest:()=>{let release;testWait=new Promise(resolve=>{release=resolve;});return release;},
     failReasoning:message=>{reasoningError=message;},
     deferReasoning:()=>{let release;reasoningWait=new Promise(resolve=>{release=resolve;});return release;}};
 }
@@ -110,21 +114,98 @@ test('connection tests use the chosen profile without switching the active model
   const f=await fixture();await f.click('[data-test="deepseek"]');
   assert.equal(f.calls.at(-1).path,'/llm/profiles/deepseek/test');
   assert.equal(f.settings.at(-1).active_profile_id,'qwen');
-  assert.ok(f.root.querySelector('[role="status"]').textContent.includes('连接成功'));
+  const feedback=f.root.querySelector('[data-model-feedback-for="deepseek"]');
+  assert.ok(feedback.textContent.includes('连接成功'));assert.equal(feedback.hidden,false);
+  assert.ok(feedback.closest('[data-model-profile="deepseek"]'));
+  assert.equal(f.root.querySelector('[data-model-list-feedback]').hidden,true);
 });
 
 test('save and test saves only the edited model, clears the typed secret, and retains edits on test failure',async()=>{
   const f=await fixture();f.failTest('连接失败，请检查配置');await f.click('[data-edit="deepseek"]');
   f.input('model','deepseek-updated');f.input('api_key','test-replacement-secret');
+  const form=f.root.querySelector('form'),advanced=f.root.querySelector('[data-model-advanced]'),scroll=f.root.querySelector('.model-editor-scroll');
+  advanced.setAttribute('open','');scroll.scrollTop=310;
   await f.click('[data-save-test]');
   assert.ok(f.calls.some(call=>call.path==='/llm/profiles/deepseek'&&call.method==='PUT'));
   assert.ok(f.calls.some(call=>call.path==='/llm/profiles/deepseek/test'));
   assert.equal(f.root.querySelector('[name="api_key"]').value,'');
   assert.equal(f.root.querySelector('[name="model"]').value,'deepseek-updated');
   assert.ok(f.root.querySelector('.model-feedback.error').textContent.includes('连接失败'));
+  assert.equal(f.root.querySelector('form'),form);assert.equal(f.root.querySelector('[data-model-advanced]'),advanced);
+  assert.ok(advanced.hasAttribute('open'));assert.equal(scroll.scrollTop,310);
+  assert.ok(f.root.querySelector('.model-editor-footer .model-feedback.error'));
   assert.equal(f.root.getAttribute('aria-busy'),'false');
   assert.equal(f.root.querySelector('fieldset').disabled,false);
   assert.equal(f.settings.at(-1).active_profile_id,'qwen');
+});
+
+test('collapsed advanced settings retain each saved value when only basic fields are edited',async()=>{
+  const f=await fixture([profile('qwen'),profile('deepseek',{max_tokens:32000,idle_timeout:180,generation_timeout:2400})]);
+  await f.click('[data-edit="deepseek"]');
+  const advanced=f.root.querySelector('[data-model-advanced]');
+  assert.equal(advanced.hasAttribute('open'),false);
+  for(const name of ['max_tokens','idle_timeout','generation_timeout'])assert.ok(advanced.querySelector(`[name="${name}"]`));
+  f.input('name','保留高级参数');await f.submit();
+  const body=JSON.parse(f.calls.find(call=>call.method==='PUT').body);
+  assert.equal(body.max_tokens,32000);assert.equal(body.idle_timeout,180);assert.equal(body.generation_timeout,2400);
+  assert.equal(body.name,'保留高级参数');assert.equal(f.settings.at(-1).active_profile_id,'qwen');
+  assert.equal(f.calls.some(call=>call.path.endsWith('/activate')||call.path.endsWith('/test')),false);
+});
+
+test('invalid hidden advanced inputs expand before native validation and do not save',async()=>{
+  const f=await fixture();await f.click('[data-edit="qwen"]');
+  const advanced=f.root.querySelector('[data-model-advanced]'),input=advanced.querySelector('[name="max_tokens"]');
+  input.value='10';Object.defineProperty(input,'validity',{value:{valid:false}});
+  let checked=false;
+  f.root.querySelector('form').reportValidity=()=>{checked=true;assert.ok(advanced.hasAttribute('open'));return false;};
+  f.root.querySelector('[data-save-use]').click();await tick();
+  assert.equal(checked,true);assert.equal(input.value,'10');
+  assert.equal(f.calls.some(call=>call.method),false);
+});
+
+test('pending and failed connection tests remain on the selected card and block duplicate requests',async()=>{
+  const f=await fixture(),release=f.deferTest();f.failTest('模型暂时不可达');
+  await f.click('[data-test="deepseek"]');
+  const local=f.root.querySelector('[data-model-feedback-for="deepseek"]');
+  assert.equal(local.hidden,false);assert.ok(local.classList.contains('pending'));
+  assert.ok(local.textContent.includes('正在测试'));assert.equal(f.root.querySelector('fieldset').disabled,true);
+  await f.click('[data-test="qwen"]');
+  assert.equal(f.calls.filter(call=>call.path.endsWith('/test')).length,1);
+  release();await tick();
+  assert.ok(local.classList.contains('error'));assert.equal(local.classList.contains('pending'),false);
+  assert.ok(local.textContent.includes('模型暂时不可达'));
+  assert.equal(f.root.querySelector('[data-model-feedback-for="qwen"]').hidden,true);
+  assert.equal(f.root.querySelector('fieldset').disabled,false);assert.equal(f.settings.at(-1).active_profile_id,'qwen');
+});
+
+test('retesting a newly saved model reuses its ID and updates the saved key controls in place',async()=>{
+  const f=await fixture([]);await f.click('[data-add]');f.failTest('连接失败');
+  f.input('model','local-model');f.input('base_url','https://example.com/v1');f.input('api_key','test-secret');
+  const form=f.root.querySelector('form');assert.equal(f.root.querySelector('[data-clear-key]').hidden,true);
+  await f.click('[data-save-test]');
+  assert.equal(f.root.querySelector('form'),form);assert.equal(f.root.querySelector('[data-clear-key]').hidden,false);
+  assert.equal(f.root.querySelector('[name="api_key"]').value,'');
+  assert.ok(f.root.querySelector('[name="api_key"]').placeholder.includes('已保存'));
+  await f.click('[data-save-test]');
+  assert.equal(f.calls.filter(call=>call.path==='/llm/profiles'&&call.method==='POST').length,1);
+  const update=f.calls.find(call=>call.method==='PUT');assert.equal(update.path,'/llm/profiles/added');
+  assert.equal(JSON.parse(update.body).api_key,'');assert.equal(JSON.parse(update.body).clear_key,false);
+  f.root.querySelector('[name="clear_key"]').checked=true;await f.click('[data-save-test]');
+  assert.equal(f.root.querySelector('[data-clear-key]').hidden,true);
+  assert.equal(f.root.querySelector('[name="clear_key"]').checked,false);
+});
+
+test('save failures keep the typed fields and report the error beside the footer actions',async()=>{
+  const f=await fixture();await f.click('[data-edit="deepseek"]');f.failSave('配置保存失败');
+  f.input('name','待保存的名字');f.input('api_key','test-unsaved-secret');
+  const form=f.root.querySelector('form');await f.click('[data-save-use]');
+  assert.equal(f.root.querySelector('form'),form);
+  assert.equal(f.root.querySelector('[name="name"]').value,'待保存的名字');
+  assert.equal(f.root.querySelector('[name="api_key"]').value,'test-unsaved-secret');
+  const feedback=f.root.querySelector('.model-editor-footer .model-feedback.error');
+  assert.ok(feedback.textContent.includes('配置保存失败'));
+  assert.equal(f.calls.some(call=>call.path.endsWith('/activate')),false);
+  assert.equal(f.root.querySelector('fieldset').disabled,false);
 });
 
 test('deletion needs an inline confirmation and updates active selection when confirmed',async()=>{

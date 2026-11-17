@@ -27,6 +27,10 @@ class Database:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS ui_layout (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    context_width INTEGER CHECK(context_width BETWEEN 240 AND 520),
+                    sidebar_width INTEGER CHECK(sidebar_width BETWEEN 215 AND 400));
                 CREATE TABLE IF NOT EXISTS llm_profiles (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, config TEXT NOT NULL,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -115,6 +119,8 @@ class Database:
             """)
             if 'position' not in {r['name'] for r in db.execute('PRAGMA table_info(message_images)')}:
                 db.execute('ALTER TABLE message_images ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
+            if 'sidebar_width' not in {r['name'] for r in db.execute('PRAGMA table_info(ui_layout)')}:
+                db.execute('ALTER TABLE ui_layout ADD COLUMN sidebar_width INTEGER CHECK(sidebar_width BETWEEN 215 AND 400)')
 
     @contextmanager
     def connection(self):

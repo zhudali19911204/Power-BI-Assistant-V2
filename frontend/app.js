@@ -14,12 +14,19 @@ import {mountDictionaryLibrary} from './dictionaries.js';
 import {mountComposerImages, imageGallery} from './images.js';
 import {createConnectionMonitor,connectionPresentation} from './connections.js';
 import {mountAnalysisTemplates,saveTemplateButton} from './analysis_templates.js';
+import {createWorkspaceLayout} from './layout.js';
+import {createTableTools} from './table_reader.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const workspace=createWorkspaces();
 const codeTools=createCodeTools($('#code-reader'),{onNotice:toast});
 const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
+const contextLayout=createWorkspaceLayout({root:$('.workspace'),panel:$('#context-panel'),handle:$('#context-resizer'),toggle:$('#toggle-context'),
+  sidebar:{panel:$('#sidebar'),handle:$('#sidebar-resizer')},
+  save:value=>api('/ui/layout',{method:'PUT',body:JSON.stringify(value)}),onNotice:toast});
+const tableTools=createTableTools($('#table-reader'),{
+  getQuery:id=>state.view.messages.flatMap(message=>message.analysis||[]).find(query=>query.id===id),onNotice:toast});
 const connectionMonitor=createConnectionMonitor({api,
   getModels:()=>[state.view.model,...workspace.all().filter(view=>view.busy).map(view=>view.model)],
   onChange:result=>{
@@ -82,11 +89,12 @@ function renderBusy() {
   composerImages?.render();
   document.body.classList.toggle('busy',state.view.busy);
 }
-function showModal(title,eyebrow,html,{wide=false}={}) {
+function showModal(title,eyebrow,html,{wide=false,modelSettings=false}={}) {
   modalReturn=null;
   modalCleanup?.();modalCleanup=null;
   $('#modal-close').setAttribute('aria-label','关闭弹窗');
   $('#modal').classList.toggle('wide-modal',wide);
+  $('#modal').classList.toggle('model-settings-modal',modelSettings);
   $('#modal-title').textContent=title;$('#modal-eyebrow').textContent=eyebrow;$('#modal-body').innerHTML=html;
   if(!$('#modal').open) $('#modal').showModal();
 }
@@ -312,7 +320,7 @@ async function openDictionaryLibrary() {
 }
 
 async function openSettings() {
-  showModal('模型服务设置','MODEL SERVICES','<section id="model-manager"></section>');
+  showModal('模型服务设置','MODEL SERVICES','<section id="model-manager"></section>',{modelSettings:true});
   await mountModelManager($('#model-manager'),{
     api,onSettings:settings=>{state.settings=settings;renderControls();},onNotice:toast,
   });
@@ -471,7 +479,7 @@ $('#prompt').addEventListener('keydown',e=>{
   $('#composer-form').requestSubmit();
 });
 document.addEventListener('keydown',e=>{
-  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open||$('#code-reader').open)return;
+  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open||$('#code-reader').open||$('#table-reader').open)return;
   if(e.key.toLowerCase()==='k'&&(e.ctrlKey||e.metaKey)){e.preventDefault();newChat();}
 });
 $('#new-chat').onclick=()=>newChat();
@@ -481,13 +489,13 @@ $('#analysis-templates-open').onclick=guard(()=>openAnalysisTemplates());
 $('#template-return').onclick=()=>{const target=state.view.templateReturn;if(target){saveDraft();workspace.restore(target);showView();}};
 $('#search-toggle').onclick=()=>{const input=$('#history-search');input.hidden=!input.hidden;if(!input.hidden)input.focus();else{input.value='';renderHistory();}};
 $('#history-search').oninput=renderHistory;$('#field-search').oninput=renderContext;
-$('#toggle-context').onclick=()=>{const panel=$('#context-panel');if(innerWidth<=1050)panel.classList.toggle('mobile-open');else panel.classList.toggle('collapsed');};
 $('#refresh-model').onclick=guard(syncCurrentModel);
 $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.view.conversation)newChat('mquery');state.view.queryName=query;$('#query-select').value=query;};
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{
   const el=e.target.closest('button');if(!el)return;
   if(await codeTools.handleClick(el))return;
+  if(tableTools.handleClick(el))return;
   if(el.dataset.saveAnalysisTemplate){await openAnalysisTemplates(el.dataset.saveAnalysisTemplate);return;}
   if(el.dataset.openImage){
     const id=el.dataset.openImage;if(!/^[a-f0-9]{32}$/.test(id))return;
@@ -541,6 +549,8 @@ document.addEventListener('click',guard(async e=>{
 }));
 
 async function init() {
+  // A layout read failure must not block conversations or model connection.
+  void api('/ui/layout').then(value=>contextLayout.restore(value)).catch(()=>{});
   try {
     const [settings,models,conversations]=await Promise.all([api('/settings'),api('/models'),api('/conversations')]);
     Object.assign(state,{settings,models,conversations});state.view.model=models[0]||null;render();
