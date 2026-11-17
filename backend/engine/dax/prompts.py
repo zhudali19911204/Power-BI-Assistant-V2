@@ -16,6 +16,15 @@ Design notes:
 
 from __future__ import annotations
 
+DAX_COMMENT_GUIDANCE = """代码可读性与注释：
+- 默认生成带简洁中文注释的 DAX；用户明确要求其他注释语言或不带注释时遵循用户要求。
+- 每个新生成或改写的度量值、计算列、计算表或查询，至少包含一条有意义的原生注释，不能只在代码块外解释。
+- 优先使用独立一行的 // 注释，放在所解释的逻辑之前；说明业务计算目的、关键 VAR 的作用、筛选范围的保留或移除、空值及零分母处理。复杂公式按逻辑分组注释，简单公式一条即可，不逐行复述语法。
+- 命名定义的首行仍必须是“名称 =”或“'表名'[列名] =”；注释放在等号后的表达式内。直接执行的 DAX 查询使用 DEFINE / EVALUATE，不加度量值赋值头。
+- 优化和修复时保留仍然有效的注释，并同步更新受影响的说明，不能保留与公式不一致的旧注释。
+- 注释只能描述代码实际行为和已确认的业务含义；不编造指标口径、单位、数据结论或已通过验证的声明，不输出内部推理过程。
+"""
+
 # --------------------------------------------------------------------------------------------------
 # System prompt — the persona and the non-negotiable rules. Phrased to explain *why*, because the
 # model reasons better from rationale than from bare prohibitions.
@@ -66,7 +75,7 @@ CONVENTIONS (these are correctness and performance habits, not style)
 VALIDATE before declaring done: every reference exists in the schema; parentheses/arities balanced;
 division via DIVIDE; nested iterators carry CALCULATE/measure transition; returns a scalar of the
 expected type (never text from FORMAT where a number is expected).
-"""
+""" + "\n" + DAX_COMMENT_GUIDANCE
 
 
 # --------------------------------------------------------------------------------------------------
@@ -166,12 +175,13 @@ CONVERSATION MODE
   measures, and iterate with the user. Reply in the user's language (Chinese unless they switch).
 - Whenever you produce or change a measure, give a short implementation summary under `## 计算说明`:
   state the business definition, relevant fields, and important filter-context behavior. Do not include
-  private step-by-step deliberation. Keep explanatory prose above the code block, never inside it.
+  private step-by-step deliberation. Keep the prose summary above the code block; put concise native
+  code comments inside the block as required by the comment guidelines.
 - Then output the measure(s). PUT EACH MEASURE IN ITS OWN SEPARATE ```dax code block — exactly ONE
   object per block. If you produce several measures (e.g. a base measure plus derived ones), emit several
   separate ```dax blocks, one per measure, each as `度量值名 = <表达式>`. NEVER put two measures in the
-  same block. The `度量值名 = ` line MUST come FIRST in the block (before any comment). You MAY add brief
-  `//` comments for readability. Do NOT put `=====` dividers, `##` headers, or prose inside the block. If a
+  same block. The `度量值名 = ` line MUST come FIRST in the block (before any comment). By default, include
+  meaningful Chinese `//` comments after that assignment line. Do NOT put `=====` dividers, `##` headers, or prose inside the block. If a
   measure references another, define the referenced one in an earlier block.
 - Then, below the blocks, one line on behavior + any assumption to confirm. For pure questions (no measure
   needed), just answer normally.

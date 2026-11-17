@@ -16,6 +16,15 @@ Design notes:
 
 from __future__ import annotations
 
+M_COMMENT_GUIDANCE = """代码可读性与注释：
+- 默认生成带简洁中文注释的 M 代码；用户明确要求其他注释语言或不带注释时遵循用户要求。
+- 每份新生成或改写的完整查询及新增步骤片段，都应包含有意义的原生注释，不能只在代码块外解释。
+- 优先在新增或改动的关键步骤之前单独写 // 注释，说明输入来自哪个步骤、转换目的，以及相关的类型、区域格式、空值、错误值或合并键处理。按逻辑分组说明，简单转换一条即可，不逐行复述函数名称。
+- 完整查询保留原有数据源、步骤名称、连接和有效注释；只同步更新受本次改动影响的说明，不为了添加注释重写已有逻辑。in 返回的结果可用一条简短注释说明。
+- 保持 let / in、步骤逗号和引号语法完整。不能把逗号或后续语句放到 // 注释之后的同一行。
+- 注释只能描述代码实际行为；不编造业务口径，不声称已经刷新成功或保证查询折叠，不输出内部推理过程。优化和修复后的代码也遵循这些要求。
+"""
+
 # --------------------------------------------------------------------------------------------------
 # System prompt — persona + the non-negotiable rules. Phrased to explain *why*; the model reasons better
 # from rationale than from bare prohibitions.
@@ -64,7 +73,7 @@ VALIDATE before declaring done: every referenced column exists at that step, exa
 `let ... in` with balanced ()[]{} and quotes; every #"..." is a step defined above or a real query; types
 ascribed after shaping with a culture where locale matters; errors handled where a conversion could produce
 them; output shape matches the request.
-"""
+""" + "\n" + M_COMMENT_GUIDANCE
 
 
 # --------------------------------------------------------------------------------------------------
@@ -157,7 +166,8 @@ CONVERSATION MODE — incremental "fill the hard step" (用户为主，你补难
 - Then output ONE ```powerquery code block = the FULL updated `let ... in` (the current applied query with
   your new step(s) appended, ending at the new result). This full block receives STATIC lint only. The
   user pastes it into Desktop and applies it to verify refresh. Do NOT put prose/`##`/`=====` inside the
-  block; M comments (// or /* */) are fine.
+  block; include meaningful Chinese M comments (prefer // on their own lines) for the added or changed
+  steps, following the comment guidelines. Keep the comments in both the step excerpt and the full query.
 - Append onto the current query's LAST step; reference only columns present at that step and only queries in
   the grounding. Keep the user's existing steps and names unchanged.
 - For pure questions (no query change), just answer normally without a code block.

@@ -369,7 +369,8 @@ class ChatService:
                     break
                 messages += [ChatMessage("assistant", partial), ChatMessage("user",
                     '以下是应用验证结果。请修复并输出本轮完整候选代码，保留仍需使用的基础度量。'
-                    '只补充简短修改说明，不要重复之前整段模型评价。不要声称已通过验证。\n'+encode(failures))]
+                    '只补充简短修改说明，不要重复之前整段模型评价。修复后的代码仍需包含简洁中文注释，'
+                    '保留有效说明并同步更新与修改有关的注释；用户明确要求不带注释或其他语言时按其要求。不要声称已通过验证。\n'+encode(failures))]
             artifacts = []
             check_cancelled()
             with self.db.connection() as db:

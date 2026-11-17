@@ -170,7 +170,7 @@ class LiveDesktopEvaluator:
         try:
             with _LiveSession(self.port, self.dll) as session:
                 connected = True
-                rows = session.query(f"EVALUATE TOPN ( 50, {expression} )")
+                rows = session.query(f"EVALUATE TOPN ( 50,\n{expression}\n)")
         except Exception as exc:  # noqa: BLE001
             return ValidationResult(ok=False, errors=[_clean_error(exc)], run_verified=connected)
         ncols = len(rows[0]) if rows else 0

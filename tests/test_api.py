@@ -103,18 +103,22 @@ def test_generation_stream_grounding_history_and_export(client, app, monkeypatch
 
 def test_invalid_references_repair_then_pass(client, app, monkeypatch):
     conv, _ = conversation(client)
-    provider = FakeProvider(['```dax\n合计 = SUM(\'不存在\'[金额])\n```', '```dax\n合计 = SUM(\'销售明细\'[销售额])\n```'])
+    corrected = "// 汇总当前筛选范围内的销售额\nSUM('销售明细'[销售额])"
+    provider = FakeProvider(['```dax\n合计 = SUM(\'不存在\'[金额])\n```', f'```dax\n合计 =\n{corrected}\n```'])
     monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
     events = send(client, conv['id'])
     assert not any(e['type'] == 'reset' for e in events)
     assert len(provider.calls) == 2
     assert next(e for e in events if e['type'] == 'artifacts')['artifacts'][0]['validation']['ok']
+    assert all('默认生成带简洁中文注释的 DAX' in system for system, _ in provider.calls)
+    assert '同步更新与修改有关的注释' in provider.calls[1][1][-1].content
     text=''.join(e['text'] for e in events if e['type']=='delta')
     assert provider.calls[0][1][0].content=='计算总额'
     assert '不存在' in text and '销售明细' in text
     assert '验证修订 · 第 1 轮' in text
     saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
     assert saved['content']==text
+    assert saved['artifacts'][0]['expression']==corrected
     assert saved['content'].startswith('```dax\n合计 = SUM(\'不存在\'[金额])\n```')
     assert '不存在' in client.get(f"/api/conversations/{conv['id']}/export").text
 
@@ -140,6 +144,42 @@ def test_mquery_is_static_only(client, app, monkeypatch):
     assert obj['kind'] == 'm_script'
     assert not obj['validation']['run_verified']
     assert client.post(f"/api/artifacts/{obj['id']}/apply", json={}).status_code == 409
+
+
+@pytest.mark.parametrize('mode,tag,name,expression,kind',[
+    ('dax','dax','销售合计',
+     "// 汇总当前筛选范围内的销售额\nSUM('销售明细'[销售额])",'dax_measure'),
+    ('dax','dax-column',"'销售明细'[销售额副本]",
+     "// 保留当前行的销售额\n'销售明细'[销售额]",'dax_column'),
+    ('dax','dax','日期表',
+     '// 生成 2026 年的连续日期\nCALENDAR(DATE(2026,1,1),DATE(2026,12,31))','dax_table'),
+    ('mquery','powerquery','',
+     '''let
+    // 构造文本金额示例，供后续类型转换
+    Source = #table({"销售额"}, {{"125"}}),
+    // 按中文区域格式将销售额转换为数值
+    #"转换类型" = Table.TransformColumnTypes(Source, {{"销售额", type number}}, "zh-CN")
+in
+    // 返回转换后的结果
+    #"转换类型"''','m_script'),
+])
+def test_code_comments_survive_validation_history_and_export(client,app,monkeypatch,mode,tag,name,expression,kind):
+    conv,_=conversation(client,mode)
+    code=f'{name} =\n{expression}' if name else expression
+    provider=FakeProvider([f'```{tag}\n{code}\n```'])
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    events=send(client,conv['id'])
+    assert events[-1]['type']=='done'
+    obj=next(e for e in events if e['type']=='artifacts')['artifacts'][0]
+    assert (obj['kind'],obj['expression'])==(kind,expression)
+    assert obj['validation']['ok'] and not obj['validation']['run_verified']
+    assert len(provider.calls)==1
+    language='M 代码' if mode=='mquery' else 'DAX'
+    assert f'默认生成带简洁中文注释的 {language}' in provider.calls[0][0]
+    saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert saved['artifacts'][0]['expression']==expression
+    assert app.state.db.one('SELECT expression FROM artifacts WHERE id=?',(obj['id'],))['expression']==expression
+    assert code in client.get(f"/api/conversations/{conv['id']}/export").text
 
 
 def test_failed_response_saved_and_lock_released(client, app, monkeypatch):
@@ -220,7 +260,8 @@ def test_live_snapshot_never_reactivated_implicitly(client, app, tmp_path):
 
 def test_write_revalidates_and_audits(client, app, monkeypatch):
     conv, model = conversation(client)
-    provider = FakeProvider(['```dax\n销售合计 = SUM(\'销售明细\'[销售额])\n```'])
+    expression = "// 汇总当前筛选范围内的销售额\nSUM('销售明细'[销售额])"
+    provider = FakeProvider([f'```dax\n销售合计 =\n{expression}\n```'])
     monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
     obj = next(e for e in send(client, conv['id']) if e['type'] == 'artifacts')['artifacts'][0]
     validation = {**obj['validation'], 'run_verified': True}
@@ -230,12 +271,14 @@ def test_write_revalidates_and_audits(client, app, monkeypatch):
     calls = []
     class Evaluator:
         def __init__(self, *a): pass
-        def evaluate_with_defines(self, *a):
+        def evaluate_with_defines(self, home, definitions, target):
+            assert definitions == [('销售合计',expression)]
             calls.append('validate')
             return ValidationResult(ok=True, run_verified=True, sample=2)
     class Writer:
         def __init__(self, *a): pass
-        def write_measure(self, *a, **k):
+        def write_measure(self, table, name, code, **k):
+            assert name == '销售合计' and code == expression
             calls.append(('write',k['overwrite']))
             from backend.engine.context.live_writer import WriteResult
             return WriteResult(True,'已写入')

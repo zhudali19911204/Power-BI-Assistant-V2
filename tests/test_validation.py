@@ -47,3 +47,25 @@ def test_connection_failure_is_not_marked_as_engine_execution(monkeypatch):
     monkeypatch.setattr('backend.engine.dax.live_eval._LiveSession',FailingSession)
     result = LiveDesktopEvaluator(123,'fake-dll').evaluate_measure('1+1','Sales')
     assert not result.ok and not result.run_verified
+
+
+def test_calculated_table_comments_do_not_swallow_the_validation_wrapper(monkeypatch):
+    from backend.engine.dax.artifact import _code_only
+    from backend.engine.dax.live_eval import LiveDesktopEvaluator
+    expression='// 返回一行用于示例\nROW("Value",1) // 保留末尾行注释'
+    queries=[]
+    class Session:
+        def __init__(self,*a):pass
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def query(self,dax):
+            queries.append(dax)
+            return [{'Value':1}]
+    monkeypatch.setattr('backend.engine.dax.live_eval._LiveSession',Session)
+    objects=candidates(f'```dax\n示例表 =\n{expression}\n```','dax')
+    assert objects[0]['kind']=='dax_table'
+    results=validate(ModelContext(),objects,'',LiveDesktopEvaluator(123,'fake-dll'))
+    assert results[0]['ok'] and results[0]['run_verified']
+    assert expression in queries[0]
+    code=_code_only(queries[0])
+    assert code.count('(')==code.count(')') and code.rstrip().endswith(')')

@@ -13,6 +13,7 @@ from .database import encode,now,uid
 from .clarifications import ClarificationQuestion, QUESTION_RULES, card_markdown, make_card, save_card
 from .fields import FieldCheck, FieldPreviewInput, FieldService, field_ref
 from .engine.context.live_source import _LiveSession,find_adomd_dll,find_instances
+from .engine.dax.prompts import DAX_COMMENT_GUIDANCE
 from .engine.llm.base import ChatMessage
 from .streaming import completion_events,task_events,generation_timeout
 from .images import IMAGE_RULES, multimodal_error
@@ -107,6 +108,8 @@ SUMMARIZECOLUMNS 的筛选参数必须是表表达式，如 TREATAS({{筛选值}
 不要在该位置直接传入裸列比较或 KEEPFILTERS('维度表'[列] = 值)；需要保留交集时包裹表表达式。不得用 MIN/MAX 随意消除“无法确定单个值”错误而改变业务含义。
 每个结果最多 {ROW_LIMIT} 行；总额、占比的分母须独立聚合，不能从 TopN 或截断样本推断总体。
 不生成 SQL、XMLA、Python、写入、刷新或模型变更命令。不要生成报告或声称已执行。
+{DAX_COMMENT_GUIDANCE}
+查询注释写在 queries[].dax 字符串内，按 JSON 规则把实际换行编码为 \\n；不要在 JSON 对象外层写 // 注释。格式纠正和查询修复也保留并同步更新代码注释。
 严格只返回 JSON，不附解释或代码围栏：
 可查询时：{{"scope":"本轮指标、时间范围、单位和筛选口径", "clarification":null, "queries":[{{"title":"查询标题","dax":"EVALUATE ..."}}], "needs_more":false,"remaining_questions":[],"assessment":"本批查询如何回答问题，是否还需按结果下钻"}}
 证据足够时：{{"queries":[],"needs_more":false,"remaining_questions":[],"assessment":"现有查询已覆盖用户要求"}}

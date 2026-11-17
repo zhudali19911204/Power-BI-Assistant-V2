@@ -79,24 +79,39 @@ def test_plan_is_bounded_and_accepts_fenced_json():
 
 def test_real_data_precedes_summary_and_is_saved_exportable_and_cascades_on_delete(setup,monkeypatch):
     app,client,conv=setup
-    provider=Provider([plan(),'### 结论\n\n实际总额为 125。[Q1]'])
+    dax='// 返回固定数值以验证查询链路\nEVALUATE ROW("Value",125)'
+    provider=Provider([plan(dax),'### 结论\n\n实际总额为 125。[Q1]'])
     monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
-    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *args:result())
+    observed=[]
+    class Session:
+        def __init__(self,*a):pass
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def query(self,query,**kwargs):
+            observed.append(query)
+            return [{'Value':125}]
+    monkeypatch.setattr('backend.analysis._LiveSession',Session)
+    monkeypatch.setattr('backend.analysis.find_instances',lambda:[])
+    monkeypatch.setattr('backend.analysis.find_adomd_dll',lambda *a:'fake-dll')
     events=send(client,conv)
     assert events[-1]['type']=='done'
     evidence=next(e for e in events if e['type']=='analysis')['queries']
     assert evidence[0]['rows']==[{'Value':125}]
+    assert evidence[0]['dax']==dax and observed==[dax]
     assert len(provider.calls)==2
+    assert '默认生成带简洁中文注释的 DAX' in provider.calls[0][0]
     assert '125' in provider.calls[-1][1][-1].content
     assert 'truncated' in provider.calls[-1][1][-1].content
     saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
     assert saved['analysis'][0]['rows']==[{'Value':125}]
+    assert saved['analysis'][0]['dax']==dax
     assert '125' in saved['content'] and not saved['artifacts']
     query_id=saved['analysis'][0]['id']
     csv=client.get(f'/api/analysis/{query_id}/csv')
     assert csv.status_code==200 and '125' in csv.text
     exported=client.get(f"/api/conversations/{conv['id']}/export").text
     assert 'EVALUATE ROW' in exported and '实际结果' in exported
+    assert dax in exported
     assert not app.state.chat.locks[conv['id']].locked()
     assert not app.state.db.all('SELECT * FROM audit')
     client.delete(f"/api/conversations/{conv['id']}")
