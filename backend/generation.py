@@ -24,3 +24,15 @@ def generation_records(db, message_id):
     return [dict(row, diagnostic=json.loads(row['diagnostic'])) for row in db.all(
         'SELECT stage,attempt,diagnostic,created_at FROM llm_generations WHERE message_id=? '
         'ORDER BY created_at,rowid', (message_id,))]
+
+
+def record_format_validation(db, message_id, stage, attempt, *, issues=(), correction_attempt=0):
+    """Attach bounded protocol diagnostics; retain no raw model reply or failed values."""
+    row = db.one('SELECT id,diagnostic FROM llm_generations WHERE message_id=? AND stage=? AND attempt=?',
+                 (message_id, stage, attempt))
+    if not row:
+        return
+    validation = {'ok': not issues, 'correction_attempt': correction_attempt, 'issues': list(issues)[:5]}
+    diagnostic = json.loads(row['diagnostic']) | {'format_validation': validation}
+    db.execute('UPDATE llm_generations SET diagnostic=? WHERE id=?', (encode(diagnostic), row['id']))
+    logger.info('LLM %s stage=%s attempt=%s format_validation=%s', message_id, stage, attempt, encode(validation))

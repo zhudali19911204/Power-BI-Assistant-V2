@@ -8,7 +8,6 @@ from collections import Counter
 from datetime import datetime,timedelta,timezone
 
 from fastapi import HTTPException
-from pydantic import BaseModel,ConfigDict,Field,field_validator
 
 from .database import encode,now,uid
 from .clarifications import ClarificationQuestion, QUESTION_RULES, card_markdown, make_card, save_card
@@ -18,47 +17,20 @@ from .engine.llm.base import ChatMessage
 from .streaming import completion_events,task_events,generation_timeout
 from .images import IMAGE_RULES, multimodal_error
 from .engine.llm.diagnostics import GenerationReport
-from .generation import generation_recorder
+from .generation import generation_recorder, record_format_validation
+from .analysis_protocol import (AnalysisPlan, QueryPlan, PlanFormatError, PlanResponseError,
+                                parse_plan, validate_action, correction_prompt)
 from .cancellation import GenerationCancelled, CANCELLED_TEXT, check_cancelled, close_cancelled_provider
 from .reconnection import transport_disconnected
 from .analysis_budget import (AnalysisBudget, MAX_BATCH_QUERIES, MAX_QUERIES, MAX_BATCHES,
-                              MAX_QUERY_ATTEMPTS, evidence_context, query_key)
+                              MAX_QUERY_ATTEMPTS, MAX_FORMAT_RETRIES, MAX_FORMAT_CORRECTIONS,
+                              evidence_context, query_key)
 from .field_discovery import (MAX_FIELD_CHECKS, MAX_FIELD_SEARCHES, cached_check, check_key,
                               discovery_question, field_stop_reason)
 
 logger=logging.getLogger(__name__)
 ROW_LIMIT=200
 RESULT_BYTES=24000
-
-
-class QueryPlan(BaseModel):
-    model_config=ConfigDict(extra='forbid')
-    title: str=Field(min_length=1,max_length=160)
-    dax: str=Field(min_length=1,max_length=16000)
-
-
-class AnalysisPlan(BaseModel):
-    model_config=ConfigDict(extra='forbid')
-    scope: str=Field(default='',max_length=3000)
-    clarification: ClarificationQuestion | str | None = None
-    field_checks: list[FieldCheck]=Field(default_factory=list)
-    queries: list[QueryPlan]=Field(default_factory=list,max_length=MAX_BATCH_QUERIES)
-    needs_more: bool = False
-    remaining_questions: list[str] = Field(default_factory=list,max_length=8)
-    assessment: str = Field(default='',max_length=1500)
-
-    @field_validator('remaining_questions')
-    @classmethod
-    def bounded_questions(cls, values):
-        if any(not value.strip() or len(value)>300 for value in values):
-            raise ValueError('未解决问题每项为 1～300 字')
-        return [value.strip() for value in values]
-
-
-def parse_plan(text):
-    text=text.strip()
-    fence=re.fullmatch(r'```(?:json)?\s*\n?([\s\S]*?)\n?```',text,re.I)
-    return AnalysisPlan.model_validate_json(fence[1] if fence else text)
 
 
 def mask_dax(text):
@@ -131,6 +103,8 @@ def plan_system(ctx):
 空结果可以是完整答案；失败、截断结果和 TopN 不能证明总体。后续查询应优先用聚合补齐证据，不通过重复分页导出事实表。
 应用提供剩余时间及查询额度；时间不足时用现有证据结束，并列明未解决的问题。context_truncated 表示提示词只保留部分行，不能将其当作全量结果。
 使用 ROW/SUMMARIZECOLUMNS 等聚合，排名和明细使用 TOPN，明确排序，避免扫描并导出整张事实表。
+SUMMARIZECOLUMNS 的筛选参数必须是表表达式，如 TREATAS({{筛选值}}, '维度表'[列]) 或 FILTER(ALL('维度表'[列]), 条件)。
+不要在该位置直接传入裸列比较或 KEEPFILTERS('维度表'[列] = 值)；需要保留交集时包裹表表达式。不得用 MIN/MAX 随意消除“无法确定单个值”错误而改变业务含义。
 每个结果最多 {ROW_LIMIT} 行；总额、占比的分母须独立聚合，不能从 TopN 或截断样本推断总体。
 不生成 SQL、XMLA、Python、写入、刷新或模型变更命令。不要生成报告或声称已执行。
 严格只返回 JSON，不附解释或代码围栏：
@@ -250,8 +224,8 @@ class AnalysisService:
         total_timeout=generation_timeout(provider)
         budget=AnalysisBudget(total_timeout);started=budget.started
         call_counts={}
-        discovery_rounds=0;query_count=0;attempt_count=0;batch_count=0
-        executed=set();planned_labels={};stop_reason='';unanswered=[];pending_card=None
+        discovery_rounds=0;query_count=0;attempt_count=0;batch_count=0;format_corrections=0
+        executed=set();planned_labels={};stop_reason='';unanswered=[];pending_card=None;format_failures=[]
         self.chat.active_messages[conv['id']]=message_id
 
         def remaining(limit,*,summary=False):
@@ -279,7 +253,7 @@ class AnalysisService:
                     on_report=generation_recorder(self.db,provider,stage=stage,attempt=call_counts[stage],
                         message_id=message_id,model_id=model['id']),**options)
             finally:
-                if stage in ('analysis_plan','analysis_continue'):budget.observe('plan',budget.clock()-began)
+                if stage in ('analysis_plan','analysis_continue','analysis_repair'):budget.observe('plan',budget.clock()-began)
 
         def persist_query(query_id,label,title,dax,result,attempt):
             record={**result,'id':query_id,'label':label,'title':title,'dax':dax,
@@ -289,7 +263,10 @@ class AnalysisService:
             evidence.append(record)
 
         def request_plan(planning_messages,stage='analysis_plan',*,fields_closed=False):
-            for attempt in range(2):
+            nonlocal format_corrections
+            turns=list(planning_messages)
+            stage_name={'analysis_plan':'查询规划','analysis_continue':'后续分析','analysis_repair':'DAX 修复'}[stage]
+            for attempt in range(MAX_FORMAT_RETRIES+1):
                 raw=''
                 report=GenerationReport()
                 allocation=encode({'remaining_work_seconds':round(budget.remaining(),1),
@@ -297,21 +274,30 @@ class AnalysisService:
                     'remaining_batches':MAX_BATCHES-batch_count,'field_checks_closed':fields_closed,
                     'remaining_field_checks':0 if fields_closed else MAX_FIELD_CHECKS-len(field_records),
                     'max_searches_per_field':MAX_FIELD_SEARCHES,'completed_field_rounds':discovery_rounds})
-                for event in generate(stage,'本次分析额度（已扣除结论预留时间）：'+allocation+'\n'+planner,planning_messages,report=report):
+                for event in generate(stage,'本次分析额度（已扣除结论预留时间）：'+allocation+'\n'+planner,turns,report=report):
                     if event['type']=='delta':
                         raw+=event['text']
                         if len(raw)>40000:raise HTTPException(422,'查询计划过长，请缩小分析范围')
                     elif event['type']=='heartbeat':yield encode(event)+'\n'
                     elif event['type']=='status':yield status(event['text'])
                 if report.interruption():raise HTTPException(422,report.interruption())
-                try:return parse_plan(raw)
-                except ValueError:
-                    if attempt:raise HTTPException(422,'模型未返回有效查询计划，请明确分析指标后重试')
-                    planning_messages+=[ChatMessage('assistant',raw),ChatMessage('user',
-                        '请严格按指定 JSON 格式返回。先查值时使用真实表列名的 field_checks；需要澄清时 clarification '
-                        '为单个 question 和 2～4 个 options 的对象；信息齐全时 clarification=null，每批 queries 最多四项。'
-                        'needs_more 为布尔值，remaining_questions 为字符串数组，assessment 为简短理由。')]
-                    yield status('正在调整分析查询计划')
+                try:
+                    parsed=validate_action(parse_plan(raw),stage)
+                except PlanFormatError as exc:
+                    record_format_validation(self.db,message_id,stage,call_counts[stage],issues=exc.issues,correction_attempt=attempt)
+                    detail=f'{stage_name}回复格式不符合要求，未取得有效查询计划：{exc}'
+                    if attempt>=MAX_FORMAT_RETRIES:
+                        raise PlanResponseError(detail+'；已纠正一次，停止继续重试') from exc
+                    if format_corrections>=MAX_FORMAT_CORRECTIONS:
+                        raise PlanResponseError(detail+f'；已达到本轮 {MAX_FORMAT_CORRECTIONS} 次格式纠正上限') from exc
+                    if not budget.can_plan():
+                        raise PlanResponseError(detail+'；剩余时间不足以纠正格式，已为结论预留时间') from exc
+                    format_corrections+=1
+                    turns=[*planning_messages,ChatMessage('assistant',raw),ChatMessage('user',correction_prompt(exc,stage))]
+                    yield status(f'{stage_name}回复格式不符合要求，正在纠正格式（{attempt+1}/{MAX_FORMAT_RETRIES}）')
+                else:
+                    record_format_validation(self.db,message_id,stage,call_counts[stage],correction_attempt=attempt)
+                    return parsed
 
         def prepare_plan(planning_messages,stage='analysis_plan'):
             nonlocal discovery_rounds
@@ -401,7 +387,11 @@ class AnalysisService:
         def work_error(exc):
             if isinstance(exc,HTTPException) and exc.status_code==504 and budget.remaining()<.1:
                 return '查询阶段可用时间已用完，已停止补查并为结论预留时间'
-            return str(exc.detail) if isinstance(exc,HTTPException) else f'后续分析未完成（{type(exc).__name__}）'
+            if isinstance(exc,HTTPException):return str(exc.detail)
+            if isinstance(exc,TimeoutError):return '模型服务请求超时，已停止本次步骤并保留已有结果'
+            if isinstance(exc,OSError) or transport_disconnected(exc):
+                return '模型服务连接异常，已停止本次步骤并保留已有结果'
+            return '后续分析步骤未完成，已保留已有结果，请查看模型服务状态后重试'
 
         try:
             history=self.db.all("SELECT id,role,content FROM messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,rowid",(conv['id'],))[-16:]
@@ -490,20 +480,24 @@ class AnalysisService:
                             repair=messages[:]+[ChatMessage('user',
                                 '只修复下面这一个查询，保持原分析口径，按原 JSON 格式返回一个 queries 项。\n'+
                                 encode({'scope':initial_scope,'query':dax,'error':result['error'],'field_observations':field_context()}))]
-                            raw='';report=GenerationReport()
                             try:
-                                for event in generate('analysis_repair',planner,repair,report=report):
-                                    if event['type']=='delta':
-                                        raw+=event['text']
-                                        if len(raw)>40000:raise HTTPException(422,'修复查询过长，请缩小分析范围')
-                                    elif event['type']=='heartbeat':yield encode(event)+'\n'
-                                    elif event['type']=='status':yield status(event['text'])
-                                if report.interruption():raise HTTPException(422,report.interruption())
-                                fixed=parse_plan(raw)
-                                if len(fixed.queries)!=1:break
+                                fixed=yield from request_plan(repair,'analysis_repair',fields_closed=True)
+                                if fixed.clarification:
+                                    pending_card=make_card(fixed.clarification,ctx)
+                                    save_card(self.db,message_id,pending_card)
+                                    yield encode({'type':'clarification','clarification':pending_card})+'\n'
+                                    stop_reason='修复查询需要确认业务口径，已保留当前结果';break
                                 dax=fixed.queries[0].dax
                                 if query_key(dax) in executed or query_key(dax) in scheduled:break
                             except GenerationCancelled:raise
+                            except PlanResponseError as exc:
+                                # A malformed repair must not discard other independent queries.
+                                note=f'{label}：{exc.detail}'
+                                format_failures.append(note)
+                                record=evidence[-1]
+                                record.setdefault('warnings',[]).append(note)
+                                self.db.execute('UPDATE analysis_queries SET result=? WHERE id=?',(encode(record),record['id']))
+                                yield status(note);break
                             except Exception as exc:
                                 stop_reason=work_error(exc);break
                         batch_results.append(result)
@@ -544,10 +538,11 @@ class AnalysisService:
                     if not plan.queries and (plan.needs_more or unanswered):
                         stop_reason='后续分析仍有未解决问题，当前计划未提供可执行查询'
                 unanswered=list(dict.fromkeys(unanswered))
+                stop_reason='；'.join(filter(None,[stop_reason,*format_failures]))
                 if stop_reason:yield status(stop_reason)
                 successful=[record for record in evidence if record['ok']]
                 if not successful:
-                    text='### 查询未完成\n\n本轮未取得可用于分析的数据，无法据此给出数值结论。请查看下方查询错误，检查模型连接或补充指标、时间范围后重试。'
+                    text='### 查询未完成\n\n本轮未取得可用于分析的数据，无法据此给出数值结论。请查看下方具体失败原因；格式错误或查询错误不代表模型中没有数据。'
                     display+=text;yield encode({'type':'delta','text':text})+'\n'
                 else:
                     yield status('已取得真实数据，正在形成分析结论')
