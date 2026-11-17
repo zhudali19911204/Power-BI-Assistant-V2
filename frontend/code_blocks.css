@@ -1,0 +1,33 @@
+/* All code surfaces share the same type scale, controls and local syntax colors. */
+.code-block .code-heading { gap: 8px; flex-wrap: wrap; color: var(--text-secondary); letter-spacing: 0; }
+.code-heading > span { overflow-wrap: anywhere; }
+.code-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: auto; }
+.code-heading .code-actions button { min-height: 32px; padding: 5px 8px; border-radius: 5px; color: var(--text-secondary); font-size: var(--font-caption); }
+.code-actions button:hover { background: #e0e7ed; }
+.code-actions [aria-pressed="true"] { background: #e3edf5; color: #245a83; }
+.code-block pre { max-height: 420px; overscroll-behavior: contain; }
+.code-block pre:focus-visible { outline: 2px solid #9b7c27; outline-offset: -2px; }
+.code-block pre code { display: block; font-family: Consolas,"Cascadia Code","Microsoft YaHei UI",monospace; font-size: var(--font-code); font-variant-ligatures: none; line-height: 1.8; }
+.code-block[data-code-wrapped="true"] pre, .code-block[data-code-wrapped="true"] pre code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.code-block[data-code-wrapped="false"] pre, .code-block[data-code-wrapped="false"] pre code { white-space: pre; overflow-wrap: normal; word-break: normal; }
+.code-block .code-token-comment { color: #397046; }
+.code-block .code-token-keyword { color: #773d91; font-weight: 600; }
+.code-block .code-token-function { color: #245a9a; }
+.code-block .code-token-identifier { color: #82501f; }
+.code-block .code-token-string { color: #9d3937; }
+.code-block .code-token-number { color: #176f75; }
+.code-block .code-token-type { color: #773d91; }
+dialog.code-reader { width: 1180px; max-width: calc(100vw - 32px); height: 88dvh; max-height: 920px; padding: 22px; overflow: hidden; }
+dialog.code-reader[open] { display: flex; flex-direction: column; gap: 12px; }
+.code-reader .modal-heading { margin: 0; gap: 12px; }
+.code-reader .modal-heading h2 { margin: 0; }
+.code-reader [data-code-reader-note] { margin: 0; font-size: var(--font-caption); color: var(--text-muted); }
+.code-reader [data-code-reader-body] { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.code-reader .code-block { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; margin: 0; }
+.code-reader .code-heading { flex-shrink: 0; }
+.code-reader pre { flex: 1; min-height: 0; max-height: none; }
+.code-copy-buffer { position: fixed; left: -10000px; top: 0; }
+@media(max-width:700px) {
+  dialog.code-reader { max-width: calc(100vw - 16px); padding: 14px; height: 92dvh; }
+  .code-actions { gap: 2px; }
+}

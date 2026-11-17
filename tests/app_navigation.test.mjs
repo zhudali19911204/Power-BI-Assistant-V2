@@ -18,6 +18,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const scroll=document.querySelector('#message-scroll');
   Object.assign(scroll,{scrollHeight:1000,clientHeight:400,scrollTop:600,scrollTo({top}){this.scrollTop=top;}});
   const modal=document.querySelector('#modal');modal.showModal=()=>{modal.open=true;};modal.close=()=>{modal.open=false;modal.dispatchEvent(new window.Event('close'));};
+  const reader=document.querySelector('#code-reader');reader.showModal=()=>{reader.open=true;};reader.close=()=>{reader.open=false;reader.dispatchEvent(new window.Event('close'));};
   const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务',
     reasoning_level:'low',reasoning_control:{supported:true}};
   const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
@@ -302,6 +303,15 @@ test('actual app navigation keeps background streams, drafts and independent sen
     $('#write-home-table').value='度量表';$('#write-home-table').dispatchEvent(new window.Event('change'));
     $('#overwrite-measure').checked=true;
     assert.ok($('#write-target-notice').textContent.includes('自定义金额，存放于 度量表'));
+    const writeName=$('#write-measure-name');modal.scrollTop=160;
+    await click('#modal [data-code-toggle-wrap]');await click('#modal [data-code-expand]');
+    assert.equal(reader.open,true);assert.equal(modal.open,true);
+    assert.equal($('#code-reader code').textContent,'SUM(事实表[金额])');
+    assert.equal($('#code-reader .code-block').dataset.codeWrapped,'false');
+    await click('[data-code-reader-close]');
+    assert.equal(reader.open,false);assert.equal($('#write-measure-name'),writeName);
+    assert.equal(writeName.value,'自定义金额');assert.equal($('#overwrite-measure').checked,true);
+    assert.equal(modal.scrollTop,160);
     await click('#confirm-write');
     assert.equal(modal.open,true);assert.equal($('#confirm-write').disabled,false);
     assert.equal($('#write-measure-name').value,'自定义金额');assert.equal($('#write-home-table').value,'度量表');

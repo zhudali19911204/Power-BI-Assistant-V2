@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="/assets/generation.css">
   <link rel="stylesheet" href="/assets/connections.css">
   <link rel="stylesheet" href="/assets/analysis_templates.css">
+  <link rel="stylesheet" href="/assets/code_blocks.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
 <body>
@@ -66,5 +67,10 @@
   </div>
   <dialog id="modal"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow"></span><h2 id="modal-title"></h2></div><button class="icon-button" id="modal-close" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div id="modal-body"></div></dialog>
   <div id="toasts" class="toasts" aria-live="polite"></div>
+  <dialog id="code-reader" class="code-reader" aria-labelledby="code-reader-title">
+    <div class="modal-heading"><h2 id="code-reader-title">代码阅读</h2><button type="button" class="icon-button" data-code-reader-close aria-label="关闭代码阅读"><span data-icon="close"></span></button></div>
+    <p data-code-reader-note hidden>代码正在生成，这里显示打开时的内容。关闭后可查看最新代码。</p>
+    <div data-code-reader-body></div>
+  </dialog>
 </body>
 </html>

@@ -1,5 +1,6 @@
 import {escapeHtml as esc} from './markdown.js';
 import {icon} from './icons.js';
+import {codeBlock} from './code_blocks.js';
 
 const number=value=>value==null?'未统计':Number(value).toLocaleString('zh-CN');
 export function fieldValue(entry) {
@@ -37,7 +38,7 @@ export function fieldEvidence(records=[]) {
     <div class="field-evidence-body">${record.reason?`<p class="field-preview-note">${esc(record.reason)}</p>`:''}
       ${record.ok?fieldProfile(record.profile,{compact:true}):`<p class="field-preview-error">${esc(record.error)}</p>`}
       <button class="text-link" data-preview-model="${esc(record.model_id)}" data-preview-table="${esc(record.table)}" data-preview-column="${esc(record.column)}">${icon('table')}打开字段预览</button>
-      ${record.ok?`<details class="field-query-details"><summary>查看取值查询依据</summary>${record.profile.dax_queries.map(query=>`<div class="code-block"><pre><code>${esc(query)}</code></pre></div>`).join('')}</details>`:''}
+      ${record.ok?`<details class="field-query-details"><summary>查看取值查询依据</summary>${record.profile.dax_queries.map(query=>codeBlock(query,'dax')).join('')}</details>`:''}
     </div></details>`).join('');
 }
 

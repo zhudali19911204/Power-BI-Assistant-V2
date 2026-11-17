@@ -1,19 +1,15 @@
-import {icon} from './icons.js';
+import {escapeHtml} from './html.js';
+import {codeBlock} from './code_blocks.js';
 import MarkdownIt from './vendor/markdown-it.mjs';
 
-export const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({
-  '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;',
-}[c]));
+export {escapeHtml};
 
 // Use the locally bundled browser build so desktop use never needs npm or a CDN.
 // Model-provided HTML stays literal; only the parser's own elements can enter the DOM.
 const parser=new MarkdownIt({html:false,breaks:true,linkify:false,typographer:false});
 
-function codeBlock(code,language='') {
-  return `<div class="code-block"><div class="code-heading"><span>${escapeHtml(language||'CODE').toUpperCase()}</span><button class="copy-code">${icon('copy')}复制</button></div><pre><code>${escapeHtml(code.replace(/\n$/,''))}</code></pre></div>\n`;
-}
-parser.renderer.rules.fence=(tokens,index)=>codeBlock(tokens[index].content,tokens[index].info.trim().split(/\s+/)[0]);
-parser.renderer.rules.code_block=(tokens,index)=>codeBlock(tokens[index].content);
+parser.renderer.rules.fence=(tokens,index)=>codeBlock(tokens[index].content.replace(/\n$/,''),tokens[index].info.trim().split(/\s+/)[0])+'\n';
+parser.renderer.rules.code_block=(tokens,index)=>codeBlock(tokens[index].content.replace(/\n$/,''))+'\n';
 
 // Keep references readable without loading model-supplied remote images into the local app.
 parser.renderer.rules.image=(tokens,index,options,env,renderer)=>

@@ -14,6 +14,12 @@ function patchNode(current, next) {
     return;
   }
   if(current.nodeType!==1)return;
+  // Reader choices belong to this mounted block, not to subsequent streamed tokens.
+  if(current.matches('.code-block[data-code-wrapped]')&&next.matches('.code-block')) {
+    const wrapped=current.getAttribute('data-code-wrapped');
+    next.setAttribute('data-code-wrapped',wrapped);
+    next.querySelector('[data-code-toggle-wrap]')?.setAttribute('aria-pressed',wrapped);
+  }
   for(const name of current.getAttributeNames()) {
     // Expanded evidence is reader-controlled and should stay open as another query finishes.
     if(current.nodeName==='DETAILS'&&name==='open'&&!next.hasAttribute(name))continue;

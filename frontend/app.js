@@ -1,6 +1,7 @@
 import {icon, hydrateIcons} from './icons.js';
 import {createMessageRenderer, createRenderScheduler} from './messages.js';
 import {escapeHtml as esc, markdown} from './markdown.js';
+import {codeBlock,createCodeTools} from './code_blocks.js';
 import {mountCalibrationEditor} from './calibration.js';
 import {MODES} from './modes.js';
 import {analysisEvidence} from './analysis.js';
@@ -17,6 +18,7 @@ import {mountAnalysisTemplates,saveTemplateButton} from './analysis_templates.js
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const workspace=createWorkspaces();
+const codeTools=createCodeTools($('#code-reader'),{onNotice:toast});
 const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
 const connectionMonitor=createConnectionMonitor({api,
   getModels:()=>[state.view.model,...workspace.all().filter(view=>view.busy).map(view=>view.model)],
@@ -422,7 +424,7 @@ async function reviewWrite(id) {
   const view=state.view,obj=view.messages.flatMap(m=>m.artifacts||[]).find(o=>o.id===id);if(!obj)return;
   const measure=obj.kind==='dax_measure',column=obj.kind==='dax_column',hasHome=measure||column,
     objectLabel=column?'计算列':'度量值',tables=Object.keys(view.model.context.tables);
-  showModal('确认写入模型','REVIEW CHANGE',`<p class="notice gold" id="write-target-notice">将${hasHome?'写入'+objectLabel:'创建计算表'} <strong>${esc(obj.name)}</strong>${hasHome?'，存放于 '+esc(obj.home_table):''}。完成后请在 Desktop 按 Ctrl+S 保存报表。</p>${hasHome?`<div class="form-row"><label class="form-field">${column?'计算列名称':'度量值名称'}<input id="write-measure-name" required maxlength="300" value="${esc(obj.name)}" autocomplete="off"></label><label class="form-field">${column?'所属表':'存放表'}<select id="write-home-table" required><option value="" ${!tables.includes(obj.home_table)?'selected':''} disabled>请选择${column?'所属表':'存放表'}</option>${tables.map(table=>`<option value="${esc(table)}" ${table===obj.home_table?'selected':''}>${esc(table)}</option>`).join('')}</select></label></div><p class="field-help">${column?'确认后按所选表的行上下文重新抽样验证，再创建计算列并执行完整计算。数据类型由引擎推断，计算耗时取决于表大小和表达式。':'可修改名称，并选择模型中已有的表。确认后将按所选名称和存放表重新验证，再写入模型。'}</p>`:''}<div class="code-block"><pre><code>${esc(obj.expression)}</code></pre></div>${measure?'<label class="check-label"><input type="checkbox" id="overwrite-measure">如果所选表中存在同名度量值，允许覆盖</label>':`<p class="field-help">${column?'仅支持新建计算列，不覆盖已有字段；同名时请修改列名。':'仅支持新建计算表，不覆盖同名已有表。'}</p>`}<div class="modal-actions"><button class="secondary-button" id="cancel-write">取消</button><button class="primary-button" id="confirm-write">确认写入</button></div>`);
+  showModal('确认写入模型','REVIEW CHANGE',`<p class="notice gold" id="write-target-notice">将${hasHome?'写入'+objectLabel:'创建计算表'} <strong>${esc(obj.name)}</strong>${hasHome?'，存放于 '+esc(obj.home_table):''}。完成后请在 Desktop 按 Ctrl+S 保存报表。</p>${hasHome?`<div class="form-row"><label class="form-field">${column?'计算列名称':'度量值名称'}<input id="write-measure-name" required maxlength="300" value="${esc(obj.name)}" autocomplete="off"></label><label class="form-field">${column?'所属表':'存放表'}<select id="write-home-table" required><option value="" ${!tables.includes(obj.home_table)?'selected':''} disabled>请选择${column?'所属表':'存放表'}</option>${tables.map(table=>`<option value="${esc(table)}" ${table===obj.home_table?'selected':''}>${esc(table)}</option>`).join('')}</select></label></div><p class="field-help">${column?'确认后按所选表的行上下文重新抽样验证，再创建计算列并执行完整计算。数据类型由引擎推断，计算耗时取决于表大小和表达式。':'可修改名称，并选择模型中已有的表。确认后将按所选名称和存放表重新验证，再写入模型。'}</p>`:''}${codeBlock(obj.expression,'dax',{title:obj.name+' · DAX'})}${measure?'<label class="check-label"><input type="checkbox" id="overwrite-measure">如果所选表中存在同名度量值，允许覆盖</label>':`<p class="field-help">${column?'仅支持新建计算列，不覆盖已有字段；同名时请修改列名。':'仅支持新建计算表，不覆盖同名已有表。'}</p>`}<div class="modal-actions"><button class="secondary-button" id="cancel-write">取消</button><button class="primary-button" id="confirm-write">确认写入</button></div>`);
   if(hasHome){
     const preview=()=>{$('#write-target-notice').textContent=`将写入${objectLabel} ${$('#write-measure-name').value.trim()||'（未填写名称）'}，存放于 ${$('#write-home-table').value||'（未选择表）'}。完成后请在 Desktop 按 Ctrl+S 保存报表。`;};
     $('#write-measure-name').oninput=preview;$('#write-home-table').onchange=preview;
@@ -469,7 +471,7 @@ $('#prompt').addEventListener('keydown',e=>{
   $('#composer-form').requestSubmit();
 });
 document.addEventListener('keydown',e=>{
-  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open)return;
+  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open||$('#code-reader').open)return;
   if(e.key.toLowerCase()==='k'&&(e.ctrlKey||e.metaKey)){e.preventDefault();newChat();}
 });
 $('#new-chat').onclick=()=>newChat();
@@ -485,6 +487,7 @@ $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.v
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{
   const el=e.target.closest('button');if(!el)return;
+  if(await codeTools.handleClick(el))return;
   if(el.dataset.saveAnalysisTemplate){await openAnalysisTemplates(el.dataset.saveAnalysisTemplate);return;}
   if(el.dataset.openImage){
     const id=el.dataset.openImage;if(!/^[a-f0-9]{32}$/.test(id))return;
@@ -514,11 +517,10 @@ document.addEventListener('click',guard(async e=>{
   if(el.id==='demo-load')useModel(await post('/models/demo'));
   if(el.dataset.port){const reportName=$('#connection-report-name')?.value.trim()||'';el.disabled=true;el.textContent='正在读取模型…';try{const model=await post('/models/connect',{port:Number(el.dataset.port),report_name:reportName});useModel(model);toast(model.semantics?.dictionary_notice?.message||(model.semantics?.status==='ready'?model.semantics.stage:'已读取 Desktop 模型'));}catch(err){await openConnections();throw err;}}
   if(el.dataset.snapshot)useModel(await api(`/models/${el.dataset.snapshot}`));
-  if(el.dataset.query){const ctx=state.view.model.context,code=ctx.table_queries[el.dataset.query]??ctx.shared_expressions[el.dataset.query];showModal(el.dataset.query,'POWER QUERY',`<div class="code-block"><div class="code-heading"><span>POWERQUERY</span><button class="copy-code">${icon('copy')}复制</button></div><pre><code>${esc(code)}</code></pre></div><div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">在清洗助手中使用</button></div>`);}
+  if(el.dataset.query){const ctx=state.view.model.context,code=ctx.table_queries[el.dataset.query]??ctx.shared_expressions[el.dataset.query];showModal(el.dataset.query,'POWER QUERY',`${codeBlock(code,'powerquery')}<div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">在清洗助手中使用</button></div>`);}
   if(el.dataset.useQuery){newChat('mquery');state.view.queryName=el.dataset.useQuery;$('#query-select').value=el.dataset.useQuery;$('#modal').close();}
   if(el.dataset.conversation)await openConversation(el.dataset.conversation);
   if(el.dataset.deleteConversation){const id=el.dataset.deleteConversation,owner=workspace.find(id);if(owner?.busy||owner?.preparing){toast('此会话仍在发送或生成，完成后可删除');return;}showModal('删除此对话？','LOCAL HISTORY','<p class="notice">会删除此对话及关联代码记录，已写入 Desktop 的内容不受影响。</p><div class="modal-actions"><button class="primary-button" id="delete-confirm">删除对话</button></div>');$('#delete-confirm').onclick=guard(async()=>{await api(`/conversations/${id}`,{method:'DELETE'});workspace.remove(id);showView();$('#modal').close();await reloadHistory();});}
-  if(el.classList.contains('copy-code')){const text=$('code',el.closest('.code-block')).textContent;try{await navigator.clipboard.writeText(text);}catch{const input=document.createElement('textarea');input.value=text;document.body.append(input);input.select();document.execCommand('copy');input.remove();}toast('代码已复制');}
   if(el.dataset.apply)await reviewWrite(el.dataset.apply);
   if(el.dataset.revalidate){
     if(!available())return;
