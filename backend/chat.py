@@ -13,7 +13,7 @@ from .engine.llm.base import ChatMessage
 from .engine.mquery.prompts import build_chat_system_prompt as m_system
 from .powerbi import context_from_dict
 from .validation import candidates, validate
-from .streaming import completion_events, task_events
+from .streaming import completion_events
 from .analysis import AnalysisService
 from .clarifications import QUESTION_RULES, resolve_answer
 from .images import ImageStore, IMAGE_RULES, multimodal_error
@@ -204,18 +204,10 @@ class ChatService:
     def grounded_stream(self,conv,model,ctx,body,home,settings,lock):
         delegated=False
         try:
-            # Value lookup can need several bounded Desktop queries. Publish progress and
-            # keep-alives immediately, before either a local explanation or LLM generation.
-            yield encode({'type':'status','text':'正在核对语义与字段实际取值'})+'\n'
-            question=None
-            for event in task_events(lambda:self.semantics.unresolved_code(conv,body,ctx),timeout=35):
-                if event['type']=='heartbeat':yield encode(event)+'\n'
-                else:question=event['result']
+            # Let the model interpret the semantic context before choosing whether
+            # targeted value checks or a user decision are necessary.
+            yield encode({'type':'status','text':'正在读取语义层并理解分析口径'})+'\n'
             check_cancelled()
-            if question:
-                delegated=True
-                yield from self.semantics.confirmation_stream(conv,model,body,question,lock)
-                return
             provider=settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
             delegated=True
             if conv['mode']=='analysis':
@@ -231,7 +223,7 @@ class ChatService:
             yield encode({'type':'start','message_id':message_id})+'\n'
             yield encode({'type':'cancelled','text':CANCELLED_TEXT})+'\n'
         except Exception as exc:
-            detail=exc.detail if isinstance(exc,HTTPException) else f'语义与取值检查未完成（{type(exc).__name__}），请重试'
+            detail=exc.detail if isinstance(exc,HTTPException) else f'分析准备未完成（{type(exc).__name__}），请重试'
             yield encode({'type':'error','text':detail})+'\n'
         finally:
             if not delegated:lock.release()

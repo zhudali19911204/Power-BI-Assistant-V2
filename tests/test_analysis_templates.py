@@ -206,6 +206,15 @@ def test_save_from_analysis_keeps_scope_not_old_results_and_survives_source_dele
 
 def test_provider_failure_before_first_message_stays_visible_in_history(setup, monkeypatch):
     app, client, model, _, _ = setup
+    terminal_messages = []
+    original_execute = app.state.db.execute
+    def observe_terminal(sql, parameters=()):
+        if sql.startswith("UPDATE analysis_template_runs SET status='error'"):
+            row = app.state.db.one('SELECT conversation_id FROM analysis_template_runs WHERE id=?', (parameters[-1],))
+            terminal_messages.append(app.state.db.all('SELECT role,status FROM messages WHERE conversation_id=? ORDER BY rowid',
+                                                     (row['conversation_id'],)))
+        return original_execute(sql, parameters)
+    monkeypatch.setattr(app.state.db, 'execute', observe_terminal)
     def unavailable(*args):
         raise HTTPException(409, '模型服务配置已失效')
     monkeypatch.setattr(app.state.settings, 'provider', unavailable)
@@ -217,6 +226,9 @@ def test_provider_failure_before_first_message_stays_visible_in_history(setup, m
     messages = client.get(f'/api/conversations/{cid}/messages').json()
     assert [m['role'] for m in messages] == ['user', 'assistant']
     assert messages[-1]['status'] == 'error' and '配置已失效' in messages[-1]['content']
+    assert len(terminal_messages) == 1
+    assert [message['role'] for message in terminal_messages[0]] == ['user', 'assistant']
+    assert terminal_messages[0][-1]['status'] == 'error'
 
 
 def test_template_run_can_be_cancelled_through_existing_conversation_controls(setup, monkeypatch):

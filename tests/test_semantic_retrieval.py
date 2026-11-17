@@ -199,7 +199,7 @@ def test_both_generation_paths_pass_current_question_and_user_history(setup, mon
     for role, content in [('user', '分析人员费用'), ('assistant', "应该使用 'Dim Material'[Material Code]")]:
         app.state.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
                              (uid(), conv['id'], role, content, 'complete', now()))
-    reply = encode({'queries': []}) if mode == 'analysis' else '已参考本轮相关语义。'
+    reply = encode({'queries': [], 'clarification': '希望采用哪个指标口径？'}) if mode == 'analysis' else '已参考本轮相关语义。'
     provider = Provider([reply, reply])
     monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
     for question, expected, absent in [

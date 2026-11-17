@@ -9,6 +9,8 @@ from .analysis_budget import MAX_BATCH_QUERIES
 from .clarifications import ClarificationQuestion
 from .fields import FieldCheck
 
+MAX_SEMANTIC_QUERIES = 6
+
 
 class QueryPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -27,17 +29,18 @@ class AnalysisPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scope: str = Field(default='', max_length=3000)
     clarification: ClarificationQuestion | str | None = None
+    semantic_queries: list[str] = Field(default_factory=list, max_length=3)
     field_checks: list[FieldCheck] = Field(default_factory=list)
     queries: list[QueryPlan] = Field(default_factory=list, max_length=MAX_BATCH_QUERIES)
     needs_more: bool = False
     remaining_questions: list[str] = Field(default_factory=list, max_length=8)
     assessment: str = Field(default='', max_length=1500)
 
-    @field_validator('remaining_questions')
+    @field_validator('remaining_questions', 'semantic_queries')
     @classmethod
     def bounded_questions(cls, values):
         if any(not value.strip() or len(value) > 300 for value in values):
-            raise ValueError('未解决问题每项为 1～300 字')
+            raise ValueError('每项为 1～300 字')
         return [value.strip() for value in values]
 
 
@@ -72,7 +75,7 @@ def _invalid_constant(value):
 
 def _validation_issues(error):
     # Never include rejected values, query text, or model-generated unknown key names.
-    fields = {'scope', 'clarification', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
+    fields = {'scope', 'clarification', 'semantic_queries', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
               'assessment', 'title', 'dax', 'table', 'column', 'search_terms', 'reason',
               'topic', 'question', 'context', 'options', 'label', 'value', 'detail'}
     messages = {'missing': '缺少必填字段', 'string_type': '需要字符串', 'bool_type': '需要布尔值 true 或 false',
@@ -119,19 +122,19 @@ def validate_action(plan, stage):
         # An explicit request for business confirmation always pauses execution,
         # even if the model also supplied speculative work. Do not ask the model
         # to resolve the business ambiguity itself in a format-correction round.
-        return plan.model_copy(update={'queries': [], 'field_checks': []})
-    if plan.queries and plan.field_checks:
-        raise issue('$', 'conflicting_actions', '查询和字段检查只能选择一种；先查值时不能同时执行查询')
+        return plan.model_copy(update={'queries': [], 'field_checks': [], 'semantic_queries': []})
+    if sum(bool(action) for action in (plan.queries, plan.field_checks, plan.semantic_queries)) > 1:
+        raise issue('$', 'conflicting_actions', '业务查询、字段检查和语义检索只能选择一种，获得依据后再规划下一步')
     if stage == 'analysis_repair':
-        if not plan.clarification and (len(plan.queries) != 1 or plan.field_checks):
+        if not plan.clarification and (len(plan.queries) != 1 or plan.field_checks or plan.semantic_queries):
             raise issue('queries', 'repair_query_count', '修复只能返回一个 queries 项；业务口径不明确时返回 clarification')
-    elif stage == 'analysis_plan' and not (plan.queries or plan.field_checks or plan.clarification):
-        raise issue('$', 'missing_action', '需要查询、字段检查或口径确认，不能返回空计划')
+    elif stage == 'analysis_plan' and not (plan.queries or plan.field_checks or plan.semantic_queries or plan.clarification):
+        raise issue('$', 'missing_action', '需要查询、语义检索、字段检查或口径确认，不能返回空计划')
     return plan
 
 
 def correction_prompt(error, stage):
-    example = {'scope': '<保持原业务口径>', 'clarification': None, 'field_checks': [],
+    example = {'scope': '<保持原业务口径>', 'clarification': None, 'semantic_queries': [], 'field_checks': [],
                'queries': [{'title': '<原标题>', 'dax': '<完整的原查询或本次修复查询>'}],
                'needs_more': False, 'remaining_questions': [], 'assessment': ''}
     return ('上次回复未通过输出协议校验，尚未执行其中的查询。只纠正结构和字段类型；'
@@ -141,6 +144,7 @@ def correction_prompt(error, stage):
             '只返回一个合法 JSON 对象，不加解释、代码围栏、注释或重复字段。'
             '需要澄清时 clarification 为一个问题和 2～4 个选项，queries=[]；'
             '需要查值时使用 field_checks，queries=[]；查询时每项必须有字符串 title 和 dax。'
+            '需要补查语义层时使用 semantic_queries 字符串数组，每次最多 3 项、每项 1～300 字，field_checks=[]、queries=[]。'
             'needs_more 必须是布尔值，remaining_questions 必须是字符串数组。\n'
             + ('当前仅修复一条失败查询，只能返回一个 queries 项，或返回口径确认。\n' if stage == 'analysis_repair' else
                '后续分析证据足够时可以返回空 queries，并说明 assessment。\n' if stage == 'analysis_continue' else '')

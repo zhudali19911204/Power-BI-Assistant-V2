@@ -19,7 +19,7 @@
 5. **连接另一个报表可以进入新对话；同步当前报表必须保留原对话。**
 6. 切换页面不停止生成；HTTP 查看器断开也不等于取消生成；关闭整个后端才会停止内存任务。
 7. 生成和验证不写入物理模型；写入只走单独的用户确认接口。Power Query M 没有外部写回路径。
-8. 修改源码不等于更新已有安装包。当前 API 与最新安装包版本为 2.0.4，包含计算列、业务词典扩展、分批分析及按时间和已有证据继续字段查值；具体构建证据与交付范围见验证记录。
+8. 修改源码不等于更新已有安装包。当前 API 与最新安装包版本为 2.0.5，包含分析模板、布局与代码阅读优化，以及计算列、业务词典扩展、分批分析和字段查值等已有能力；具体构建证据与交付范围见验证记录。
 
 建议阅读顺序：
 
@@ -240,9 +240,9 @@ API 位于 `/api/models/{model_id}/semantics/business`：`PUT /overview`、`POST
 
 `FieldService.preview()` 执行受限的统计／去重值／样例查询，返回范围、时间、错误和截断标记；不继承报表视觉筛选。
 
-`ValueEvidence.locate()` 对带前导零的编号作精确匹配，最多检查 96 个文本或未知类型字段，分批取证。匹配值存在不代表用户希望采用该字段筛选；多个归属或取证不完整时通过确认卡澄清。
+当前源码的 `ChatService.grounded_stream()` 不再调用 `unresolved_code()`，取消带前导零编号的前置扫描和强制确认。AI 先使用检索到的语义定义和用户上下文；分析规划可通过 `semantic_queries` 主动补查语义层，需要实际分类证据时再请求 `field_checks`。依据充分就查询，无法消解的歧义才返回用户选项，不要求证明某编号在全模型唯一。
 
-编号映射保存于原会话，不会自动提升为全局语义。旧助手自加条件不能当作用户确认。部分问题可由本地证据直接解释，不需要调用模型。
+`ValueEvidence` 保留历史查值与字段样例的读取；历史编号记录按 `checked_at` 标明为线索，不宣称本轮重新核验。旧编号确认卡仍可答复，确认映射仅保存在原会话。AI 自行采用的本轮口径不会提升为全局 `confirmed` 语义，旧助手自加条件也不能当作用户确认。此项流程变更尚未重新打入现有 2.0.5 安装包。
 
 ## 5. 生成、验证与写入链路
 
@@ -256,8 +256,8 @@ API 位于 `/api/models/{model_id}/semantics/business`：`PUT /overview`、`POST
       → 图片、模型、查询、校准和连接校验
       → 会话锁 + generation_id + CancellationToken
       → 已同步旧口径卡校验
-      → DAX/分析的语义与编号取证
-      → 本地解释/确认，或选择 provider
+      → DAX/分析的语义可用性校验
+      → 选择 provider，注入相关语义与用户确认的上下文
       → DAX/M: ChatService.stream()
       → 分析: AnalysisService.stream()
   → BackgroundStream → NDJSON → 原 view
@@ -303,7 +303,7 @@ AI 回复
 
 [analysis.py](../backend/analysis.py)不是普通 DAX 聊天的别名，而是独立流程：
 
-1. AI 返回 `AnalysisPlan` JSON：`scope / clarification / field_checks / queries / needs_more / remaining_questions / assessment`。根据问题复杂度先规划必要的一批查询，简单问题优先一条聚合。
+1. AI 返回 `AnalysisPlan` JSON：`scope / clarification / semantic_queries / field_checks / queries / needs_more / remaining_questions / assessment`。语义依据充分时直接规划查询，简单问题优先一条聚合。需要补查定义时，通过 `SemanticService.context()` 本地读取当前模型语义，每次最多 3 项、每项 1～300 字，整轮最多 6 项不同检索，跨业务批次共享。单项条目预算 6,000 字符、业务知识预算 4,000 字符；保留候选状态、遗漏和失效标记。相同检索不重复读取，失败不视为定义不存在；重复请求或达到额度后，允许模型根据已有依据收尾一次，再无法确定时交由用户补充。补充语义在后续规划、修复与总结中复用，不写入全局定义。
 2. 如需字段证据，读取真实取值，再请求规划；不设固定两轮限制。按剩余时间及已观察的查值／规划耗时决定是否继续，整轮最多 12 项实际检查、同一字段最多 3 组不同搜索，跨业务查询批次共享。相同检查复用已存结果；未筛选且未截断的全字段取值可覆盖新搜索，完整搜索结果只覆盖原关键词及其子集，截断样例不能冒充完整集合。预算与复用逻辑见 [field_discovery.py](../backend/field_discovery.py) 和 [analysis_budget.py](../backend/analysis_budget.py)。
    到达上限、时间不足或重复请求时，最多再让模型根据已有证据收尾一次；时间允许且依据足够仍可返回业务查询。若仍请求查值，则从同一真实字段的未截断值生成候选确认卡；没有可靠候选时明确要求补充定义，不把失败当作无数据。观察记录保留，规划上下文替换旧查值快照，避免多轮重复累积同一取值列表。
 3. 口径仍不清楚时保存确认卡，不编造查询。
@@ -442,7 +442,7 @@ provider 内部还会产生 `activity`、`metadata`，分别用于上游活动�
 | 注入语义 | 按问题匹配最多 32 个起点并扩展依赖；条目 50000 字符预算，附缺失对象与关系信息；无匹配时按表概览 | [semantic_retrieval.py](../backend/semantic_retrieval.py) |
 | 校准 | 一个预期值，最多 10 个 AND 条件，仅度量值 | [schemas.py](../backend/schemas.py)、[validation.py](../backend/validation.py) |
 | 计算列验证 | 最多 50 行、20 秒；抽样而非全量计算 | [live_eval.py](../backend/engine/dax/live_eval.py) |
-| 编号检查 | 最多 96 个候选字段；分批，单命令最多 5 秒、单编号约 15 秒 | [values.py](../backend/values.py) |
+| 语义补查 | 每次最多 3 项、本轮最多 6 项不同检索，重复复用；单项最长 15 秒并受整轮预算约束 | [analysis.py](../backend/analysis.py) |
 | 图片 | 每消息最多 4 张，原图每张 ≤8 MB，≤2000 万像素；长边规范到 ≤2048，保存 ≤2 MB；请求最多 8 张历史／本轮图 | [images.py](../backend/images.py)、[schemas.py](../backend/schemas.py) |
 
 界面心跳不延长上游空闲时限；思考帧算真实活动但不是答案。增大 `max_tokens` 或 timeout 不会让模型更快。结构指纹不证明数据新鲜；任何未来看板缓存都不能仅以结构未变为由长期复用业务数值。

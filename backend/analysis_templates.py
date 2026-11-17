@@ -173,13 +173,15 @@ class AnalysisTemplates:
 
     def failed(self, row, error):
         detail = str(error.detail if isinstance(error, HTTPException) else '分析未能启动，请检查模型连接与服务设置')
-        self.db.execute("UPDATE analysis_template_runs SET status='error',error=? WHERE id=?", (detail, row['id']))
         last = self.db.one('SELECT * FROM messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1', (row['conversation_id'],))
         if not last:
             self.chat.images.save_user(row['conversation_id'], json.loads(row['snapshot'])['prompt'])
         if not last or last['role'] != 'assistant' or last['status'] not in ('error', 'cancelled'):
             self.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',
                             (uid(), row['conversation_id'], 'assistant', detail, 'error', now()))
+        # Pollers may open the conversation as soon as this status becomes terminal.
+        # Publish it only after both the original task and visible failure are saved.
+        self.db.execute("UPDATE analysis_template_runs SET status='error',error=? WHERE id=?", (detail, row['id']))
 
     def track(self, row, source):
         error = None

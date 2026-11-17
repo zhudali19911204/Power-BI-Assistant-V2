@@ -145,20 +145,23 @@ def test_user_review_wins_over_a_running_inference_and_survives_restart(setup,mo
 
 
 @pytest.mark.parametrize('mode',['analysis','dax'])
-def test_bare_0257_is_confirmed_before_any_provider_or_data_query(setup,monkeypatch,mode):
+def test_bare_0257_reaches_ai_with_semantics_without_automatic_lookup(setup,monkeypatch,mode):
     app,client,model,ctx,conv=setup
     ready(app,model,ctx);app.state.db.execute('UPDATE conversations SET mode=? WHERE id=?',(mode,conv['id']))
-    monkeypatch.setattr(app.state.settings,'provider',lambda:pytest.fail('Do not guess the code mapping'))
+    from tests.test_analysis import Provider,plan,result
+    provider=Provider([plan(),'实际总额125。[Q1]'] if mode=='analysis' else ['按模型定义理解0257。'])
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    monkeypatch.setattr(app.state.semantics.values,'locate',lambda *a:pytest.fail('No deterministic preflight'))
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:result())
     r=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':'分析2026年0257人员费用'})
     assert r.status_code==200
     events=[json.loads(line) for line in r.text.splitlines()]
-    card=next(e['clarification'] for e in events if e['type']=='clarification')
-    assert card['topic']=='编号归属' and '0257' in card['question']
-    assert not app.state.db.all('SELECT * FROM analysis_queries')
+    assert events[-1]['type']=='done' and not any(e['type']=='clarification' for e in events)
+    assert '模型语义词典' in provider.calls[0][0] and '0257' in provider.calls[0][1][-1].content
     assert not app.state.db.all('SELECT * FROM conversation_bindings')
 
 
-def test_number_mapping_only_becomes_authoritative_after_the_user_selects_a_field(setup,monkeypatch):
+def test_previously_saved_number_mapping_card_still_accepts_user_selection(setup,monkeypatch):
     app,client,model,ctx,conv=setup
     ready(app,model,ctx)
     # Both fields really contain the code; this test exercises choosing an ambiguous
@@ -167,13 +170,19 @@ def test_number_mapping_only_becomes_authoritative_after_the_user_selects_a_fiel
         'matches':[{'table':'Dim Cost Center','column':'CC Number'},
                    {'table':'Dim Material','column':'Material Code'}],
         'complete':True,'searched_fields':2,'total_fields':2,'errors':[]})
-    initial=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':'2026年0257人员费用'})
-    assert initial.status_code==200
+    # Seed a card from the previous release; new turns no longer enter this path.
+    import threading
+    from backend.schemas import MessageInput
+    body=MessageInput(content='2026年0257人员费用')
+    card=app.state.semantics.unresolved_code(conv,body,ctx)
+    lock=threading.Lock();lock.acquire()
+    list(app.state.semantics.confirmation_stream(conv,model,body,card,lock))
     messages=client.get(f"/api/conversations/{conv['id']}/messages").json();question=messages[-1]
     card=question['clarification']
     option=next(o for o in card['options'] if 'CC Number' in o['value'])
-    from tests.test_analysis import Provider
-    provider=Provider([encode({'clarification':None,'queries':[]})])
+    from tests.test_analysis import Provider,plan,result
+    provider=Provider([plan(),'总额125。[Q1]'])
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:result())
     monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     response=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':'选择编号归属',
         'clarification_reply':{'message_id':question['id'],'option_id':option['id']}})
@@ -185,19 +194,28 @@ def test_number_mapping_only_becomes_authoritative_after_the_user_selects_a_fiel
     assert not app.state.semantics.bindings(other['id'])
 
 
-def test_old_assistant_assumption_is_not_treated_as_a_user_confirmation(setup):
+def test_old_assistant_assumption_is_not_treated_as_a_user_confirmation(setup,monkeypatch):
     app,client,model,ctx,conv=setup
     ready(app,model,ctx)
     from backend.database import uid,now
     app.state.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',(uid(),conv['id'],'user','看2026年0257费用','complete',now()))
     app.state.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',(uid(),conv['id'],'assistant','0257是成本中心编号，CNY金额','complete',now()))
+    from tests.test_analysis import Provider
+    from tests.test_clarifications import clarify,question
+    provider=Provider([clarify(question(topic='编号归属'))])
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     r=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':'继续找最高的月份'})
     assert r.status_code==200 and '编号归属' in r.text
     assert not app.state.semantics.bindings(conv['id'])
+    assert '历史助手说过的口径不是用户确认' in provider.calls[0][0]
 
 
-def test_an_unrelated_field_reference_does_not_resolve_a_bare_number(setup):
+def test_an_unrelated_field_reference_does_not_become_user_confirmed_mapping(setup,monkeypatch):
     app,client,model,ctx,conv=setup;ready(app,model,ctx)
+    from tests.test_analysis import Provider
+    from tests.test_clarifications import clarify,question
+    provider=Provider([clarify(question(topic='编号归属'))])
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     r=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':"计算 'Fact'[Amount]，0257每月费用"})
     assert '编号归属' in r.text and not app.state.semantics.bindings(conv['id'])
 

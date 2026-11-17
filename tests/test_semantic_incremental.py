@@ -275,7 +275,7 @@ def test_partial_dictionary_allows_real_chat_while_delta_is_pending(setup,monkey
     app.state.semantics._store(new['id'],p)
     if build_status=='building':app.state.semantics.jobs[new['id']]=True
     from tests.test_analysis import Provider
-    provider=Provider([encode({'clarification':None,'queries':[]})] if mode=='analysis' else ['请依据实际字段理解金额。'])
+    provider=Provider([encode({'clarification':'希望采用哪个指标口径？','queries':[]})] if mode=='analysis' else ['请依据实际字段理解金额。'])
     monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     conv=client.post('/api/conversations',json={'model_id':new['id'],'mode':mode}).json()
     try:

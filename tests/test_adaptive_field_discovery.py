@@ -224,10 +224,12 @@ def test_explicit_checks_do_not_hide_inferred_filters_on_another_field(setup, mo
     dax = 'EVALUATE CALCULATETABLE(ROW("Amount",[总销售额]),\'客户\'[地区] = "华东")'
     combined = json.loads(plan(dax));combined['field_checks'] = [check()]
     app, client, conv, provider, calls = wire(setup, monkeypatch,
-        [checks(check()), json.dumps(combined), plan(dax), '实际125。[Q1]'])
+        [checks(check()), json.dumps(combined), plan(dax), plan(dax), '实际125。[Q1]'])
     monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda *a:result())
     assert send(client, conv)[-1]['type'] == 'done'
     assert calls == [('类别', []), ('地区', ['华东'])]
+    # The mixed action is corrected before its inferred filter is checked and run.
+    assert '只能选择一种' in provider.calls[2][1][-1].content
 
 
 def test_additional_rounds_replace_old_snapshots_but_retain_all_observations(setup, monkeypatch):

@@ -137,12 +137,17 @@ def test_analysis_cancel_skips_subsequent_calls_and_keeps_evidence(analysis_setu
     finally: resume.set()
 
 
-def test_cancel_during_grounding_saves_images_without_calling_model(analysis_setup, monkeypatch):
+def test_cancel_during_semantic_lookup_saves_images_and_stops_further_model_calls(analysis_setup, monkeypatch):
     app,client,conv=analysis_setup
     reached,resume=threading.Event(),threading.Event()
-    def grounding(*args): reached.set();resume.wait(3);check_cancelled()
-    monkeypatch.setattr(app.state.semantics,'unresolved_code',grounding)
-    monkeypatch.setattr(app.state.settings,'provider',lambda:pytest.fail('Model must not be called'))
+    from tests.test_analysis import Provider
+    context=app.state.semantics.context
+    def grounding(*args,**kwargs):
+        if kwargs.get('max_chars')==6000:reached.set();resume.wait(3);check_cancelled()
+        return context(*args,**kwargs)
+    monkeypatch.setattr(app.state.semantics,'context',grounding)
+    provider=Provider([json.dumps({'semantic_queries':['总额']})])
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
     image=upload(client);task=launch(app,conv['id'],image_ids=[image['id']])
     try:
         assert reached.wait(2)
@@ -150,6 +155,7 @@ def test_cancel_during_grounding_saves_images_without_calling_model(analysis_set
         assert task.finished.wait(2)
         saved=client.get(f"/api/conversations/{conv['id']}/messages").json()
         assert saved[0]['images'][0]['id']==image['id'] and saved[-1]['status']=='cancelled'
+        assert len(provider.calls)==1
     finally:resume.set()
 
 

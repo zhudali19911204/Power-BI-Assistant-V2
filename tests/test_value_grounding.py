@@ -83,21 +83,21 @@ def send(client, conv, content):
 
 
 @pytest.mark.parametrize('mode', ['dax', 'analysis'])
-def test_code_explanation_uses_real_values_instead_of_forcing_a_filter_choice(setup, monkeypatch, mode):
+def test_code_question_is_interpreted_by_ai_without_automatic_value_scan(setup, monkeypatch, mode):
     app, client, model, ctx, conv, state = setup
     app.state.db.execute('UPDATE conversations SET mode=? WHERE id=?', (mode, conv['id']))
-    monkeypatch.setattr(app.state.settings, 'provider', lambda: pytest.fail('Explanation already has local evidence'))
+    provider = Provider(['0257 的含义需结合模型语义。'] if mode == 'dax' else [plan(), '实际结果125。[Q1]'])
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda *a: result())
     events = send(client, conv, '0257 是什么意思')
     assert events[0]['type'] == 'status' and events[-1]['type'] == 'done'
     assert not any(e['type'] == 'clarification' for e in events)
     text = ''.join(e.get('text', '') for e in events if e['type'] == 'delta')
-    assert 'Dim_Plant[Company Code]' in text and '0257' in text
-    assert 'Dim_Calendar[周编号]' not in text and '待审阅' in text
+    assert provider.calls and '0257' in provider.calls[0][1][-1].content
+    assert not state['calls']
     assert not app.state.semantics.bindings(conv['id'])
-    assert not app.state.db.all('SELECT * FROM analysis_queries')
     saved = client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
     assert saved['status'] == 'complete' and saved['content'] == text
-    assert 'Company Code' in client.get(f"/api/conversations/{conv['id']}/export").text
     assert not app.state.chat.generation_status(conv['id'])['running']
 
 
@@ -110,61 +110,53 @@ def test_preview_evidence_survives_restart_but_is_only_a_hint_until_live_checked
     assert not app.state.db.all('SELECT * FROM messages')
     assert p['run_verified']
     state['values'][field_ref('Dim_Plant', 'Company Code')] = ['0887']
-    events = send(client, conv, '0257是什么意思？')
-    text = ''.join(e.get('text', '') for e in events)
-    assert '未取得' in text and '已验证存在精确取值' not in text
+    evidence = app.state.semantics.values.locate(model['id'], '0257', app.state.semantics.get(model['id'])['entries'])
+    assert not evidence['matches'] and evidence['complete']
 
 
 @pytest.mark.parametrize('mode', ['dax', 'analysis'])
-def test_unique_exact_mapping_reaches_both_model_prompts_without_becoming_user_confirmed(setup, monkeypatch, mode):
+def test_saved_value_evidence_is_labeled_historical_and_does_not_become_user_confirmed(setup, monkeypatch, mode):
     app, client, model, ctx, conv, state = setup
     app.state.db.execute('UPDATE conversations SET mode=? WHERE id=?', (mode, conv['id']))
-    replies = ['按本轮实际取值，0257 出现在公司代码字段。'] if mode == 'dax' else [plan(), '实际结果125。[Q1]']
+    app.state.semantics.values.locate(model['id'], '0257', app.state.semantics.get(model['id'])['entries'])
+    state['calls'].clear()
+    replies = ['按历史查值，0257 曾出现在公司代码字段。'] if mode == 'dax' else [plan(), '实际结果125。[Q1]']
     provider = Provider(replies)
     monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
     monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda *a: result())
     events = send(client, conv, '分析0257的金额')
     assert not any(e['type'] == 'clarification' for e in events)
     assert events[-1]['type'] == 'done' and provider.calls
-    evidence = provider.calls[0][0].split('本轮编号实际查值证据', 1)[1]
+    evidence = provider.calls[0][0].split('历史编号查值线索', 1)[1]
     assert 'Dim_Plant' in evidence and 'Company Code' in evidence and '0257' in evidence
     assert 'Dim_Calendar' not in evidence and '本会话' in evidence
+    assert '不是本轮重新查值' in evidence and 'checked_at' in evidence and not state['calls']
     assert not app.state.semantics.bindings(conv['id'])
     assert all(e['state'] == 'candidate' for e in app.state.semantics.get(model['id'])['entries'])
 
 
-def test_duplicate_values_only_offer_fields_with_exact_matches(setup, monkeypatch):
+def test_duplicate_cached_values_do_not_force_a_question_before_ai_interpretation(setup, monkeypatch):
     app, client, model, ctx, conv, state = setup
     state['values'][field_ref('Dim_Material', 'Material Code')] = ['0257']
-    monkeypatch.setattr(app.state.settings, 'provider', lambda: pytest.fail('Ambiguous code must be clarified'))
+    app.state.semantics.values.locate(model['id'], '0257', app.state.semantics.get(model['id'])['entries'])
+    state['calls'].clear()
+    provider = Provider([plan(scope='依据用户问题和公司代码定义采用公司范围'), '总额125。[Q1]'])
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda *a: result())
     events = send(client, conv, '分析0257的金额')
-    card = next(e['clarification'] for e in events if e['type'] == 'clarification')
-    options = encode(card['options'])
-    assert 'Company Code' in options and 'Material Code' in options
-    assert '周编号' not in options and 'CC Number' not in options
-    assert len(card['value_evidence']['matches']) == 2
-
-
-def test_explaining_a_duplicate_code_lists_matches_without_requesting_filter_intent(setup, monkeypatch):
-    app, client, model, ctx, conv, state = setup
-    state['values'][field_ref('Dim_Material', 'Material Code')] = ['0257']
-    monkeypatch.setattr(app.state.settings, 'provider', lambda: pytest.fail('Local explanation'))
-    events = send(client, conv, '0257是哪个字段')
-    text = ''.join(e.get('text', '') for e in events)
-    assert 'Company Code' in text and 'Material Code' in text
+    evidence = provider.calls[0][0].split('历史编号查值线索', 1)[1]
+    assert 'Company Code' in evidence and 'Material Code' in evidence
     assert not any(e['type'] == 'clarification' for e in events)
+    assert not state['calls'] and events[-1]['type'] == 'done'
 
 
 @pytest.mark.parametrize('failure', ['error', 'malformed'])
 def test_failed_or_missing_lookup_is_never_a_negative_match_or_name_based_recommendation(setup, monkeypatch, failure):
     app, client, model, ctx, conv, state = setup
     state[failure] = True
-    monkeypatch.setattr(app.state.settings, 'provider', lambda: pytest.fail('Cannot infer after lookup failure'))
-    events = send(client, conv, '分析0257的金额')
-    card = next(e['clarification'] for e in events if e['type'] == 'clarification')
-    assert card['value_evidence']['errors'] and not card['value_evidence']['complete']
-    assert not card['value_evidence']['matches']
-    assert not any('周编号' in o['value'] or 'Company Code' in o['value'] for o in card['options'])
+    evidence = app.state.semantics.values.locate(model['id'], '0257', app.state.semantics.get(model['id'])['entries'])
+    assert evidence['errors'] and not evidence['complete'] and not evidence['matches']
+    assert '没有匹配不代表整个模型不存在' in app.state.semantics.value_context(conv, '0257')
 
 
 def test_no_match_keeps_leading_zeros_and_does_not_equate_0257_with_257(setup):
@@ -178,44 +170,51 @@ def test_no_match_keeps_leading_zeros_and_does_not_equate_0257_with_257(setup):
     assert '== "0257"' in state['calls'][0][0]
 
 
-def test_lookup_is_bounded_and_partial_coverage_does_not_automatically_resolve_a_single_match(setup, monkeypatch):
+def test_legacy_lookup_utility_is_bounded_and_reports_partial_coverage(setup, monkeypatch):
     app, client, model, ctx, conv, state = setup
     monkeypatch.setattr('backend.values.MAX_LOOKUP_FIELDS', 2)
-    monkeypatch.setattr(app.state.settings, 'provider', lambda: pytest.fail('Partial coverage needs confirmation'))
-    events = send(client, conv, '分析0257的金额')
-    card = next(e['clarification'] for e in events if e['type'] == 'clarification')
-    assert card['value_evidence']['searched_fields'] == 2 and not card['value_evidence']['complete']
+    evidence = app.state.semantics.values.locate(model['id'], '0257', app.state.semantics.get(model['id'])['entries'])
+    assert evidence['searched_fields'] == 2 and not evidence['complete']
     assert all(c[1] <= 12 and c[2] <= 5 for c in state['calls'])
 
 
 def test_conflicting_user_label_is_not_silently_replaced_by_the_only_matching_field(setup, monkeypatch):
     app, client, model, ctx, conv, state = setup
-    monkeypatch.setattr(app.state.settings, 'provider', lambda: pytest.fail('Do not silently replace cost center with company'))
+    from tests.test_clarifications import clarify
+    provider = Provider([clarify({'topic':'编号口径','question':'0257 按哪种范围分析？','options':[
+        {'label':'成本中心','value':'按成本中心0257分析，补充对应定义'},
+        {'label':'公司','value':'按公司0257分析'}]})])
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
     events = send(client, conv, '分析成本中心0257的金额')
     card = next(e['clarification'] for e in events if e['type'] == 'clarification')
-    assert 'Company Code' in encode(card['options'])
+    assert '成本中心0257' in encode(card['options']) and '按公司0257' in encode(card['options'])
+    assert '成本中心0257' in provider.calls[0][1][-1].content
     assert not app.state.semantics.bindings(conv['id'])
 
 
-def test_explicit_mapping_still_controls_generation_and_explanation_can_check_it(setup, monkeypatch):
+def test_explicit_mapping_is_preserved_in_user_history_without_global_confirmation(setup, monkeypatch):
     app, client, model, ctx, conv, state = setup
     app.state.db.execute('UPDATE conversations SET mode=? WHERE id=?', ('dax', conv['id']))
-    provider = Provider(['采用用户明确指定的物料字段。'])
+    provider = Provider(['采用用户明确指定的物料字段。', '沿用用户指定的物料字段解释0257。'])
     monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
     events = send(client, conv, '使用 \'Dim_Material\'[Material Code] = "0257"，解释筛选含义')
     assert events[-1]['type'] == 'done' and not state['calls']
-    assert app.state.semantics.bindings(conv['id'])[0]['table_name'] == 'Dim_Material'
-    monkeypatch.setattr(app.state.settings, 'provider', lambda: pytest.fail('Local explanation'))
+    assert not app.state.semantics.bindings(conv['id'])
     events = send(client, conv, '0257是什么意思')
-    assert 'Company Code' in ''.join(e.get('text', '') for e in events)
+    assert any('Material Code' in m.content for m in provider.calls[1][1] if m.role == 'user')
+    assert not state['calls']
 
 
-def test_reviewed_definition_is_used_but_candidate_meaning_is_not_presented_as_fact(setup):
+def test_reviewed_definition_and_candidate_limits_are_supplied_to_ai(setup, monkeypatch):
     app, client, model, ctx, conv, state = setup
     app.state.semantics.edit(model['id'], object_id('column', 'Dim_Plant', 'Company Code'),
         SemanticEdit(business_name='公司代码', meaning='这是集团内各法人公司的文本代码，保留前导零。', confirmed=True))
-    events = send(client, conv, '解释一下0257')
-    assert '集团内各法人公司' in ''.join(e.get('text', '') for e in events)
+    app.state.db.execute('UPDATE conversations SET mode=? WHERE id=?', ('dax', conv['id']))
+    provider = Provider(['按已审阅的公司代码定义解释0257。'])
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    events = send(client, conv, '解释一下公司代码0257')
+    assert events[-1]['type'] == 'done'
+    assert '集团内各法人公司' in provider.calls[0][0] and 'candidate 仅是待确认' in provider.calls[0][0]
 
 
 def test_actual_datatype_skips_numeric_columns_even_when_structural_type_is_unknown(setup):

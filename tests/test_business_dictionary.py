@@ -204,7 +204,7 @@ def test_query_planning_and_final_summary_share_business_context(setup, monkeypa
     monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda *args:result())
     r=client.post(f"/api/conversations/{conv['id']}/messages", json={'content':'分析费用实绩'})
     assert r.status_code == 200 and len(provider.calls) == 2
-    dictionaries=[json.loads(c[0].split('模型语义词典（未确认建议不可视为事实）：\n')[1].split('\n本轮编号')[0].split('\n本会话')[0])['business_dictionary'] for c in provider.calls]
+    dictionaries=[json.JSONDecoder().raw_decode(c[0].split('模型语义词典（未确认建议不可视为事实）：\n',1)[1])[0]['business_dictionary'] for c in provider.calls]
     assert dictionaries[0] == dictionaries[1]
     assert dictionaries[1]['overview']['description'] == '工厂费用分析模型'
     assert dictionaries[1]['terms'][0]['title'] == '实际费用'
