@@ -110,6 +110,17 @@ test('the same conversation cannot accidentally submit a second request while na
   f.saved.set('A',[{role:'assistant',content:'完成',status:'complete'}]);s.event({type:'done'});s.close();await first;
 });
 
+test('sending a captured request preserves a draft edited during preflight',async()=>{
+  const f=fixture(),a=f.workspace.open(conversation('A'),model),s=stream();f.streams.set('A',s);
+  a.draft='新输入的草稿';
+  const pending=f.manager.send(a,{content:'已检查的原请求'},{draft:'已检查的原请求'});
+  const preserved=a.draft;
+  await tick();
+  f.saved.set('A',[{role:'assistant',content:'完成',status:'complete'}]);s.event({type:'done'});s.close();await pending;
+  assert.equal(preserved,'新输入的草稿');assert.equal(a.draft,'新输入的草稿');
+  assert.equal(f.sent[0].body.content,'已检查的原请求');assert.equal(f.sent[0].body.draft,undefined);
+});
+
 test('a detached HTTP stream follows the server task without issuing another generation',async()=>{
   const f=fixture(),a=f.workspace.open(conversation('A'),model),s=stream();f.streams.set('A',s);
   const pending=f.manager.send(a,{content:'分析',points:[]});await tick();

@@ -28,7 +28,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
       context:{...previous.context,tables:{...previous.context.tables,事实表:[...previous.context.tables.事实表,{name:'同步新增字段'+knownModels.size,dtype:'string'}]}}};
     knownModels.set(fresh.id,fresh);return fresh;
   }
-  const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[];let nextId=0,pendingPreview=null;
+  const conversations=[],messages=new Map(),streams=new Map(),previewCalls=[],semanticRequests=[];
+  let nextId=0,pendingPreview=null,pendingSemantics=null;
   const imageMeta={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),mime_type:'image/png',width:80,height:40,size:100};
   const uploads=[],cancellations=[],writes=[],dictionaryDeletes=[],dictionaryAssociations=[];let failWrite=true;
   const intervals=[];let connectionStatus='connected',connectionPort=51413;
@@ -46,6 +47,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
   async function fetchMock(path,opts={}) {
     if(path==='/api/images'&&opts.method==='POST'){uploads.push(opts);return json(imageMeta);}
     if(path==='/api/settings')return json(settings);
+    if(path==='/api/llm/profiles')return json([]);
     if(path==='/api/models')return json([...knownModels.values()]);
     if(path==='/api/desktop/instances')return json([]);
     if(path.includes('/semantics/reuse-preview?'))return json({source_model_id:'saved-history',source_name:'历史费用模型',source_updated_at:'saved-revision',metadata_status:'read',changes:{preserved:1,added:0,modified:0,removed:0,items:[]}});
@@ -58,7 +60,11 @@ test('actual app navigation keeps background streams, drafts and independent sen
     if(modelPath&&!modelPath[2])return json(knownModels.get(modelId));
     if(modelPath?.[2]==='connection')return json({model_id:modelId,live:connectionStatus==='connected',
       port:connectionPort,connection:{status:connectionStatus,detail:'连接状态测试'}});
-    if(modelPath?.[2]==='semantics')return json(semanticProfile);
+    if(modelPath?.[2]==='semantics'){
+      semanticRequests.push(modelId);
+      if(pendingSemantics){const waiting=pendingSemantics;pendingSemantics=null;await waiting;}
+      return json(semanticProfile);
+    }
     if(modelPath?.[2]==='refresh'){syncRequests.push({modelId});return json(refreshedModel(knownModels.get(modelId)));}
     if(path==='/api/models/model/semantics/build'){
       semanticProfile={...semanticProfile,status:'ready',stage:'测试语义完成',coverage:1,
@@ -143,6 +149,42 @@ test('actual app navigation keeps background streams, drafts and independent sen
     connectionStatus='connected';connectionPort=60001;intervals.find(timer=>timer.ms===3000).callback();await tick();await tick();
     assert.equal($('#connection-label').textContent,'Desktop 已连接');assert.equal($('#model-tree').firstChild,treeNode);
     assert.equal($('#stop-button').disabled,true);assert.equal($('#stop-button').type,'button');
+    // Service configuration is an editor: dismissing IME or using a chat shortcut
+    // must not close it and discard the unsaved fields.
+    await click('#settings-open');await click('[data-add]');
+    const serviceName=$('[name="name"]');serviceName.value='尚未保存的服务配置';
+    $('[name="api_key"]').value='test-only-unsaved-key';
+    function appKey(target,options,handled=false){
+      const event=new window.Event('keydown',{bubbles:true,cancelable:true});
+      Object.assign(event,{key:'k',ctrlKey:true,metaKey:false,isComposing:false,keyCode:75,...options});
+      if(handled)event.preventDefault();
+      target.dispatchEvent(event);return event;
+    }
+    appKey(serviceName,{});
+    assert.equal(modal.open,true);assert.equal($('[name="name"]'),serviceName);
+    const editorCancel=new window.Event('cancel',{cancelable:true});modal.dispatchEvent(editorCancel);
+    // LinkeDOM has no native dialog default action; simulate an uncancelled Escape.
+    if(!editorCancel.defaultPrevented)modal.close();
+    assert.equal(editorCancel.defaultPrevented,true);assert.equal(modal.open,true);
+    assert.equal(serviceName.value,'尚未保存的服务配置');
+    assert.equal($('[name="api_key"]').value,'test-only-unsaved-key');
+    const originalBounds=modal.getBoundingClientRect;
+    modal.getBoundingClientRect=()=>({left:100,right:660,top:100,bottom:700});
+    const outsideClick=new window.Event('click',{bubbles:true});
+    Object.assign(outsideClick,{clientX:690,clientY:280});modal.dispatchEvent(outsideClick);
+    modal.getBoundingClientRect=originalBounds;
+    assert.equal(modal.open,true);assert.equal(serviceName.value,'尚未保存的服务配置');
+    await click('#modal-close');assert.equal(modal.open,false);
+    // Escape still dismisses the service list, which has no in-progress editor.
+    await click('#settings-open');
+    const listCancel=new window.Event('cancel',{cancelable:true});modal.dispatchEvent(listCancel);
+    assert.equal(listCancel.defaultPrevented,false);modal.close();
+    draft('输入法正在编辑的草稿');
+    appKey($('#prompt'),{isComposing:true});assert.equal($('#prompt').value,'输入法正在编辑的草稿');
+    appKey($('#prompt'),{keyCode:229});assert.equal($('#prompt').value,'输入法正在编辑的草稿');
+    appKey($('#prompt'),{},true);assert.equal($('#prompt').value,'输入法正在编辑的草稿');
+    appKey($('#prompt'),{repeat:true});assert.equal($('#prompt').value,'输入法正在编辑的草稿');
+    appKey($('#prompt'),{});assert.equal($('#prompt').value,'');
     await send('先建立词典再生成');
     assert.equal(streams.size,0);assert.equal($('#prompt').value,'先建立词典再生成');
     assert.ok($('#semantic-workbench'));
@@ -330,6 +372,52 @@ test('actual app navigation keeps background streams, drafts and independent sen
       current.emit({type:'start',message_id:'delta-'+status});current.emit({type:'delta',text:'按可用语义回答。'});
       current.emit({type:'done'});current.controller.close();await tick();await tick();await tick();
     }
+
+    // Semantic preflight owns the send before any await; newer drafts remain editable.
+    let releaseSemantics;
+    pendingSemantics=new Promise(resolve=>{releaseSemantics=resolve;});
+    const semanticCount=semanticRequests.length,messageCount=messages.get('c1').length;
+    draft('只能提交一次的需求');
+    const preparing=$('#composer-form').onsubmit({preventDefault(){}});
+    await tick();await tick();
+    assert.equal($('#send-button').disabled,true);
+    assert.equal($('#refresh-model').disabled,true);
+    assert.equal($('#stop-button').disabled,true);
+    await $('#composer-form').onsubmit({preventDefault(){}});
+    assert.equal(semanticRequests.length,semanticCount+1);
+    const syncCount=syncRequests.length;
+    await click('#refresh-model');assert.equal(syncRequests.length,syncCount);
+    draft('检查期间新输入的草稿');
+    releaseSemantics();await tick();await tick();
+    const single=streams.get('c1');
+    assert.equal(single.body.content,'只能提交一次的需求');
+    assert.equal($('#prompt').value,'检查期间新输入的草稿');
+    single.emit({type:'done'});single.controller.close();await preparing;
+    assert.equal(messages.get('c1').length,messageCount+2);
+    assert.equal(semanticRequests.length,semanticCount+1);
+    assert.equal($('#send-button').disabled,false);
+    await click('[data-mode="dax"]');await click('[data-mode="analysis"]');
+    assert.equal($('#prompt').value,'检查期间新输入的草稿');
+
+    // A failed check unlocks the composer and preserves the request for retry.
+    let rejectSemantics;
+    pendingSemantics=new Promise((resolve,reject)=>{rejectSemantics=reject;});
+    draft('检查失败后保留的需求');
+    const failedPreflight=$('#composer-form').onsubmit({preventDefault(){}});
+    await tick();rejectSemantics(new Error('测试语义检查失败'));await failedPreflight;
+    assert.equal($('#send-button').disabled,false);assert.equal($('#refresh-model').disabled,false);
+    assert.equal($('#prompt').value,'检查失败后保留的需求');
+    assert.equal(streams.get('c1'),single);
+
+    // Navigating away during the check must not send into or overwrite another view.
+    pendingSemantics=new Promise(resolve=>{releaseSemantics=resolve;});
+    const abandoned=$('#composer-form').onsubmit({preventDefault(){}});
+    await tick();await click('[data-mode="dax"]');draft('另一个工作区的输入');
+    releaseSemantics();await abandoned;
+    assert.equal($('#prompt').value,'另一个工作区的输入');
+    assert.equal(streams.get('c1'),single);
+    await click('[data-mode="analysis"]');
+    assert.equal($('#prompt').value,'检查失败后保留的需求');assert.equal($('#send-button').disabled,false);
 
     // Synchronization keeps the conversation, history and edits, even after navigation.
     const conversationCount=conversations.length;

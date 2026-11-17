@@ -68,10 +68,10 @@ function toast(text,error=false) {
   $('#toasts').append(el);setTimeout(()=>el.remove(),5500);
 }
 const guard = fn => async (...args) => {try {await fn(...args);} catch(e) {toast(e.message,true);}};
-function available() {if(state.view.busy||state.view.loading||state.view.syncing){toast(state.view.syncing?'正在同步当前对话的模型，请稍候':state.view.loading?'正在读取此会话':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
+function available() {if(state.view.busy||state.view.loading||state.view.syncing||state.view.preparing){toast(state.view.syncing?'正在同步当前对话的模型，请稍候':state.view.loading?'正在读取此会话':state.view.preparing?'正在检查语义，请稍候':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
 function renderBusy() {
-  $('#send-button').disabled=state.view.busy||state.view.syncing||!!state.view.loading||state.view.images.some(img=>img.status==='uploading');
-  $('#refresh-model').disabled=state.view.busy||state.view.syncing||!!state.view.loading;
+  $('#send-button').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading||state.view.images.some(img=>img.status==='uploading');
+  $('#refresh-model').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading;
   $('#refresh-model').title=state.view.syncing?'正在同步模型':state.view.busy?'当前对话结束或中止后可同步模型':'同步模型，继续当前对话';
   $('#stop-button').disabled=!state.view.busy||state.view.stopping;
   $('#stop-button').setAttribute('aria-label',state.view.stopping?'正在中止本次生成':'中止本次生成');
@@ -88,10 +88,15 @@ function showModal(title,eyebrow,html,{wide=false}={}) {
   if(!$('#modal').open) $('#modal').showModal();
 }
 function closeModalLayer(){if(modalReturn)modalReturn();else $('#modal').close();}
+function modelSettingsEditing(){return !!$('#model-manager [data-model-form]');}
 $('#modal-close').onclick=closeModalLayer;
 $('#modal').addEventListener('close',()=>{modalReturn=null;modalCleanup?.();modalCleanup=null;});
-$('#modal').addEventListener('cancel',event=>{if(modalReturn){event.preventDefault();modalReturn();}});
-$('#modal').addEventListener('click', e=>{if(e.target===$('#modal')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModalLayer();}});
+$('#modal').addEventListener('cancel',event=>{
+  // Escape can dismiss IME input too. Only an explicit close should discard this editor.
+  if(modelSettingsEditing()){event.preventDefault();return;}
+  if(modalReturn){event.preventDefault();modalReturn();}
+});
+$('#modal').addEventListener('click', e=>{if(e.target===$('#modal')&&!modelSettingsEditing()){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModalLayer();}});
 
 function welcome() {
   const mode=MODES[state.view.mode]||MODES.dax;
@@ -100,7 +105,7 @@ function welcome() {
 function renderMessages(forceFollow=false) {
   for(const message of state.view.messages)if(message.clarification){
     message.clarificationDraft=state.view.clarificationDrafts[message.id]||{};
-    message.clarificationLocked=!!(state.view.busy||state.view.loading||state.view.syncing||message.model_stale||message.status!=='complete'||message.clarification.answered||message!==state.view.messages.at(-1));
+    message.clarificationLocked=!!(state.view.busy||state.view.preparing||state.view.loading||state.view.syncing||message.model_stale||message.status!=='complete'||message.clarification.answered||message!==state.view.messages.at(-1));
   }
   messageRenderer.render(state.view.messages,{
     conversation:state.view.key,
@@ -129,7 +134,7 @@ function renderHistory() {
     const view=workspace.find(c.id),busy=view?.busy||(c.generating&&!view?.loaded);
     const last=view?.messages.at(-1),pending=last?.status==='complete'&&last.clarification&&!last.clarification.answered;
     const badge=busy?'<small class="history-task running">生成中</small>':pending?'<small class="history-task clarification">待确认</small>':view?.attention?`<small class="history-task ${view.attention}">${view.attention==='error'?'查看错误':view.attention==='cancelled'?'已中止':'已完成'}</small>`:'';
-    return `<div class="history-item ${state.view.conversation?.id===c.id?'active':''}"><button class="history-name" data-conversation="${c.id}" title="${esc(c.title)}">${icon(MODES[c.mode]?.historyIcon||'chat')}<span>${esc(c.title)}</span>${badge}</button><button class="icon-button" data-delete-conversation="${c.id}" aria-label="删除 ${esc(c.title)}" ${busy?'disabled title="生成完成后可删除"':''}>${icon('trash')}</button></div>`;
+    return `<div class="history-item ${state.view.conversation?.id===c.id?'active':''}"><button class="history-name" data-conversation="${c.id}" title="${esc(c.title)}">${icon(MODES[c.mode]?.historyIcon||'chat')}<span>${esc(c.title)}</span>${badge}</button><button class="icon-button" data-delete-conversation="${c.id}" aria-label="删除 ${esc(c.title)}" ${busy||view?.preparing?'disabled title="发送或生成完成后可删除"':''}>${icon('trash')}</button></div>`;
   }).join(''):'<p class="muted history-empty">'+(needle?'没有匹配的对话':'还没有对话<br>从一个数据问题开始吧')+'</p>';
 }
 function renderBackgroundTasks() {
@@ -241,7 +246,7 @@ async function reloadHistory() {
   renderHistory();renderBackgroundTasks();
 }
 async function loadConversation(view) {
-  if(view.loading||view.syncing||generation.isRunning(view))return;
+  if(view.loading||view.preparing||view.syncing||generation.isRunning(view))return;
   view.loading=true;if(state.view===view)renderBusy();
   try {
     const [model,messages,status]=await Promise.all([api(`/models/${view.conversation.model_id}`),
@@ -356,23 +361,35 @@ async function send(e) {
   e.preventDefault();if(!available())return;
   if(state.view.images.some(img=>img.status==='uploading')){toast('请等待图片添加完成');return;}
   if(state.view.images.length>4){toast('每条消息最多 4 张图片，请移除多余图片');return;}
-  const images=state.view.images.filter(img=>img.id),content=$('#prompt').value.trim()||(images.length?'请结合图片和当前上下文，帮我分析并处理。':'');if(!content)return;
+  const draft=$('#prompt').value,images=state.view.images.filter(img=>img.id),content=draft.trim()||(images.length?'请结合图片和当前上下文，帮我分析并处理。':'');if(!content)return;
   if(!state.view.model){await openConnections();return;}
   if(state.view.mode==='analysis'&&state.view.model.source!=='desktop'){toast('请先连接真实 Desktop 模型进行数据分析');await openConnections();return;}
   if(!state.settings.ready){await openSettings();return;}
   if(state.view.mode==='mquery'&&!$('#query-select').value){toast('此模型没有可用的 Power Query 查询',true);return;}
-  const view=state.view;
-  if(view.model.source==='desktop'&&view.mode!=='mquery'&&view.model.semantics?.status!=='ready'){
-    try {
-      const dictionary=await api(`/models/${view.model.id}/semantics`);view.model.semantics=semanticSummary(dictionary);
-      if(state.view!==view)return;
-      if(!view.model.semantics.can_answer){await openSemantics(view.model.id);toast('先建立初始语义词典，再继续这条需求');return;}
-    } catch(error){toast(error.message,true);return;}
+  const view=state.view,modelId=view.model.id;
+  const payload=structuredClone({content,image_ids:images.map(img=>img.id),images,points:view.mode==='dax'?view.points:[],
+    query_name:view.mode==='mquery'?$('#query-select').value:'',llm_profile_id:state.settings.active_profile_id||null});
+  let pending;
+  view.preparing=true;renderBusy();renderMessages();renderHistory();
+  try {
+    if(view.model.source==='desktop'&&view.mode!=='mquery'&&view.model.semantics?.status!=='ready'){
+      const dictionary=await api(`/models/${modelId}/semantics`);
+      if(state.view!==view||view.model?.id!==modelId)return;
+      view.model.semantics=semanticSummary(dictionary);
+      if(!view.model.semantics.can_answer){await openSemantics(modelId);toast('先建立初始语义词典，再继续这条需求');return;}
+    }
+    if(view.busy||view.loading||view.syncing)return;
+    if(payload.image_ids.some(id=>!view.images.some(img=>img.id===id))){toast('图片已变更，请确认后重新发送');return;}
+    view.draft=$('#prompt').value;
+    if(view.draft===draft)$('#prompt').value='';
+    pending=generation.send(view,payload,{draft});renderMessages(true);
+  } catch(error){toast(error.message,true);}
+  finally {
+    view.preparing=false;
+    if(state.view===view){renderBusy();renderMessages();}
+    renderHistory();
   }
-  const payload={content,image_ids:images.map(img=>img.id),images,points:view.mode==='dax'?view.points:[],
-    query_name:view.mode==='mquery'?$('#query-select').value:'',llm_profile_id:state.settings.active_profile_id||null};
-  $('#prompt').value='';
-  const pending=generation.send(view,payload);renderMessages(true);await pending;
+  await pending;
 }
 
 async function reviewWrite(id) {
@@ -426,7 +443,10 @@ $('#prompt').addEventListener('keydown',e=>{
   if(e.repeat||$('#send-button').disabled)return;
   $('#composer-form').requestSubmit();
 });
-document.addEventListener('keydown',e=>{if(e.key.toLowerCase()==='k'&&(e.ctrlKey||e.metaKey)){e.preventDefault();if($('#modal').open)$('#modal').close();newChat();}});
+document.addEventListener('keydown',e=>{
+  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open)return;
+  if(e.key.toLowerCase()==='k'&&(e.ctrlKey||e.metaKey)){e.preventDefault();newChat();}
+});
 $('#new-chat').onclick=()=>newChat();
 $('#settings-open').onclick=guard(openSettings);$('#model-settings-chip').onclick=guard(openSettings);
 $('#connect-open').onclick=guard(openConnections);$('#calibration-open').onclick=openCalibration;
@@ -469,7 +489,7 @@ document.addEventListener('click',guard(async e=>{
   if(el.dataset.query){const ctx=state.view.model.context,code=ctx.table_queries[el.dataset.query]??ctx.shared_expressions[el.dataset.query];showModal(el.dataset.query,'POWER QUERY',`<div class="code-block"><div class="code-heading"><span>POWERQUERY</span><button class="copy-code">${icon('copy')}复制</button></div><pre><code>${esc(code)}</code></pre></div><div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">在清洗助手中使用</button></div>`);}
   if(el.dataset.useQuery){newChat('mquery');state.view.queryName=el.dataset.useQuery;$('#query-select').value=el.dataset.useQuery;$('#modal').close();}
   if(el.dataset.conversation)await openConversation(el.dataset.conversation);
-  if(el.dataset.deleteConversation){const id=el.dataset.deleteConversation;if(workspace.find(id)?.busy){toast('此会话仍在后台生成，完成后可删除');return;}showModal('删除此对话？','LOCAL HISTORY','<p class="notice">会删除此对话及关联代码记录，已写入 Desktop 的内容不受影响。</p><div class="modal-actions"><button class="primary-button" id="delete-confirm">删除对话</button></div>');$('#delete-confirm').onclick=guard(async()=>{await api(`/conversations/${id}`,{method:'DELETE'});workspace.remove(id);showView();$('#modal').close();await reloadHistory();});}
+  if(el.dataset.deleteConversation){const id=el.dataset.deleteConversation,owner=workspace.find(id);if(owner?.busy||owner?.preparing){toast('此会话仍在发送或生成，完成后可删除');return;}showModal('删除此对话？','LOCAL HISTORY','<p class="notice">会删除此对话及关联代码记录，已写入 Desktop 的内容不受影响。</p><div class="modal-actions"><button class="primary-button" id="delete-confirm">删除对话</button></div>');$('#delete-confirm').onclick=guard(async()=>{await api(`/conversations/${id}`,{method:'DELETE'});workspace.remove(id);showView();$('#modal').close();await reloadHistory();});}
   if(el.classList.contains('copy-code')){const text=$('code',el.closest('.code-block')).textContent;try{await navigator.clipboard.writeText(text);}catch{const input=document.createElement('textarea');input.value=text;document.body.append(input);input.select();document.execCommand('copy');input.remove();}toast('代码已复制');}
   if(el.dataset.apply)await reviewWrite(el.dataset.apply);
   if(el.dataset.revalidate){

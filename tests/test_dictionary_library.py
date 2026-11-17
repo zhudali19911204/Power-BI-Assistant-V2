@@ -1,6 +1,7 @@
 import copy
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -100,6 +101,52 @@ def test_ready_dictionary_can_be_manually_associated_and_preview_reports_local_r
     response=client.post(f"/api/models/{target['id']}/semantics/reuse",json={'source_model_id':source['id']})
     assert response.status_code==200
     assert next(e for e in response.json()['entries'] if e['id']==key)['meaning']=='本地已审阅定义'
+
+
+@pytest.mark.parametrize('associate', [False, True])
+def test_connect_and_association_keep_edits_saved_after_metadata_read(setup, monkeypatch, associate):
+    app,client,state,engine,built=setup
+    source=connect(client,engine());built(source)
+    target=connect(client,engine(name='副本',path=r'F:\Copy.pbix',port=61111,pid=77));built(target)
+    service=app.state.semantics
+    metadata=service._metadata
+    metadata_done=threading.Event();resume=threading.Event()
+
+    def paused_metadata(*args, **kwargs):
+        snapshot=metadata(*args, **kwargs)
+        metadata_done.set()
+        assert resume.wait(5), 'Timed out waiting for the concurrent edits'
+        return snapshot
+
+    monkeypatch.setattr(service,'_metadata',paused_metadata)
+    def connect_or_associate():
+        if not associate:return service.on_connect(app.state.powerbi.get(target['id']),None)
+        response=client.post(f"/api/models/{target['id']}/semantics/reuse",json={'source_model_id':source['id']})
+        assert response.status_code==200,response.text
+        return response.json()
+
+    key=object_id('column','Sales','Code')
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending=pool.submit(connect_or_associate)
+        try:
+            assert metadata_done.wait(5), 'Metadata read did not complete'
+            response=client.put(f"/api/models/{target['id']}/semantics/{key}",json={
+                'meaning':'并发保存的业务定义','confirmed':True})
+            assert response.status_code==200,response.text
+            response=client.put(f"/api/models/{target['id']}/semantics/business/overview",json={
+                'description':'并发保存的业务总览','confirmed':True})
+            assert response.status_code==200,response.text
+            response=rename(client,target,'并发保存的词典名称')
+            assert response.status_code==200,response.text
+        finally:
+            resume.set()
+        result=pending.result(timeout=5)
+
+    for profile in (result,service.get(target['id'])):
+        entry=next(e for e in profile['entries'] if e['id']==key)
+        assert entry['meaning']=='并发保存的业务定义' and entry['state']=='confirmed'
+        assert profile['business_dictionary']['overview']['description']=='并发保存的业务总览'
+        assert profile['dictionary_name']=='并发保存的词典名称'
 
 
 def test_source_revision_change_requires_a_new_preview(setup):

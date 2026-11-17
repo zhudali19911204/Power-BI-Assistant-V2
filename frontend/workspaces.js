@@ -5,7 +5,7 @@ export function createWorkspaces() {
   const modes=new Map(),conversations=new Map(),views=new Set();
   function make(mode,model=null,conversation=null) {
     const view={key:`view-${++nextId}`,mode,model,conversation,messages:[],points:[],draft:'',images:[],clarificationDrafts:{},queryName:'',
-      busy:false,syncing:false,stopping:false,status:'',startedAt:0,attention:''};
+      busy:false,preparing:false,syncing:false,stopping:false,status:'',startedAt:0,attention:''};
     views.add(view);if(conversation)conversations.set(conversation.id,view);return view;
   }
   function activate(view) {current=view;modes.set(view.mode,view);view.attention='';return view;}
@@ -129,7 +129,7 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
       view.generationId=null;
       return watch(view,async()=>{view.requestReady=true;if(view.stopRequested)await cancelRemote(view);return poll(view);});
     },
-    send(view,request) {
+    send(view,request,{draft=view.draft}={}) {
       if(running.has(view))return running.get(view);
       // Copy filters and service selection before the user navigates or edits another page.
       const body=structuredClone(request),previous=view.messages.slice();
@@ -139,7 +139,8 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
       const answer={role:'assistant',content:'',status:'streaming',artifacts:[],analysis:[]};
       view.messages.push({role:'user',content:body.content,images:submittedImages,artifacts:[]},answer);
       view.images=view.images.filter(img=>!body.image_ids?.includes(img.id));
-      if(!body.clarification_reply)view.draft='';
+      // A semantic preflight may have awaited while the user typed a new draft.
+      if(!body.clarification_reply&&view.draft===draft)view.draft='';
       view.status='正在等待模型回复';
       function restoreUnsent() {
         view.cancelled=true;view.messages=previous;view.draft=view.draft||(body.clarification_reply?'':body.content);

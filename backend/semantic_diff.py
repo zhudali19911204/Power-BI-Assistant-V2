@@ -64,11 +64,15 @@ def dax_dependencies(entry, objects):
         name = match[3].replace(']]', ']').casefold()
         refs.update(e['id'] for e in objects if e['kind'] in ('column', 'measure')
                     and e['table'].casefold() == table and e['name'].casefold() == name)
-    # Mask qualified refs before finding bare measures and whole-table arguments.
+    # Mask qualified refs before finding bare references and whole-table arguments.
     for match in reversed(qualified):code = code[:match.start()] + ' ' * len(match[0]) + code[match.end():]
     for match in re.finditer(r'\[((?:[^\]]|\]\])+)\]', code):
         name = match[1].replace(']]', ']').casefold()
-        refs.update(e['id'] for e in objects if e['kind'] == 'measure' and e['name'].casefold() == name)
+        # Calculated columns have a row context: an unqualified name can refer
+        # to a column in their own table. Other bare references remain measures.
+        local_columns = {e['id'] for e in objects if entry['kind'] == 'column' and e['kind'] == 'column'
+                         and e['table'].casefold() == entry['table'].casefold() and e['name'].casefold() == name}
+        refs.update(local_columns or {e['id'] for e in objects if e['kind'] == 'measure' and e['name'].casefold() == name})
     code = re.sub(r'\[(?:[^\]]|\]\])+\]', ' ', code)
     quoted = re.findall(r"'((?:[^']|'')*)'",code)
     bare = re.findall(r'[^\W\d]\w*',re.sub(r"'(?:[^']|'')*'",' ',code))

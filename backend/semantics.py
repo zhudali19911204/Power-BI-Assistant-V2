@@ -339,6 +339,14 @@ class SemanticService:
                 profile=self._merge(model['id'],model['fingerprint'],stage='模型事实读取未完成，可重新连接或重试梳理',
                     error='无法读取完整语义元数据（'+type(exc).__name__+'）')
         with self.lock:
+            # Metadata IO releases this lock. Re-read the destination so edits,
+            # business definitions and names saved in the meantime are preserved.
+            profile=self.get(model['id'])
+            if profile['fingerprint']!=model['fingerprint']:
+                raise HTTPException(409,'模型结构已变化，请同步模型后重新关联词典')
+            if source_model_id and self.library.busy(model['id']):
+                raise HTTPException(409,'当前模型正在梳理或生成，请完成后再关联历史词典')
+            if profile['status']=='building' and model['id'] in self.jobs:return profile
             history=self._history(model['id'])
             signature=schema_signature(model['context'])
             exact=[r for r in history if r['signature']==signature]

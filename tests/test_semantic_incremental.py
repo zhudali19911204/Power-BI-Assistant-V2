@@ -98,6 +98,54 @@ def test_relationship_changes_invalidate_measures_but_preserve_unrelated_constan
     assert object_id('measure','Sales','Constant') not in p['pending_ids']
 
 
+def test_calculated_column_changes_invalidate_bare_column_dependents_and_measures(setup):
+    app,client,state,engine,built=setup
+    original=context()
+    original.tables['Sales'] += [Column('Twice','double','Sales'),Column('Chained','double','Sales')]
+    original.tables['Dim'] += [Column('Amount','double','Dim'),Column('Twice','double','Dim')]
+    original.measures=[Measure('Actual','Sales',"SUM('Sales'[Chained])"),Measure('Constant','Sales','1')]
+    state['metadata'].update({
+        ('column','Sales','Amount'):{'expression':'100'},
+        ('column','Sales','Twice'):{'expression':'[Amount] * 2'},
+        ('column','Sales','Chained'):{'expression':'[Twice] + 1'},
+        ('column','Dim','Twice'):{'expression':'[Amount] * 3'},
+    })
+    model=connect(client,engine(ctx=original));built(model)
+    service=app.state.semantics
+    for name in ('Twice','Chained'):
+        service.edit(model['id'],object_id('column','Sales',name),
+                     SemanticEdit(meaning=f'旧的 {name} 业务定义',confirmed=True))
+    before=service.get(model['id'])
+    state['metadata'][('column','Sales','Amount')]={'expression':'1000'}
+    after=service.on_connect(app.state.powerbi.get(model['id']),None)
+    changed={object_id('column','Sales',name) for name in ('Amount','Twice','Chained')}
+    changed.add(object_id('measure','Sales','Actual'))
+    assert set(after['pending_ids'])==changed
+    previous={e['id']:e for e in before['entries']}
+    for entry in after['entries']:
+        if entry['id'] in changed:
+            assert entry['state']=='unresolved' and not entry['meaning']
+            assert entry['previous_definition']['meaning']==previous[entry['id']]['meaning']
+        else:
+            assert entry==previous[entry['id']]
+    prompt=service.prompt(model['id'])
+    assert '旧的 Twice 业务定义' not in prompt and '旧的 Chained 业务定义' not in prompt
+    assert '用户确认的实际金额定义' not in prompt
+
+
+def test_bare_column_dependencies_keep_measure_refs_and_ignore_other_tables_and_literals():
+    from backend.semantic_diff import dax_dependencies
+    from backend.semantics import inventory
+    ctx=context()
+    ctx.tables['Sales'] += [Column('Value]Part','double','Sales'),Column('Result','double','Sales')]
+    ctx.tables['Dim'].append(Column('Value]Part','double','Dim'))
+    objects=inventory(ctx)
+    result=next(e for e in objects if e['table']=='Sales' and e['name']=='Result')
+    result['facts']['expression']='[value]]part] + [Actual] + LEN("[Code]") /* [Amount] */'
+    assert dax_dependencies(result,objects)=={
+        object_id('column','Sales','Value]Part'),object_id('measure','Sales','Actual')}
+
+
 def test_metadata_only_update_on_same_snapshot_invalidates_only_changed_object(setup):
     app,client,state,engine,built=setup
     model=connect(client,engine());built(model)
