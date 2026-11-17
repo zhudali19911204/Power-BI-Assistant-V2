@@ -8,7 +8,7 @@
 - [语义与字段证据](#4-语义层与真实字段证据) · [生成、验证与写入](#5-生成验证与写入链路)
 - [流式、线程与页面状态](#6-流式传输线程与前端状态) · [模型适配与提示词](#7-模型配置提示词与诊断)
 - [API](#8-主要-api-索引) · [限制与性能](#9-重要限制与性能边界) · [数据与授权](#10-图片数据边界与授权)
-- [构建与版本](#11-构建版本与运行证据) · [修改与回归测试](#12-修改任务与回归测试) · [未实现能力](#13-尚未实现的能力)
+- [构建与版本](#11-构建版本与运行证据) · [修改与回归测试](#12-修改任务与回归测试) · [分析模板](#13-分析模板2026-11-17-源码增量) · [未实现能力](#14-尚未实现的能力)
 
 ## 接手时先记住
 
@@ -105,6 +105,7 @@ desktop.py
 | 图片 | `message_images` | 规范化图片 BLOB；未发送时 `message_id=NULL` |
 | 代码与审计 | `artifacts`、`audit` | 代码种类、公式、目标、验证、应用时间及写入审计 |
 | 查询依据 | `analysis_queries`、`field_observations` | 每次业务查询／字段检查的结果、错误与截断信息 |
+| 分析模板 | `analysis_templates`、`analysis_template_runs` | 参数化任务、默认值、编辑版本；每次运行的任务与参数快照、独立对话关联和启动状态 |
 | 口径确认 | `message_clarifications`、`conversation_bindings` | 确认卡、答复状态、本会话确认的编号归属 |
 | 值证据缓存 | `field_value_profiles`、`model_value_lookups` | 有结构、时间和完整性信息的取值证据，不是全量数据仓库 |
 | 生成诊断 | `llm_generations` | 阶段、尝试次数、耗时、用量、结束原因，不含思考正文 |
@@ -536,7 +537,17 @@ node --test --test-isolation=none tests\app_navigation.test.mjs tests\workspaces
 7. 使用最相关测试证明要求；源码、运行实例、真实引擎、安装包分别说明验证范围。
 8. 更新 [README](../README.md)、对应使用说明和本架构的相关章节；发布记录只记录实际完成的验证。
 
-## 13. 尚未实现的能力
+## 13. 分析模板（2026-11-17 源码增量）
+
+`backend/analysis_templates.py` 提供模板目录、来源草稿、编辑冲突检查与独立运行；`frontend/analysis_templates.js` 提供模板管理、参数预览、运行记录。入口为左侧“分析模板”和已完成分析回复下的“保存为分析模板”。
+
+API：`GET/POST /api/analysis-templates`，`PUT/DELETE /api/analysis-templates/{id}`，`GET/POST /api/analysis-templates/{id}/runs`，`GET /api/messages/{id}/analysis-template`。历史运行通过 `GET /api/conversations/{id}` 打开，不依赖最近 300 个会话列表。
+
+模板把 `{{参数}}` 单次替换为普通任务文字，最多 12 项，每项最多 500 字。每次运行先保存模板版本、参数和展开文本，再通过原 `ChatService.begin()`、`BackgroundStream`、语义检查、只读分析与取消机制取新数。前端跟随持久化消息快照；不直接替换 DAX 字符串，不复制历史结果或绕过只读检查。运行 `request_id` 幂等，传输不确定后的重试复用同一 ID；编辑模板需要 revision，旧版本运行请求拒绝。
+
+模板绑定原报表；不同模型记录必须通过现有报表身份比较。删除来源消息不删除模板，删除模板不删除运行对话，删除运行对话级联删除对应运行记录。后端重启将未完成运行标记中断，不自动重发模型请求。新增测试为 `tests/test_analysis_templates.py`、`tests/analysis_templates.test.mjs`，主页面接线也由 `tests/app_navigation.test.mjs` 覆盖。
+
+## 14. 尚未实现的能力
 
 目前没有可视化看板实体、图表配置与渲染引擎、多看板组合、原生 Power BI 报表页面生成、跨模型联邦查询或公开分享服务。
 

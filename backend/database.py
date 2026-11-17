@@ -68,6 +68,17 @@ class Database:
                     model_id TEXT NOT NULL REFERENCES models(id), title TEXT NOT NULL, dax TEXT NOT NULL,
                     result TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS analysis_message ON analysis_queries(message_id);
+                CREATE TABLE IF NOT EXISTS analysis_templates (
+                    id TEXT PRIMARY KEY, model_id TEXT NOT NULL REFERENCES models(id),
+                    source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+                    name TEXT NOT NULL, prompt TEXT NOT NULL, defaults_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS analysis_template_runs (
+                    id TEXT PRIMARY KEY, template_id TEXT REFERENCES analysis_templates(id) ON DELETE SET NULL,
+                    conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+                    snapshot TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS template_runs_template ON analysis_template_runs(template_id,created_at);
                 CREATE TABLE IF NOT EXISTS field_observations (
                     id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
                     result TEXT NOT NULL, created_at TEXT NOT NULL);

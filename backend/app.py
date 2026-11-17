@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .chat import ChatService
+from .analysis_templates import AnalysisTemplates, TemplateCreate, TemplateEdit, TemplateRun
 from .database import Database, encode, now, uid
 from .engine.context.live_source import find_instances
 from .engine.context.live_writer import LiveDesktopWriter
@@ -56,6 +57,7 @@ def create_app(directory=None):
     semantics=SemanticService(db,powerbi)
     powerbi.semantics=semantics
     chat = ChatService(db, powerbi)
+    templates = AnalysisTemplates(db, powerbi, chat, settings)
     def dictionary_in_use(model_id):
         for conversation_id,lock in list(chat.locks.items()):
             if lock.locked():
@@ -68,6 +70,7 @@ def create_app(directory=None):
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
     app.state.images=chat.images
+    app.state.analysis_templates=templates
     chat.images.remove_expired_pending()
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -285,6 +288,34 @@ def create_app(directory=None):
         semantics.on_connect(model,settings)
         return powerbi.get(model['id'])
 
+    @app.get('/api/analysis-templates')
+    def list_analysis_templates():
+        return templates.catalog()
+
+    @app.get('/api/messages/{message_id}/analysis-template')
+    def analysis_template_seed(message_id: str):
+        return templates.seed(message_id)
+
+    @app.post('/api/analysis-templates', status_code=201)
+    def create_analysis_template(body: TemplateCreate):
+        return templates.save(body)
+
+    @app.put('/api/analysis-templates/{template_id}')
+    def edit_analysis_template(template_id: str, body: TemplateEdit):
+        return templates.save(body, template_id)
+
+    @app.delete('/api/analysis-templates/{template_id}')
+    def delete_analysis_template(template_id: str, revision: int):
+        return templates.delete(template_id, revision)
+
+    @app.get('/api/analysis-templates/{template_id}/runs')
+    def analysis_template_runs(template_id: str):
+        return templates.runs(template_id)
+
+    @app.post('/api/analysis-templates/{template_id}/runs')
+    def run_analysis_template(template_id: str, body: TemplateRun):
+        return templates.run(template_id, body)
+
     @app.get("/api/conversations")
     def conversations():
         return [row | {'generating': chat.generation_status(row['id'])['running']}
@@ -305,6 +336,10 @@ def create_app(directory=None):
     @app.get("/api/conversations/{conversation_id}/messages")
     def messages(conversation_id: str):
         return chat.messages(conversation_id)
+
+    @app.get('/api/conversations/{conversation_id}')
+    def get_conversation(conversation_id: str):
+        return chat.conversation(conversation_id)
 
     @app.post('/api/conversations/{conversation_id}/refresh-model')
     def refresh_conversation_model(conversation_id:str):

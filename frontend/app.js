@@ -12,6 +12,7 @@ import {mountSemanticWorkbench, semanticSummary} from './semantics.js';
 import {mountDictionaryLibrary} from './dictionaries.js';
 import {mountComposerImages, imageGallery} from './images.js';
 import {createConnectionMonitor,connectionPresentation} from './connections.js';
+import {mountAnalysisTemplates,saveTemplateButton} from './analysis_templates.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
@@ -32,7 +33,7 @@ const messageRenderer=createMessageRenderer({
   root:$('#messages'),scroll:$('#message-scroll'),
   label:m=>`<span class="message-avatar">${m.role==='user'?'你':icon('sparkles')}</span><span>${m.role==='user'?'你':'Power BI Assistant'}</span>${m.model_stale?'<small class="validation-badge" title="同步前的回复与结果作为历史保留，后续分析使用最新模型重新取数">同步前回复</small>':''}`,
   content:m=>m.role==='user'?imageGallery(m.images)+'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'&&m.status!=='cancelled'?'':markdown(m.content),
-  artifacts:m=>fieldEvidence(m.field_previews||[])+clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join(''),
+  artifacts:m=>fieldEvidence(m.field_previews||[])+clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join('')+saveTemplateButton(m),
   status:streamStatus,
 });
 const messagePaint=createRenderScheduler(renderMessages);
@@ -88,7 +89,7 @@ function showModal(title,eyebrow,html,{wide=false}={}) {
   if(!$('#modal').open) $('#modal').showModal();
 }
 function closeModalLayer(){if(modalReturn)modalReturn();else $('#modal').close();}
-function modelSettingsEditing(){return !!$('#model-manager [data-model-form]');}
+function modelSettingsEditing(){return !!$('#model-manager [data-model-form], [data-template-editor], [data-template-run-form]');}
 $('#modal-close').onclick=closeModalLayer;
 $('#modal').addEventListener('close',()=>{modalReturn=null;modalCleanup?.();modalCleanup=null;});
 $('#modal').addEventListener('cancel',event=>{
@@ -173,6 +174,7 @@ function renderConnectionStatus() {
   const status=$('.model-state');if(status)status.textContent=(view.kind==='connected'?'● ':'○ ')+(view.state||view.detail);
 }
 function renderControls() {
+  $('#template-return').hidden=!state.view.templateReturn;
   const query=state.view.queryName;
   $('#query-select').hidden=state.view.mode!=='mquery';
   const ctx=state.view.model?.context;
@@ -206,6 +208,29 @@ function showView() {
   if(state.view.scrollTop!==undefined&&!state.view.pinned)$('#message-scroll').scrollTo({top:state.view.scrollTop,behavior:'instant'});
 }
 function newChat(mode=state.view.mode) {saveDraft();workspace.newChat(mode);showView();$('#prompt').focus();}
+async function openAnalysisTemplates(messageId=null) {
+  const seed=messageId?await api(`/messages/${messageId}/analysis-template`):null;
+  showModal(messageId?'保存分析模板':'分析模板','ANALYSIS TEMPLATES','<div id="analysis-template-manager"></div>',{wide:true});
+  const root=$('#analysis-template-manager');
+  const manager=await mountAnalysisTemplates(root,{api,seed,getModel:()=>state.view.model,getService:()=>state.settings,
+    onStarted:async(result,model,visible)=>{
+      state.conversations=[result.conversation,...state.conversations.filter(c=>c.id!==result.conversation.id)];
+      const view=workspace.register(result.conversation,model);
+      if(visible&&root.isConnected){
+        saveDraft();
+        if(!state.view.conversation&&(state.view.draft||state.view.images.length))view.templateReturn=state.view;
+        workspace.open(result.conversation,model);$('#modal').close();showView();
+      }
+      void generation.follow(view);renderHistory();renderBackgroundTasks();
+    },
+    onOpen:async id=>{
+      const conversation=await api(`/conversations/${id}`);
+      state.conversations=[conversation,...state.conversations.filter(c=>c.id!==id)];
+      await openConversation(id);$('#modal').close();
+    },
+  });
+  if(root.isConnected&&$('#modal').open)modalCleanup=()=>manager.dispose();else manager.dispose();
+}
 function switchMode(mode) {saveDraft();workspace.switchMode(mode);showView();}
 function useModel(model) {saveDraft();workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)void openSemantics(model.id).catch(error=>toast(error.message,true));}
 async function syncCurrentModel() {
@@ -450,6 +475,8 @@ document.addEventListener('keydown',e=>{
 $('#new-chat').onclick=()=>newChat();
 $('#settings-open').onclick=guard(openSettings);$('#model-settings-chip').onclick=guard(openSettings);
 $('#connect-open').onclick=guard(openConnections);$('#calibration-open').onclick=openCalibration;
+$('#analysis-templates-open').onclick=guard(()=>openAnalysisTemplates());
+$('#template-return').onclick=()=>{const target=state.view.templateReturn;if(target){saveDraft();workspace.restore(target);showView();}};
 $('#search-toggle').onclick=()=>{const input=$('#history-search');input.hidden=!input.hidden;if(!input.hidden)input.focus();else{input.value='';renderHistory();}};
 $('#history-search').oninput=renderHistory;$('#field-search').oninput=renderContext;
 $('#toggle-context').onclick=()=>{const panel=$('#context-panel');if(innerWidth<=1050)panel.classList.toggle('mobile-open');else panel.classList.toggle('collapsed');};
@@ -458,6 +485,7 @@ $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.v
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{
   const el=e.target.closest('button');if(!el)return;
+  if(el.dataset.saveAnalysisTemplate){await openAnalysisTemplates(el.dataset.saveAnalysisTemplate);return;}
   if(el.dataset.openImage){
     const id=el.dataset.openImage;if(!/^[a-f0-9]{32}$/.test(id))return;
     showModal('查看图片','IMAGE',`<img class="image-full-preview" src="/api/images/${id}" alt="消息附图"><p class="field-help">图片保存在本机；发送消息时会提供给所选模型服务。</p>`);return;

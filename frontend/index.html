@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/assets/images.css">
   <link rel="stylesheet" href="/assets/generation.css">
   <link rel="stylesheet" href="/assets/connections.css">
+  <link rel="stylesheet" href="/assets/analysis_templates.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
 <body>
@@ -30,6 +31,7 @@
         <button class="nav-item active" data-mode="dax"><span data-icon="code"></span>DAX 助手<span class="nav-dot"></span></button>
         <button class="nav-item" data-mode="analysis"><span data-icon="chart"></span>数据分析助手</button>
       </nav>
+      <button class="nav-item template-entry" id="analysis-templates-open" title="分析模板"><span data-icon="book"></span>分析模板</button>
       <div class="history-heading"><span class="section-label">最近对话</span><button class="icon-button" id="search-toggle" aria-label="搜索会话"><span data-icon="search"></span></button></div>
       <input id="history-search" class="history-search" placeholder="搜索对话…" aria-label="搜索会话" hidden>
       <div class="history-list" id="history-list"><p class="muted history-empty">还没有对话<br>从一个数据问题开始吧</p></div>
@@ -44,6 +46,7 @@
         <section class="conversation-panel">
           <div class="conversation-toolbar"><span class="workspace-caption" id="conversation-caption">从想法到可靠的数据逻辑</span><div><button class="icon-button" id="export-chat" aria-label="导出当前对话" title="导出对话"><span data-icon="download"></span></button><button class="icon-button" id="toggle-context" aria-label="切换模型面板" title="模型面板"><span data-icon="panel"></span></button></div></div>
           <div id="background-generations" class="background-generations" role="status" aria-live="polite" hidden></div>
+          <button type="button" class="text-link template-return" id="template-return" hidden>← 返回原草稿</button>
           <div class="message-scroll" id="message-scroll"><div id="messages"></div></div>
           <div class="composer-area">
             <div class="context-strip" id="context-strip"><span data-icon="database"></span><span id="composer-context">连接模型，让回答基于真实字段</span><button id="calibration-open" title="用已知结果校准最后一个度量值"><span data-icon="target"></span><span id="calibration-label">校准</span></button></div>

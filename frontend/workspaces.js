@@ -18,6 +18,7 @@ export function createWorkspaces() {
     switchMode:mode=>activate(modes.get(mode)||make(mode,current.model)),
     open:(conversation,model)=>activate(conversations.get(conversation.id)||make(conversation.mode,model,conversation)),
     register:(conversation,model)=>conversations.get(conversation.id)||make(conversation.mode,model,conversation),
+    restore:view=>views.has(view)?activate(view):current,
     bind(view,conversation){view.conversation=conversation;view.loaded=true;conversations.set(conversation.id,view);},
     remove(id){const view=conversations.get(id);if(!view)return;conversations.delete(id);views.delete(view);
       if(modes.get(view.mode)===view)modes.delete(view.mode);if(current===view)activate(make(view.mode,view.model));},

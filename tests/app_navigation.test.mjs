@@ -45,6 +45,18 @@ test('actual app navigation keeps background streams, drafts and independent sen
     ok:true,error:'',profile:fieldProfile};
   const json=value=>new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
   async function fetchMock(path,opts={}) {
+    if(path==='/api/analysis-templates')return json([{id:'saved-analysis',name:'月度分析模板',model_id:'model',model_name:'测试模型',
+      prompt:'分析 {{月份}} 的金额',parameters:['月份'],defaults:{月份:'2026-10'},revision:1}]);
+    if(path==='/api/analysis-templates/saved-analysis/runs'&&opts.method==='POST') {
+      const body=JSON.parse(opts.body),conversation={id:'template-run',title:'月度分析模板',mode:'analysis',model_id:body.model_id};
+      conversations.unshift(conversation);
+      messages.set(conversation.id,[{role:'user',content:`分析 ${body.values.月份} 的金额`,status:'complete'},
+        {id:'template-run-answer',role:'assistant',content:'模板运行取得新结果。',status:'complete',analysis:[
+          {id:'template-query',ok:true,rows:[{金额:250}],columns:['金额'],row_count:1,dax:'EVALUATE ROW("金额",250)'}]}]);
+      return json({id:body.request_id,conversation});
+    }
+    if(path==='/api/messages/template-run-answer/analysis-template')return json({name:'月度分析模板',prompt:'分析 2026-11 的金额',
+      model_id:'model',source_message_id:'template-run-answer',defaults:{}});
     if(path==='/api/images'&&opts.method==='POST'){uploads.push(opts);return json(imageMeta);}
     if(path==='/api/settings')return json(settings);
     if(path==='/api/llm/profiles')return json([]);
@@ -473,6 +485,20 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await click('[data-dictionary-delete-confirm="saved-history"]');
     assert.equal(dictionaryDeletes.length,1);
     await click('#modal-close');
+    assert.equal($('#prompt').value,'尚未发送的草稿');
+    // Template runs open a separate analysis and preserve the original conversation draft.
+    await click('#analysis-templates-open');await click('[data-template-run="saved-analysis"]');
+    $('[data-template-value="月份"]').value='2026-11';
+    $('[data-template-value="月份"]').dispatchEvent(new window.Event('input',{bubbles:true}));
+    assert.ok($('[data-template-preview]').textContent.includes('2026-11'));
+    const runForm=$('[data-template-run-form]');runForm.reportValidity=()=>true;
+    runForm.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));
+    await tick();await tick();await tick();await tick();
+    assert.equal(modal.open,false);assert.equal($('#conversation-caption').textContent,'月度分析模板');
+    assert.ok($('#messages').textContent.includes('模板运行取得新结果'));
+    await click('[data-save-analysis-template="template-run-answer"]');
+    assert.equal($('[name="prompt"]').value,'分析 2026-11 的金额');
+    await click('#modal-close');await click('#template-return');
     assert.equal($('#prompt').value,'尚未发送的草稿');
   } finally {
     Object.defineProperty(selectProto,'value',valueDescriptor);

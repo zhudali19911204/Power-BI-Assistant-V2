@@ -1,0 +1,13 @@
+.template-fields{border:0;padding:0;margin:0;min-width:0}
+.template-toolbar,.template-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.template-toolbar{justify-content:space-between;margin-bottom:18px;font-size:12px;color:#66717e}
+.template-list,[data-template-runs]{display:grid;gap:12px}
+.template-card{padding:18px;border:1px solid var(--border);border-radius:10px;background:#fcfcfd;overflow-wrap:anywhere}
+.template-card>strong{font-size:14px}.template-card>p{font-size:12px;color:#687482;line-height:1.7}
+.template-actions{margin-top:14px}.template-parameters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}
+.template-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;padding:16px;background:#f5f7f9;border-radius:8px;font-family:inherit;font-size:13px;line-height:1.8}
+[data-template-editor] textarea{width:100%;resize:vertical;min-height:150px;padding:12px;border:1px solid var(--border);border-radius:6px;font:inherit;line-height:1.7}
+.template-message-action{margin:12px 0 12px 44px}.template-notice.error{color:#ac3c36}
+.template-entry{margin-top:5px}.template-fields>.text-link{margin-bottom:15px}
+.template-return{align-self:flex-start;margin:8px 24px}
+@media(max-width:650px){.template-parameters{grid-template-columns:1fr}.template-message-action{margin-left:0}}
