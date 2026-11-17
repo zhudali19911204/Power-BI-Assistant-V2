@@ -536,6 +536,12 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('[data-evidence="template-query"]'),resultEvidence);assert.ok(resultEvidence.hasAttribute('open'));
     await click('[data-save-analysis-template="template-run-answer"]');
     assert.equal($('[name="prompt"]').value,'分析 2026-11 的金额');
+    assert.equal($('[data-template-parameter-count]').textContent,'固定任务');
+    const templatePrompt=$('[name="prompt"]');templatePrompt.selectionStart=3;templatePrompt.selectionEnd=10;
+    await click('[data-template-insert-parameter="月份"]');
+    assert.equal(templatePrompt.value,'分析 {{月份}} 的金额');
+    assert.equal($('[data-template-default="月份"]').value,'2026-11');
+    assert.equal($('[data-template-editor-preview]').textContent,'分析 2026-11 的金额');
     await click('#modal-close');await click('#template-return');
     assert.equal($('#prompt').value,'尚未发送的草稿');
   } finally {
