@@ -14,7 +14,7 @@ def main():
     app = create_app()
     ports = {i.port for i in find_instances()}
     row = next((r for r in app.state.db.all(
-        'SELECT s.model_id,s.payload,m.port FROM model_semantics s JOIN models m ON m.id=s.model_id '
+        'SELECT s.model_id,s.payload,m.port FROM current_model_semantics s JOIN models m ON m.id=s.model_id '
         'ORDER BY s.updated_at DESC') if r['port'] in ports and json.loads(r['payload'])['status'] == 'ready'), None)
     if not row:
         raise RuntimeError('请打开已完成语义梳理的 Power BI Desktop 模型后重试')

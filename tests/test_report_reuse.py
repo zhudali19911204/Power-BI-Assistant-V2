@@ -96,7 +96,8 @@ def test_reassociating_history_preserves_business_edits_and_deleted_records(setu
     body=BusinessEdit(kind='convention',title='默认分析范围',meaning='用户未指定时的范围说明',confirmed=True)
     first=business.edit(old['id'],body)['business_dictionary']['items'][0]
     second=business.edit(old['id'],body.model_copy(update={'title':'删除测试'}))['business_dictionary']['items'][1]
-    new=connect(client,engine(port=61111,pid=77))
+    new=connect(client,engine(name='另存报表',path=r'F:\另存报表.pbix',port=61111,pid=77))
+    app.state.semantics.reuse(new['id'],old['id'])
     business.edit(new['id'],body.model_copy(update={'meaning':'当前报表修改后的定义'}),first['id'])
     business.delete(new['id'],second['id'])
     p=app.state.semantics.reuse(new['id'],old['id'])
@@ -111,9 +112,9 @@ def test_reopened_report_reuses_dictionary_after_app_restart_and_new_pid_port(se
     with TestClient(restarted) as other:
         new=connect(other,engine(port=61111,pid=77))
         p=restarted.state.semantics.get(new['id'])
-        assert new['id']!=old['id'] and new['name']=='费用分析' and new['report']['name']=='费用分析'
+        assert new['id']==old['id'] and new['name']=='费用分析' and new['report']['name']=='费用分析'
         assert p['status']=='ready' and p['coverage']==len(saved['entries'])
-        assert p['reuse']['matched_by']=='report' and p['reuse']['source_model_id']==old['id']
+        assert p['dictionary_id']==saved['dictionary_id'] and 'reuse' not in p
         assert p['entries']==saved['entries']
         assert not restarted.state.db.all('SELECT * FROM audit')
 
@@ -150,7 +151,10 @@ def test_ambiguous_same_name_without_path_offers_explicit_association(setup):
     assert len(p['reuse_candidates'])==2
     response=client.post(f"/api/models/{new['id']}/semantics/reuse",json={'source_model_id':second['id']})
     assert response.status_code==200 and response.json()['status']=='ready'
-    assert response.json()['reuse']['matched_by']=='user_selection'
+    assert response.json()['dictionary_id']==second['id']
+    assert len(app.state.db.all('SELECT model_id FROM model_semantics'))==2
+    repeat=connect(client,61001)
+    assert repeat['id']==new['id'] and repeat['report']['path']==r'F:\Other\费用分析.pbix'
 
 
 def test_legacy_dictionary_is_adopted_once_and_then_bound_to_its_report(setup):
@@ -158,7 +162,7 @@ def test_legacy_dictionary_is_adopted_once_and_then_bound_to_its_report(setup):
     old=connect(client,engine(name='',path=''));saved=built(old)
     new=connect(client,engine(port=60001,pid=77))
     assert new['semantics']['status']=='ready'
-    assert app.state.semantics.get(new['id'])['reuse']['matched_by']=='legacy_schema'
+    assert new['id']==old['id'] and app.state.semantics.get(new['id'])['dictionary_id']==saved['dictionary_id']
     assert app.state.powerbi.get(old['id'])['report']['name']=='费用分析'
     unrelated=connect(client,engine(name='另一个报表',path=r'E:\Reports\另一个报表.pbix',port=61001,pid=88))
     assert unrelated['semantics']['status']=='inventory'
@@ -180,11 +184,12 @@ def test_empty_named_connection_does_not_hide_a_completed_legacy_dictionary(setu
     old=connect(client,engine(name='',path=''));built(old)
     # An earlier incomplete connection may already have acquired the report name.
     port=engine(port=60001,pid=77)
-    placeholder=app.state.powerbi.connect(port)
+    placeholder=app.state.powerbi.save('费用分析','desktop',port,context())
+    app.state.db.execute('INSERT INTO model_reports VALUES (?,?,?)',(placeholder['id'],encode(state['reports'][77]),now()))
     app.state.semantics.ensure(placeholder)
     new=connect(client,port)
     assert new['semantics']['status']=='ready'
-    assert app.state.semantics.get(new['id'])['reuse']['source_model_id']==old['id']
+    assert new['id']==old['id']!=placeholder['id']
 
 
 def test_ambiguous_legacy_reports_require_selection_instead_of_arbitrary_reuse(setup):
@@ -253,6 +258,22 @@ def test_changed_formula_description_or_actual_type_invalidates_only_its_entry(s
     assert p['pending_ids'][0]==object_id('measure','Sales','Actual') if change=='formula' else p['pending_ids'][0]==object_id('column','Sales','Code')
 
 
+def test_changed_snapshot_keeps_one_dictionary_across_restart_and_blocks_stale_writes(setup):
+    app,client,state,engine,built=setup
+    original=connect(client,engine());saved=built(original)
+    changed=context();changed.tables['Sales'].append(Column('New','string','Sales'))
+    updated=connect(client,engine(port=60001,pid=77,ctx=changed))
+    assert updated['id']!=original['id'] and app.state.powerbi.get(original['id'])['snapshot_released']
+    with TestClient(create_app(app.state.db.path.parent)) as restarted:
+        again=connect(restarted,engine(port=61111,pid=88,ctx=changed))
+        rows=restarted.get('/api/semantic-dictionaries').json()['dictionaries']
+        assert [(row['model_id'],row['dictionary_id']) for row in rows]==[(again['id'],saved['dictionary_id'])]
+        assert again['id']==updated['id'] and again['semantics']['pending']==2
+        assert restarted.put(f"/api/models/{original['id']}/semantics/{saved['entries'][0]['id']}",json={'confirmed':True,'meaning':'旧结构'}).status_code==409
+        assert restarted.delete(f"/api/semantic-dictionaries/{original['id']}").status_code==409
+        assert len(app.state.db.all('SELECT model_id FROM model_semantics'))==1
+
+
 def test_order_and_cardinality_changes_do_not_require_rebuilding(setup):
     app,client,state,engine,built=setup
     old=connect(client,engine());built(old)
@@ -285,7 +306,7 @@ def test_manual_dictionary_with_model_differences_is_allowed_and_unknown_source_
     app,client,state,engine,built=setup
     old=connect(client,engine());built(old)
     changed=context();changed.tables['Sales'].append(Column('New','string','Sales'))
-    new=connect(client,engine(port=60001,pid=77,ctx=changed))
+    new=connect(client,engine(name='另一报表',path=r'F:\另一报表.pbix',port=60001,pid=77,ctx=changed))
     response=client.post(f"/api/models/{new['id']}/semantics/reuse",json={'source_model_id':old['id']})
     assert response.status_code==200
     assert response.json()['dictionary_notice']['status']=='needs_update'

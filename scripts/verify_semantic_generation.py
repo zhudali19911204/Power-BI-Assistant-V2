@@ -14,7 +14,7 @@ import backend.chat as chat_module
 
 def main():
     app=create_app()
-    row=app.state.db.one("SELECT model_id,payload FROM model_semantics ORDER BY updated_at DESC LIMIT 1")
+    row=app.state.db.one("SELECT model_id,payload FROM current_model_semantics ORDER BY updated_at DESC LIMIT 1")
     if not row or json.loads(row['payload'])['status']!='ready':
         raise RuntimeError('请先完成当前模型的语义梳理')
     model=app.state.powerbi.get(row['model_id'])

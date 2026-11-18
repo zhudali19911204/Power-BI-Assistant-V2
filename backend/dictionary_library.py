@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from . import business_dictionary as business
 from .reports import normalize_name, normalize_path, schema_signature
 from .database import encode, now
+from .reconnection import RELEASED_DETAIL
 
 
 class DictionaryNameEdit(BaseModel):
@@ -48,23 +49,23 @@ class DictionaryLibrary:
     def __init__(self,owner):self.owner=owner
 
     def busy(self,model_id):
-        return (model_id in self.owner.jobs or model_id in self.owner.business.jobs
-                or self.owner.in_use(model_id))
+        return model_id in self.owner.jobs or self.owner.in_use(model_id)
 
     def catalog(self,current_model_id=None):
         with self.owner.lock:
             current=self.owner.get(current_model_id) if current_model_id else None
-            current_model=self.owner.powerbi.get(current_model_id) if current_model_id else None
             current_ids={e['id'] for e in current['entries']} if current else set()
-            signature=schema_signature(current_model['context']) if current_model else None
             rows=self.owner._history('')
+            signature=next((row['signature'] for row in rows if row['model_id']==current_model_id),None)
+            if current and signature is None:
+                signature=schema_signature(self.owner.powerbi.get(current_model_id)['context'])
             result=[]
             for row in rows:
                 p=row['profile'];report=row['report'];data=p.get('business_dictionary',{})
                 group=(('path:'+normalize_path(report['path'])) if report.get('path') else
                        ('name:'+normalize_name(report['name'])) if report.get('name') else
                        'engine:'+(p.get('connection_identity') or row['model_id']))
-                result.append({'model_id':row['model_id'],'name':display_name(row),
+                result.append({'model_id':row['model_id'],'dictionary_id':p.get('dictionary_id',row['model_id']),'name':display_name(row),
                     'report_name':report.get('name') or row['name'],
                     'saved_at':p.get('dictionary_content_updated_at',row['updated_at']),
                     'path':report.get('path',''),'group':group,'updated_at':row['updated_at'],
@@ -90,6 +91,7 @@ class DictionaryLibrary:
             destination=self.owner.get(model_id)
             source=self.source(model_id,source_model_id)
             model=self.owner.powerbi.get(model_id)
+            if model.get('snapshot_released'):raise HTTPException(409,RELEASED_DETAIL)
             result=self.owner._reuse_from(model,copy.deepcopy(destination),copy.deepcopy(source),
                 'user_selection',destination.get('metadata_status')=='read',persist=False)
             changes=result.get('changes',{})
@@ -102,7 +104,8 @@ class DictionaryLibrary:
 
     def rename(self,model_id,body):
         with self.owner.lock:
-            row=self.owner.db.one('SELECT payload,updated_at FROM model_semantics WHERE model_id=?',(model_id,))
+            key=self.owner.dictionary_id(model_id)
+            row=self.owner.db.one('SELECT payload,updated_at FROM model_semantics WHERE model_id=?',(key,))
             if not row:raise HTTPException(404,'词典已删除或不存在')
             if self.busy(model_id):raise HTTPException(409,'词典正在梳理或用于生成，请完成后再重命名')
             if body.updated_at is not None and row['updated_at']!=body.updated_at:
@@ -113,19 +116,20 @@ class DictionaryLibrary:
             profile.update(dictionary_name=body.name,dictionary_name_source='user',
                            dictionary_name_edited_at=changed_at,updated_at=changed_at)
             updated=self.owner.db.execute('UPDATE model_semantics SET payload=?,updated_at=? WHERE model_id=? AND updated_at=?',
-                (encode(profile),changed_at,model_id,row['updated_at']))
+                (encode(profile),changed_at,key,row['updated_at']))
             if not updated:raise HTTPException(409,'词典刚刚更新或已删除，请刷新列表后重试')
             return {'model_id':model_id,'name':body.name,'updated_at':changed_at}
 
     def delete(self,model_id,*,current_model_id=None,updated_at=None):
         with self.owner.lock:
-            row=self.owner.db.one('SELECT payload,updated_at FROM model_semantics WHERE model_id=?',(model_id,))
+            key=self.owner.dictionary_id(model_id)
+            row=self.owner.db.one('SELECT payload,updated_at FROM model_semantics WHERE model_id=?',(key,))
             if not row:raise HTTPException(404,'历史词典已删除或不存在')
             if model_id==current_model_id:raise HTTPException(409,'这是当前模型使用的词典，请选择其他历史版本')
             if self.busy(model_id):raise HTTPException(409,'该词典正在梳理或用于生成，请完成任务后再删除')
             if updated_at is not None and row['updated_at']!=updated_at:
                 raise HTTPException(409,'该词典刚刚更新，请刷新历史列表后再删除')
             deleted=self.owner.db.execute('DELETE FROM model_semantics WHERE model_id=? AND updated_at=?',
-                                          (model_id,row['updated_at']))
+                                          (key,row['updated_at']))
             if not deleted:raise HTTPException(409,'该词典刚刚更新或已被删除，请刷新历史列表后重试')
             return {'deleted_model_id':model_id,'detail':'历史词典版本已删除；模型快照、历史对话及其他模型已关联的副本保留'}

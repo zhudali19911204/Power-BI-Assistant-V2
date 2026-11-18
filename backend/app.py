@@ -58,13 +58,16 @@ def create_app(directory=None):
     powerbi.semantics=semantics
     chat = ChatService(db, powerbi)
     templates = AnalysisTemplates(db, powerbi, chat, settings)
-    def dictionary_in_use(model_id):
+    def dictionary_in_use(model_id,*,include_sync=True):
         for conversation_id,lock in list(chat.locks.items()):
-            if lock.locked():
+            if lock.locked() and (include_sync or conversation_id not in chat.syncing):
                 row=db.one('SELECT model_id FROM conversations WHERE id=?',(conversation_id,))
                 if row and row['model_id']==model_id:return True
         return False
     semantics.in_use=dictionary_in_use
+    def snapshot_in_use(model_id):
+        return model_id in semantics.jobs or dictionary_in_use(model_id,include_sync=False)
+    powerbi.snapshot_in_use=snapshot_in_use
     app = FastAPI(title="Power BI Assistant", version="2.0.5", docs_url="/api/docs", redoc_url=None)
     app.state.license_info = license_info
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
@@ -223,9 +226,10 @@ def create_app(directory=None):
 
     @app.post("/api/models/connect")
     def connect(body: ConnectInput):
-        model=powerbi.connect(body.port,body.report_name)
-        semantics.on_connect(model,settings)
-        return powerbi.get(model['id'])
+        with powerbi.lock:
+            model=powerbi.connect(body.port,body.report_name)
+            semantics.on_connect(model,settings)
+            return powerbi.get(model['id'])
 
     @app.post("/api/models/demo")
     def demo():
@@ -233,7 +237,7 @@ def create_app(directory=None):
 
     @app.get("/api/models")
     def models():
-        return [powerbi.get(r["id"]) for r in db.all("SELECT id FROM models ORDER BY created_at DESC LIMIT 50")]
+        return [powerbi.get(r["id"]) for r in db.all("SELECT id FROM models WHERE context!='null' ORDER BY created_at DESC LIMIT 50")]
 
     @app.get("/api/models/{model_id}")
     def model(model_id: str):
@@ -253,7 +257,7 @@ def create_app(directory=None):
 
     @app.post('/api/models/{model_id}/semantics/build')
     def build_semantics(model_id:str,body:SemanticBuildInput):
-        return semantics.start(model_id,settings,body.llm_profile_id)
+        return semantics.start(model_id,settings,body.llm_profile_id,body.mode)
 
     @app.post('/api/models/{model_id}/semantics/reuse')
     def reuse_semantics(model_id:str,body:SemanticReuseInput):
@@ -291,19 +295,16 @@ def create_app(directory=None):
     def delete_business_item(model_id:str,item_id:str,revision:int|None=None):
         return semantics.business.delete(model_id,item_id,revision)
 
-    @app.post('/api/models/{model_id}/semantics/business/suggest')
-    def suggest_business_dictionary(model_id:str,body:SemanticBuildInput):
-        return semantics.business.start(model_id,settings,body.llm_profile_id)
-
     @app.put('/api/models/{model_id}/semantics/{entry_id}')
     def edit_semantics(model_id:str,entry_id:str,body:SemanticEdit):
         return semantics.edit(model_id,entry_id,body)
 
     @app.post("/api/models/{model_id}/refresh")
     def refresh(model_id: str):
-        model=powerbi.refresh(model_id)
-        semantics.on_connect(model,settings)
-        return powerbi.get(model['id'])
+        with powerbi.lock:
+            model=powerbi.refresh(model_id)
+            semantics.on_connect(model,settings)
+            return powerbi.get(model['id'])
 
     @app.get('/api/analysis-templates')
     def list_analysis_templates():

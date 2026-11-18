@@ -27,7 +27,6 @@ async function fixture(initial=profile()) {
     if(path.includes('/business/')) {
       current.business_dictionary??={revision:0,overview:null,items:[],generation:{status:'idle'}};
       const data=current.business_dictionary,body=opts.body?JSON.parse(opts.body):{};
-      if(path.endsWith('/suggest')){data.generation={status:'building',stage:'生成业务候选中'};return structuredClone(current);}
       if(body.revision!==undefined&&body.revision!==data.revision)throw new Error('业务词典已更新，请返回列表刷新后再编辑');
       const record={...body,state:body.confirmed?'confirmed':'candidate',source:'用户编辑'};
       if(path.endsWith('/overview'))data.overview=record;
@@ -72,9 +71,9 @@ test('business overview saves locally and is confirmed separately from candidate
     assert.deepEqual(JSON.parse(call.body),{description:'工厂费用及库存分析',topics:['费用','库存'],source_note:'报表负责人确认',confirmed:true,revision:0});
     assert.ok(f.root.textContent.includes('用户已确认'));
     assert.ok(f.root.textContent.includes('工厂费用及库存分析'));
-    await f.click('[data-business-suggest]');
-    assert.equal(JSON.parse(f.calls.at(-1).body).llm_profile_id,'selected');
-    assert.equal(f.root.querySelector('[data-business-suggest]').disabled,true);
+    assert.equal(f.root.querySelector('[data-business-suggest]'),null);
+    await f.click('[data-semantic-tab="business"]');
+    assert.equal(f.root.querySelector('[data-business-suggest]'),null);
   } finally {f.manager.dispose();}
 });
 
@@ -139,16 +138,16 @@ test('analysis conventions save object scope as candidates and tab navigation ke
   } finally {f.manager.dispose();}
 });
 
-test('background business generation preserves editor text and rejects saving a stale revision',async()=>{
-  const data={revision:0,overview:null,items:[],generation:{status:'building',stage:'正在生成'}};
-  const f=await fixture(profile({business_dictionary:data}));
+test('integrated overview generation preserves editor text and rejects saving a stale revision',async()=>{
+  const data={revision:0,overview:null,items:[]};
+  const f=await fixture(profile({status:'building',business_dictionary:data}));
   try {
     await f.click('[data-semantic-tab="overview"]');await f.click('[data-business-overview]');
     f.root.querySelector('[name="description"]').value='尚未提交的手工编辑';
-    f.setProfile(profile({business_dictionary:{...data,revision:1,generation:{status:'ready',stage:'生成完成'}}}));
+    f.setProfile(profile({business_dictionary:{...data,revision:1,overview:{description:'自动总结',topics:[],state:'candidate'}}}));
     await new Promise(resolve=>setTimeout(resolve,1850));
     assert.equal(f.root.querySelector('[name="description"]').value,'尚未提交的手工编辑');
-    assert.equal(f.root.querySelector('[data-business-suggest]').disabled,false);
+    assert.equal(f.root.querySelector('[data-business-suggest]'),null);
     await f.click('[data-business-confirm]');
     assert.ok(f.root.textContent.includes('业务词典已更新'));
     assert.equal(f.root.querySelector('[name="description"]').value,'尚未提交的手工编辑');
@@ -354,11 +353,26 @@ test('incremental workbench lists changes and only offers to build pending objec
 });
 
 test('a fully current dictionary cannot accidentally trigger a full rebuild',async()=>{
-  const f=await fixture(profile({entries:[entry('one')],coverage:1}));
+  const f=await fixture(profile({entries:[entry('one')],coverage:1,business_dictionary:{overview:{description:'模型概览',state:'candidate'},items:[]}}));
   try {
     assert.equal(f.root.querySelector('[data-build-semantics]').disabled,true);
     assert.ok(f.root.querySelector('[data-build-semantics]').textContent.includes('对象语义已是最新'));
     assert.equal(f.calls.filter(c=>c.path.endsWith('/build')).length,0);
+  } finally {f.manager.dispose();}
+});
+
+test('full rebuild requires explicit confirmation and uses the selected service',async()=>{
+  const f=await fixture(profile({entries:[entry('one')],coverage:1}));
+  try {
+    assert.equal(f.root.querySelector('[data-build-semantics]').textContent,'生成业务总览');
+    await f.click('[data-rebuild-semantics]');
+    assert.equal(f.root.querySelector('[data-rebuild-prompt]').hidden,false);
+    await f.click('[data-cancel-rebuild]');
+    assert.equal(f.root.querySelector('[data-rebuild-prompt]').hidden,true);
+    assert.ok(!f.calls.some(call=>call.path.endsWith('/build')));
+    await f.click('[data-rebuild-semantics]');await f.click('[data-confirm-rebuild]');
+    assert.deepEqual(f.calls.filter(call=>call.path.endsWith('/build')).map(call=>JSON.parse(call.body)),[{llm_profile_id:'selected',mode:'full'}]);
+    assert.ok(f.root.querySelector('[data-rebuild-semantics]').disabled);
   } finally {f.manager.dispose();}
 });
 

@@ -13,6 +13,7 @@ from .engine.dax.live_eval import LiveDesktopEvaluator
 from .engine.llm.base import ChatMessage
 from .engine.mquery.prompts import build_chat_system_prompt as m_system
 from .powerbi import context_from_dict
+from .reconnection import RELEASED_DETAIL
 from .validation import candidates, validate
 from .streaming import completion_events
 from .analysis import AnalysisService
@@ -182,6 +183,10 @@ class ChatService:
         token = CancellationToken(body.generation_id or uid())
         with self.mutex: self.cancellations[conversation_id] = token
         try:
+            if model['source']=='desktop':
+                with self.powerbi.lock:
+                    if self.db.one('SELECT 1 FROM released_snapshots WHERE model_id=?',(model['id'],)):
+                        raise HTTPException(409,RELEASED_DETAIL)
             if body.clarification_reply:
                 sync=self.model_sync(conversation_id)
                 question=self.db.one('SELECT rowid AS message_rowid FROM messages WHERE id=? AND conversation_id=?',

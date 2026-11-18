@@ -5,7 +5,7 @@ const kinds={table:'表',column:'字段',measure:'度量值'};
 const label=e=>`${kinds[e.kind]} · ${e.table}${e.kind==='table'?'':'['+e.name+']'}`;
 const lines=value=>value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 const aliases=value=>value.split(/[,，；\n]/).map(s=>s.trim()).filter(Boolean);
-export const businessData=profile=>profile.business_dictionary||{revision:0,overview:null,items:[],generation:{status:'idle'}};
+export const businessData=profile=>profile.business_dictionary||{revision:0,overview:null,items:[]};
 export const hasBusinessKnowledge=profile=>[businessData(profile).overview,...businessData(profile).items].some(r=>r&&['candidate','confirmed'].includes(r.state));
 
 function status(record) {
@@ -21,12 +21,12 @@ export function businessMarkup(profile,tab) {
   if(tab==='overview') {
     const overview=data.overview;
     return `<div data-semantic-entries><article class="semantic-entry" data-semantic-entry="business-overview"><h3>模型业务总览</h3>
-      <p class="notice">补充模型服务的业务、主题和重要联系。表结构、关系方向和度量值公式继续来自模型同步。</p>
-      ${overview?`${status(overview)}<p class="semantic-meaning">${esc(overview.description)}</p><p>业务主题：${overview.topics.map(esc).join('、')||'未填写'}</p>${provenance(overview)}`:'<p>尚未填写业务总览。可以手动补充，或生成候选后审阅。</p>'}
+      <p class="notice">语义梳理会结合对象词典、表关系和关键指标总结模型用途。自动生成的总览待审阅，人工编辑的总览不会被覆盖。</p>
+      ${overview?`${status(overview)}<p class="semantic-meaning">${esc(overview.description)}</p><p>业务主题：${overview.topics.map(esc).join('、')||'未填写'}</p>${provenance(overview)}`:'<p>尚无业务总览。可在上方启动梳理，或手动填写。</p>'}
       <button type="button" class="secondary-button" data-business-overview>编辑业务总览</button></article></div>`;
   }
   const ref=id=>{const entry=profile.entries.find(e=>e.id===id);return entry?label(entry):'已删除对象（请重新关联）';};
-  return `<p class="notice">术语可关联多个指标、维度或筛选值；分析约定只在适用范围内补充未指定条件。计算标准由现有度量值公式决定。</p>
+  return `<p class="notice">业务术语和分析约定由你填写，AI 不会生成。术语可关联指标、维度或筛选值；分析约定只在适用范围内补充未指定条件。</p>
     <div class="semantic-tools"><button type="button" class="secondary-button" data-business-new="term">新增业务术语</button><button type="button" class="secondary-button" data-business-new="convention">新增分析约定</button></div>
     <div data-semantic-entries>${data.items.map(item=>`<article class="semantic-entry" data-semantic-entry="${esc(item.id)}">
       <div class="semantic-entry-heading"><strong>${esc(item.title)}</strong>${status(item)}</div>

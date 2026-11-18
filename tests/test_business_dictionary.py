@@ -1,18 +1,18 @@
 import copy
 import json
 import threading
-import time
 from dataclasses import asdict
 
 import pytest
 
 from backend.business_dictionary import BusinessEdit, OverviewEdit, select
 from backend.database import encode
-from backend.engine.context.base import Measure
+from backend.engine.context.base import Column, Measure
 from backend.powerbi import fingerprint
 from backend.semantics import object_id
-from tests.test_semantics import setup, ready
+from tests.test_semantics import setup, ready, wait_ready, DictionaryProvider
 from tests.test_analysis import Provider, plan, result
+from tests.test_report_reuse import setup as report_setup, connect, context
 
 
 def url(model, suffix=''):
@@ -145,53 +145,87 @@ def test_removed_reference_requires_rebinding_before_confirmation(setup):
     assert app.state.semantics.get(model['id'])['business_dictionary']['items'][0]['state'] == 'unresolved'
 
 
-class DraftProvider:
-    def __init__(self, entered=None, resume=None, invalid=False):
-        self.entered=entered;self.resume=resume;self.invalid=invalid;self._client=self;self.closed=False
-    def close(self):self.closed=True
-    def stream(self, system, messages, **kwargs):
-        assert 'schema' in json.loads(messages[0].content)
-        if self.entered:self.entered.set()
-        if self.resume:assert self.resume.wait(5)
-        yield encode({'overview': {'description': 'AI 提议的模型用途', 'confirmed': True},
-                      'items': [term(confirmed=True, targets=[{'object_id': 'invented'}])] if self.invalid else [term(confirmed=True)]})
+class SummaryProvider(DictionaryProvider):
+    def __init__(self,response,entered=None,resume=None):
+        super().__init__();self.response=response;self.summaries=[];self.entered_summary=entered;self.resume_summary=resume
+
+    def stream(self,system,messages,**opts):
+        evidence=json.loads(messages[0].content)
+        if 'object_definitions' not in evidence:
+            yield from super().stream(system,messages,**opts)
+            return
+        self.summaries.append(evidence)
+        if self.entered_summary:self.entered_summary.set()
+        if self.resume_summary:assert self.resume_summary.wait(4)
+        yield encode(self.response)
 
 
-def wait_job(app, model):
-    deadline=time.monotonic()+5
-    while model['id'] in app.state.semantics.business.jobs:
-        assert time.monotonic()<deadline
-        time.sleep(.01)
-    return app.state.semantics.get(model['id'])['business_dictionary']
+def test_build_finishes_objects_then_writes_only_overview(setup,monkeypatch):
+    app,client,model,ctx,_=setup
+    data=client.post(url(model,'/items'),json=term(confirmed=True)).json()['business_dictionary']
+    provider=SummaryProvider({'description':'费用模型用途','topics':['费用']})
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    endpoint=f"/api/models/{model['id']}/semantics/build"
+    assert client.post(endpoint,json={}).status_code==200
+    profile=wait_ready(app,model['id']);result=profile['business_dictionary']
+    assert profile['status']=='ready' and result['items']==data['items']
+    assert result['overview']['description']=='费用模型用途' and result['overview']['state']=='candidate'
+    evidence,=provider.summaries
+    assert evidence['counts']['tables']==len(ctx.tables)
+    assert all(e['state']=='candidate' and e['meaning'] for e in evidence['object_definitions'])
+    assert term()['title'] not in encode(evidence)
+    assert client.post(url(model,'/suggest'),json={}).status_code==404
+    provider.response={'description':'刷新后的模型总结'}
+    client.post(endpoint,json={'mode':'full'})
+    updated=wait_ready(app,model['id'])['business_dictionary']
+    assert updated['overview']['description']=='刷新后的模型总结' and updated['items']==data['items']
 
 
-def test_explicit_ai_generation_keeps_all_output_candidate_and_preserves_existing_overview(setup, monkeypatch):
-    app, client, model, ctx, _ = setup
-    client.put(url(model, '/overview'), json={'description': '用户已确认的用途', 'confirmed': True})
-    provider=DraftProvider()
-    monkeypatch.setattr(app.state.settings, 'provider', lambda *args:provider)
-    assert client.post(url(model, '/suggest'), json={}).status_code == 200
-    data=wait_job(app, model)
-    assert data['generation']['status'] == 'ready' and provider.closed
-    assert data['overview']['description'] == '用户已确认的用途'
-    assert data['items'][0]['state'] == 'candidate' and data['items'][0]['reviewed_at'] is None
+def test_overview_failure_retries_without_rebuilding_objects_or_accepting_ai_terms(setup,monkeypatch):
+    app,client,model,ctx,_=setup
+    ready(app,model,ctx)
+    provider=SummaryProvider({'description':'概览','items':[term()]})
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    endpoint=f"/api/models/{model['id']}/semantics/build"
+    client.post(endpoint,json={})
+    failed=wait_ready(app,model['id'])
+    assert failed['status']=='error' and not failed['pending_ids'] and not failed['business_dictionary']['items']
+    provider.response={'description':'仅总结对象词典'}
+    client.post(endpoint,json={});done=wait_ready(app,model['id'])
+    assert done['status']=='ready' and done['entries']==failed['entries']
+    assert done['business_dictionary']['overview']['description']=='仅总结对象词典' and not provider.calls
 
 
-@pytest.mark.parametrize('edit_during_generation', [True, False])
-def test_ai_generation_rejects_invented_objects_and_does_not_overwrite_concurrent_user_edits(setup, monkeypatch, edit_during_generation):
-    app, client, model, _, _ = setup
+def test_incremental_overview_uses_preserved_definitions_and_model_relationships(report_setup,monkeypatch):
+    app,client,_,engine,built=report_setup
+    original=built(connect(client,engine()))
+    preserved=next(entry for entry in original['entries'] if entry['state']=='confirmed')
+    ctx=context();ctx.tables['Sales'].append(Column('Department','string','Sales'))
+    model=connect(client,engine(port=61111,pid=77,ctx=ctx))
+    provider=SummaryProvider({'description':'已综合关系和对象生成总结'})
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    assert client.post(f"/api/models/{model['id']}/semantics/build",json={}).status_code==200
+    result=wait_ready(app,model['id'])
+    changed_ids={obj['id'] for _,batch in provider.calls for obj in batch['objects']}
+    assert result['status']=='ready' and object_id('column','Sales','Department') in changed_ids and preserved['id'] not in changed_ids
+    evidence,=provider.summaries
+    assert any(obj['meaning']==preserved['meaning'] and obj['state']=='confirmed' for obj in evidence['object_definitions'])
+    assert evidence['relationships']==[asdict(ctx.relationships[0])]
+
+
+def test_overview_summary_preserves_concurrent_manual_edit(setup,monkeypatch):
+    app,client,model,ctx,_=setup
+    ready(app,model,ctx)
     entered=threading.Event();resume=threading.Event()
-    provider=DraftProvider(entered, resume, invalid=not edit_during_generation)
-    monkeypatch.setattr(app.state.settings, 'provider', lambda *args:provider)
-    client.post(url(model, '/suggest'), json={})
-    assert entered.wait(2)
-    if edit_during_generation:client.put(url(model, '/overview'), json={'description': '生成期间的手动编辑', 'confirmed': True})
-    resume.set();data=wait_job(app, model)
-    assert not data['items']
-    if edit_during_generation:
-        assert data['overview']['description'] == '生成期间的手动编辑'
-        assert '未写入' in data['generation']['stage']
-    else:assert data['generation']['status'] == 'error'
+    provider=SummaryProvider({'description':'自动概览'},entered,resume)
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    client.post(f"/api/models/{model['id']}/semantics/build",json={})
+    try:
+        assert entered.wait(2)
+        client.put(url(model,'/overview'),json={'description':'生成期间手动编辑','confirmed':True})
+    finally:resume.set()
+    data=wait_ready(app,model['id'])['business_dictionary']
+    assert data['overview']['description']=='生成期间手动编辑' and data['overview']['state']=='confirmed'
 
 
 def test_query_planning_and_final_summary_share_business_context(setup, monkeypatch):

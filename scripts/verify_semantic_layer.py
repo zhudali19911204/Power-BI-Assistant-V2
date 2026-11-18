@@ -18,7 +18,7 @@ def verify(app,source,port,resume=False):
         app.state.settings.save(SettingsInput(provider=cfg['provider'],model=cfg['model'],base_url=cfg['base_url'],
             api_key=source.state.settings.key(cfg),enable_thinking=cfg['enable_thinking']))
     if resume:
-        row=app.state.db.one("SELECT s.model_id FROM model_semantics s JOIN models m ON m.id=s.model_id WHERE m.source='desktop' AND m.port=? ORDER BY s.updated_at DESC LIMIT 1",(port,))
+        row=app.state.db.one("SELECT s.model_id FROM current_model_semantics s JOIN models m ON m.id=s.model_id WHERE m.source='desktop' AND m.port=? ORDER BY s.updated_at DESC LIMIT 1",(port,))
         if not row:raise RuntimeError('没有可恢复的语义词典')
         model=app.state.powerbi.get(row['model_id'])
         app.state.powerbi.require_live(model['id'],unchanged=True)

@@ -12,7 +12,7 @@ import {fieldEvidence, mountFieldPreview} from './fields.js';
 import {mountSemanticWorkbench, semanticSummary} from './semantics.js';
 import {mountDictionaryLibrary} from './dictionaries.js';
 import {mountComposerImages, imageGallery} from './images.js';
-import {createConnectionMonitor,connectionPresentation} from './connections.js';
+import {createConnectionMonitor,connectionPresentation,releaseSnapshot} from './connections.js';
 import {mountAnalysisTemplates,saveTemplateButton} from './analysis_templates.js';
 import {createWorkspaceLayout} from './layout.js';
 import {createTableTools} from './table_reader.js';
@@ -30,10 +30,12 @@ const tableTools=createTableTools($('#table-reader'),{
 const connectionMonitor=createConnectionMonitor({api,
   getModels:()=>[state.view.model,...workspace.all().filter(view=>view.busy).map(view=>view.model)],
   onChange:result=>{
-    const patch=model=>model?.id===result.model_id?{...model,live:result.live,port:result.port,connection:result.connection}:model;
+    const released=result.connection?.status==='released';
+    const redraw=released&&state.view.model?.id===result.model_id&&!state.view.model.snapshot_released;
+    const patch=model=>model?.id===result.model_id?(released?releaseSnapshot(model):{...model,live:result.live,port:result.port,connection:result.connection}):model;
     state.models=state.models.map(patch);
     for(const view of workspace.all())view.model=patch(view.model);
-    if(state.view.model?.id===result.model_id)renderConnectionStatus();
+    if(redraw)render();else if(state.view.model?.id===result.model_id)renderConnectionStatus();
   },
 });
 let modalCleanup=null,modalReturn=null,composerImages=null;
@@ -155,6 +157,11 @@ function renderBackgroundTasks() {
 }
 function renderContext() {
   const model=state.view.model, ctx=model?.context;
+  if(model?.snapshot_released){
+    $('#model-summary').innerHTML=`<div class="model-name">${esc(model.name)}</div><div class="model-state">快照已释放</div>`;
+    $('#model-tree').innerHTML='<p class="history-empty muted">历史消息和结果仍可查看。打开对应报表并点击“同步模型”，即可重新读取字段。</p>';
+    return;
+  }
   $('#model-summary').innerHTML=model?`<div class="model-name">${esc(model.name)}</div><div class="model-state">${model.live?'● 本机实时连接':model.source==='demo'?'○ 示例数据结构 · 仅供体验':'○ 离线模型快照'}</div><div class="model-counts"><span><b>${Object.keys(ctx.tables).length}</b>表</span><span><b>${Object.values(ctx.tables).flat().length}</b>字段</span><span><b>${ctx.measures.length}</b>度量值</span></div>`:'<div class="model-name">尚未连接模型</div><div class="model-state">在 Power BI Desktop 打开报表后连接</div>';
   if(model?.source==='desktop')$('#model-summary').insertAdjacentHTML('beforeend',`<button class="text-link semantic-open-button" data-open-semantics="${esc(model.id)}">${icon('book')}模型语义层 <small>${['needs_update','unverified'].includes(model.semantics?.dictionary_notice?.status)?esc(model.semantics.dictionary_notice.message):model.semantics?.status==='ready'?'已梳理 · 可审阅定义':model.semantics?.can_answer?'已有语义可用 · 更新可稍后处理':model.semantics?.status==='building'?'正在后台梳理':'需要先梳理语义'}</small></button>`);
   if(!model) {$('#model-tree').innerHTML=`<div class="model-empty"><div class="empty-model-icon">${icon('database')}</div><strong>让模型成为对话的上下文</strong><p>表、字段、关系与度量值<br>连接后将显示在这里</p><button class="text-link" id="empty-connect">连接 Power BI ${icon('arrow-right')}</button></div>`;return;}
@@ -242,7 +249,13 @@ async function openAnalysisTemplates(messageId=null) {
   if(root.isConnected&&$('#modal').open)modalCleanup=()=>manager.dispose();else manager.dispose();
 }
 function switchMode(mode) {saveDraft();workspace.switchMode(mode);showView();}
-function useModel(model) {saveDraft();workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)void openSemantics(model.id).catch(error=>toast(error.message,true));}
+function keepLatestSnapshot(model) {
+  state.models=[model,...state.models.filter(saved=>saved.source!=='desktop'&&saved.id!==model.id)];
+  for(const view of workspace.all())if(view.model?.source==='desktop'){
+    view.model=view.model.id===model.id?model:releaseSnapshot(view.model);
+  }
+}
+function useModel(model,connected=false) {saveDraft();if(connected)keepLatestSnapshot(model);workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)void openSemantics(model.id).catch(error=>toast(error.message,true));}
 async function syncCurrentModel() {
   const view=state.view;
   if(!view.model)return openConnections();
@@ -257,7 +270,7 @@ async function syncCurrentModel() {
     if(state.view===view)saveDraft();
     historyRequest++;
     view.model=result.model;
-    state.models=[result.model,...state.models.filter(m=>m.id!==result.model.id)];
+    keepLatestSnapshot(result.model);
     if(result.conversation){
       workspace.bind(view,result.conversation);
       state.conversations=state.conversations.map(c=>c.id===result.conversation.id?result.conversation:c);
@@ -523,7 +536,7 @@ document.addEventListener('click',guard(async e=>{
   if(el.id==='empty-connect'||el.id==='rescan')await openConnections();
   if(el.id==='manage-dictionaries')await openDictionaryLibrary();
   if(el.id==='demo-load')useModel(await post('/models/demo'));
-  if(el.dataset.port){const reportName=$('#connection-report-name')?.value.trim()||'';el.disabled=true;el.textContent='正在读取模型…';try{const model=await post('/models/connect',{port:Number(el.dataset.port),report_name:reportName});useModel(model);toast(model.semantics?.dictionary_notice?.message||(model.semantics?.status==='ready'?model.semantics.stage:'已读取 Desktop 模型'));}catch(err){await openConnections();throw err;}}
+  if(el.dataset.port){const reportName=$('#connection-report-name')?.value.trim()||'';el.disabled=true;el.textContent='正在读取模型…';try{const model=await post('/models/connect',{port:Number(el.dataset.port),report_name:reportName});useModel(model,true);toast(model.semantics?.dictionary_notice?.message||(model.semantics?.status==='ready'?model.semantics.stage:'已读取 Desktop 模型'));}catch(err){await openConnections();throw err;}}
   if(el.dataset.snapshot)useModel(await api(`/models/${el.dataset.snapshot}`));
   if(el.dataset.query){const ctx=state.view.model.context,code=ctx.table_queries[el.dataset.query]??ctx.shared_expressions[el.dataset.query];showModal(el.dataset.query,'POWER QUERY',`${codeBlock(code,'powerquery')}<div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">在清洗助手中使用</button></div>`);}
   if(el.dataset.useQuery){newChat('mquery');state.view.queryName=el.dataset.useQuery;$('#query-select').value=el.dataset.useQuery;$('#modal').close();}

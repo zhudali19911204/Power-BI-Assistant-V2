@@ -7,6 +7,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from contextvars import copy_context
+from typing import Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -22,6 +23,7 @@ from .engine.llm.diagnostics import GenerationReport
 from .generation import generation_recorder
 from .values import ValueEvidence, codes_in
 from .reports import normalize_name, normalize_path, same_report, schema_signature
+from .reconnection import connection_digest, RELEASED_DETAIL
 from .semantic_diff import reconcile, source_snapshot
 from .semantic_retrieval import retrieve
 from . import business_dictionary as business
@@ -55,6 +57,7 @@ class SemanticEdit(BaseModel):
 
 class SemanticBuildInput(BaseModel):
     llm_profile_id: str | None = Field(default=None,min_length=1,max_length=64)
+    mode: Literal['incremental','full'] = 'incremental'
 
 
 class SemanticReuseInput(BaseModel):
@@ -86,6 +89,11 @@ def can_answer(profile):
     return business.has_knowledge(profile) or profile['status']=='ready' or bool(profile.get('has_history')) or any(
         e['state'] in ('candidate','confirmed') or e.get('previous_definition')
         for e in profile['entries'])
+
+
+def pending_build_ids(profile):
+    remaining=set(profile.get('rebuild_remaining',[]))
+    return [entry['id'] for entry in profile['entries'] if entry['state']=='unresolved' or entry['id'] in remaining]
 
 
 def inventory(ctx):
@@ -122,29 +130,47 @@ class SemanticService:
         self.in_use=lambda model_id:False
         self.library=DictionaryLibrary(self)
 
+    def dictionary_id(self,model_id,*,active_only=True):
+        binding=self.db.one('SELECT dictionary_id,is_current FROM model_dictionary_bindings WHERE model_id=?',(model_id,))
+        if binding and active_only and not binding['is_current']:
+            raise HTTPException(409,'词典已关联到更新的模型结构，请同步模型后查看或编辑同一本词典')
+        return binding['dictionary_id'] if binding else model_id
+
+    def advance_snapshot(self,db,previous,model_id):
+        if previous in self.jobs:
+            raise HTTPException(409,'原词典正在梳理，请完成后再同步模型结构')
+        key=self.dictionary_id(previous)
+        db.execute('INSERT OR REPLACE INTO model_dictionary_bindings VALUES (?,?,0)',(previous,key))
+        db.execute('INSERT INTO model_dictionary_bindings VALUES (?,?,1)',(model_id,key))
+
     def _store(self,model_id,profile):
+        key=self.dictionary_id(model_id)
+        profile['dictionary_id']=key
         profile['dictionary_notice']=dictionary_notice(profile)
         profile['updated_at']=now()
         profile['dictionary_content_updated_at']=profile['updated_at']
         self.db.execute('INSERT OR REPLACE INTO model_semantics VALUES (?,?,?,?)',
-            (model_id,profile['fingerprint'],encode(profile),profile['updated_at']))
+            (key,profile['fingerprint'],encode(profile),profile['updated_at']))
 
     def ensure(self,model,ctx=None):
         with self.lock:
-            row=self.db.one('SELECT * FROM model_semantics WHERE model_id=?',(model['id'],))
-            if row and row['fingerprint']==model['fingerprint']:
-                profile=json.loads(row['payload'])
+            key=self.dictionary_id(model['id'])
+            row=self.db.one('SELECT * FROM model_semantics WHERE model_id=?',(key,))
+            previous=json.loads(row['payload']) if row else None
+            if previous and row['fingerprint']==model['fingerprint'] and previous['model_id']==model['id']:
+                profile=previous
                 migrated=business.migrate(profile)
                 if 'source_snapshot' not in profile:
                     profile['source_snapshot']=source_snapshot(model['context'])
                     migrated=True
                 if migrated:self._store(model['id'],profile)
                 return profile
+            if model.get('snapshot_released'):
+                raise HTTPException(409,RELEASED_DETAIL)
             if ctx is None:
                 from .powerbi import context_from_dict
                 ctx=context_from_dict(model['context'])
             entries=inventory(ctx)
-            previous=json.loads(row['payload']) if row else None
             profile={'model_id':model['id'],'fingerprint':model['fingerprint'],'status':'inventory',
                      'stage':'已整理模型事实，等待语义梳理','error':'','entries':entries,
                      'overview':'字段名和结构已读取；业务含义和单位仍需梳理与审阅。',
@@ -152,7 +178,9 @@ class SemanticService:
                      'source_snapshot':source_snapshot(model['context']), 'business_dictionary':business.empty()}
             if previous:
                 business.migrate(previous)
-                profile.update({key:previous[key] for key in ('dictionary_name','dictionary_name_source','dictionary_name_edited_at') if key in previous})
+                if 'source_snapshot' not in previous and previous['model_id']!=model['id']:
+                    previous['source_snapshot']=source_snapshot(self.powerbi.get(previous['model_id'])['context'])
+                profile.update({key:previous[key] for key in ('dictionary_name','dictionary_name_source','dictionary_name_edited_at','reuse','rebuild_remaining','overview_pending') if key in previous})
                 old={e['id']:e for e in previous['entries']}
                 for entry in entries:
                     entry['facts']={**old.get(entry['id'],{}).get('facts',{}),**entry['facts']}
@@ -184,14 +212,19 @@ class SemanticService:
             profile['changes']=changes
             profile['removed_entries']=list({e['id']:e for e in
                 ((profile.get('removed_entries',[]) if previous is profile else [])+removed)}.values())
-        pending=[e['id'] for e in entries if e['state']=='unresolved']
+        if profile.get('rebuild_remaining'):
+            remaining=set(profile['rebuild_remaining'])
+            profile['rebuild_remaining']=[entry['id'] for entry in entries if entry['id'] in remaining]
+        pending=pending_build_ids(profile)
         known=len(entries)-len(pending)
         profile.update(coverage=known,pending_ids=pending,source_snapshot=source_snapshot(model['context']))
         if metadata_read:profile.update(metadata_status='read',error='')
         if profile['status']!='building':
             ready=not pending and profile.get('metadata_status')=='read'
             profile.update(status='ready' if ready else 'inventory',
-                stage=f'已保留 {known} 项语义，{len(pending)} 项待增量梳理' if pending else
+                stage=f'全部重新梳理尚余 {len(pending)} 项，可继续梳理' if pending and profile.get('rebuild_remaining') else
+                      f'已保留 {known} 项语义，{len(pending)} 项待增量梳理' if pending else
+                      f'已保留全部 {known} 项对象定义，可单独生成业务总览' if ready and business.needs_overview(profile) else
                       f'已保留全部 {known} 项语义，无需重复梳理' if ready else '已保留语义，等待核对模型元数据')
         return profile
 
@@ -216,13 +249,9 @@ class SemanticService:
             if profile['status']=='building' and model_id not in self.jobs:
                 profile.update(status='error',stage='上次语义梳理已中断，可重新开始',error='本地服务已重启，尚未完成的字段仍需梳理')
                 self._store(model_id,profile)
-            generation=profile['business_dictionary']['generation']
-            if generation['status']=='building' and model_id not in self.business.jobs:
-                generation.update(status='error',stage='上次业务候选生成已中断，可重新生成',error='本地服务已重启，已有业务词典已保留')
-                self._store(model_id,profile)
             profile['dictionary_notice']=dictionary_notice(profile)
             if profile.get('reuse'):
-                source=self.db.one('SELECT payload FROM model_semantics WHERE model_id=?',(profile['reuse']['source_model_id'],))
+                source=self.db.one('SELECT payload FROM model_semantics WHERE model_id=?',(self.dictionary_id(profile['reuse']['source_model_id'],active_only=False),))
                 source_profile=json.loads(source['payload']) if source else None
                 profile['reuse']['source_deleted']=not bool(source_profile and can_answer(source_profile))
                 if source_profile and source_profile.get('dictionary_name'):
@@ -230,7 +259,7 @@ class SemanticService:
             return profile
 
     def summary(self,model_id,expected=None):
-        row=self.db.one('SELECT payload,fingerprint FROM model_semantics WHERE model_id=?',(model_id,))
+        row=self.db.one('SELECT payload,fingerprint FROM current_model_semantics WHERE model_id=?',(model_id,))
         if not row or (expected and row['fingerprint']!=expected):return {'status':'inventory','total':0,'confirmed':0,'coverage':0,'stage':'等待语义梳理','can_answer':False}
         p=json.loads(row['payload'])
         return {k:p[k] for k in ('status','stage','coverage')} | {
@@ -238,20 +267,22 @@ class SemanticService:
             'can_answer':can_answer(p),'pending':sum(e['state']=='unresolved' for e in p['entries']),
             'dictionary_notice':dictionary_notice(p)}
 
-    def start(self,model_id,settings,profile_id=None):
+    def start(self,model_id,settings,profile_id=None,mode='incremental'):
         with self.lock:
             profile=self.get(model_id)
             if model_id in self.jobs:return profile
             model=self.powerbi.get(model_id)
+            if model.get('snapshot_released'):raise HTTPException(409,RELEASED_DETAIL)
             if model['source']!='desktop':
                 raise HTTPException(409,'语义梳理需要连接真实 Desktop 模型')
             all_ids=[e['id'] for e in profile['entries']]
-            pending=[e['id'] for e in profile['entries'] if e['state']=='unresolved']
-            if not pending and profile['status']=='ready':return profile
+            if mode=='full':profile['rebuild_remaining']=all_ids
+            pending=pending_build_ids(profile)
+            if not pending and profile['status']=='ready' and not business.needs_overview(profile):return profile
             provider=settings.provider(profile_id) if profile_id else settings.provider()
             resume=len(all_ids)-len(pending)
             profile.update(status='building',stage='正在读取模型描述、格式和字段来源',error='',resume_from=resume,
-                           pending_ids=pending,diagnostics=[])
+                           coverage=resume,pending_ids=pending,diagnostics=[],overview_pending=not business.manual_overview(profile))
             self.jobs[model_id]=True
             self._store(model_id,profile)
             context=copy_context()
@@ -260,19 +291,64 @@ class SemanticService:
             thread.start()
             return profile
 
-    def _history(self,model_id):
-        rows=self.db.all('SELECT s.model_id,s.payload,s.updated_at,m.context,m.name,r.payload AS report_payload '
-            'FROM model_semantics s JOIN models m ON m.id=s.model_id '
-            'LEFT JOIN model_reports r ON r.model_id=s.model_id WHERE s.model_id!=? ORDER BY s.updated_at DESC',(model_id,))
+    def _history(self,model_id,*,include_empty=False):
+        rows=self.db.all('SELECT m.id AS model_id,s.payload,COALESCE(s.updated_at,m.created_at) AS updated_at,m.context,m.name,r.payload AS report_payload, '
+            'released.schema_signature AS signature,released.connection_digest FROM models m '
+            'LEFT JOIN released_snapshots released ON released.model_id=m.id '
+            'LEFT JOIN model_dictionary_bindings b ON b.model_id=m.id '
+            'LEFT JOIN model_semantics s ON COALESCE(b.dictionary_id,m.id)=s.model_id '
+            "LEFT JOIN model_reports r ON r.model_id=m.id WHERE m.source='desktop' AND COALESCE(b.is_current,1)=1 AND m.id!=? ORDER BY updated_at DESC",(model_id,))
         for row in rows:
-            row['profile']=json.loads(row['payload'])
+            row['profile']=json.loads(row['payload']) if row['payload'] else {'entries':[],'status':'inventory'}
             row['context']=json.loads(row['context'])
             row['report']=json.loads(row['report_payload']) if row['report_payload'] else row['profile'].get('report_identity',{})
-            row['signature']=schema_signature(row['context'])
+            row['signature']=row['signature'] or schema_signature(row['context'])
         rows.sort(key=lambda row:row['profile'].get('dictionary_content_updated_at',row['updated_at']),reverse=True)
         # Only validated, completed batches are stored, so even a running revision
         # can supply preserved definitions and its remaining pending objects.
-        return [r for r in rows if can_answer(r['profile'])]
+        return rows if include_empty else [r for r in rows if can_answer(r['profile'])]
+
+    @staticmethod
+    def _match_history(history,report,identity,signature):
+        same_name=[row for row in history if report.get('name') and normalize_name(report['name'])==normalize_name(row['report'].get('name'))]
+        paths={normalize_path(row['report']['path']) for row in same_name if row['report'].get('path')}
+        path=normalize_path(report.get('path'))
+        exact_path=next((row for row in history if path and normalize_path(row['report'].get('path'))==path),None)
+        named=exact_path or (next(iter(same_name),None) if len(paths|({path} if path else set()))<=1 else None)
+        if named and can_answer(named['profile']):return named,'report'
+        if identity:
+            for row in history:
+                prior=row['report']
+                engine=f"{prior['engine_pid']}:{prior['engine_port']}" if prior.get('engine_pid') and prior.get('engine_port') else row['profile'].get('connection_identity')
+                if engine==identity and (not report.get('name') or not prior.get('name') or same_report(report,prior)):
+                    if can_answer(row['profile']):return row,'running_instance'
+                    if not named:named=row
+        if report.get('name') and (exact_path or len(paths|({path} if path else set()))<=1):
+            legacy=[row for row in history if row['signature']==signature and not row['report'].get('name') and row['profile']['status']=='ready']
+            if len({row['profile'].get('connection_identity') or row['model_id'] for row in legacy})==1:
+                return legacy[0],'legacy_schema'
+        return named,'report'
+
+    def reconnect_snapshot(self,report,context,instances,reports,preferred=None):
+        with self.lock:
+            rows=self._history('',include_empty=True)
+            identity=f"{report['engine_pid']}:{report['engine_port']}" if report.get('engine_pid') else None
+            signature=schema_signature(context)
+            rows.sort(key=lambda row:not can_answer(row['profile']))
+            if any(instance.port!=report['engine_port'] and same_report(report,reports.get(getattr(instance,'pid',None),{})) for instance in instances):
+                rows=[row for row in rows if identity and row['report'].get('engine_pid')==report['engine_pid'] and row['report'].get('engine_port')==report['engine_port']]
+            key=self.dictionary_id(preferred,active_only=False) if preferred else None
+            source=next((row for row in rows if key and row['profile'].get('dictionary_id',row['model_id'])==key
+                         and same_report(report,row['report'])),None)
+            source,match=(source,'report') if source else self._match_history(rows,report,identity,signature)
+            if not source:return None
+            prior=source['report']
+            if any(instance.port!=report['engine_port'] and instance.port==prior.get('engine_port')
+                   and instance.pid==prior.get('engine_pid') for instance in instances):return None
+            if match=='legacy_schema':
+                if (source['connection_digest'] or connection_digest(source['context']))!=connection_digest(context):return None
+                self._claim_legacy(source,[row for row in rows if row['payload']],report)
+            return source
 
     def _claim_legacy(self,source,history,report):
         if not report.get('name') or source['report'].get('name'):return
@@ -280,9 +356,10 @@ class SemanticService:
         for old in history:
             if old['report'].get('name'):continue
             if (old['profile'].get('connection_identity') or old['model_id'])!=group:continue
+            claimed={**report,**{k:v for k,v in old['report'].items() if k in ('engine_pid','engine_port')}}
             self.db.execute('INSERT OR REPLACE INTO model_reports VALUES (?,?,?)',
-                (old['model_id'],encode(report),now()))
-            old['profile']['report_identity']=report
+                (old['model_id'],encode(claimed),now()))
+            old['profile']['report_identity']=claimed
             self._store(old['model_id'],old['profile'])
 
     def _reuse_from(self,model,profile,source,matched_by,metadata_read=True,*,persist=True):
@@ -320,10 +397,11 @@ class SemanticService:
         return profile
 
     def on_connect(self,model,settings,source_model_id=None,source_updated_at=None):
-        instance=next((i for i in find_instances() if i.port==model['port']),None)
+        instances=find_instances()
+        instance=next((i for i in instances if i.port==model['port']),None)
         identity=f"{instance.pid}:{instance.port}" if instance else None
         with self.lock:
-            profile=self.ensure(model)
+            profile=self.get(model['id'])
             if identity:profile['connection_identity']=identity
             profile['report_identity']=model.get('report',{})
             self._store(model['id'],profile)
@@ -339,7 +417,7 @@ class SemanticService:
                 profile=self._metadata(model,model['fingerprint'],metadata)
                 metadata_read=True
             except Exception as exc:
-                profile=self._merge(model['id'],model['fingerprint'],stage='模型事实读取未完成，可重新连接或重试梳理',
+                profile=self._merge(model['id'],model['fingerprint'],status='inventory',metadata_status='pending',stage='模型事实读取未完成，可重新连接或重试梳理',
                     error='无法读取完整语义元数据（'+type(exc).__name__+'）')
         with self.lock:
             # Metadata IO releases this lock. Re-read the destination so edits,
@@ -352,7 +430,6 @@ class SemanticService:
             if profile['status']=='building' and model['id'] in self.jobs:return profile
             history=self._history(model['id'])
             signature=schema_signature(model['context'])
-            exact=[r for r in history if r['signature']==signature]
             candidates=[];seen=set()
             for row in history:
                 report=row['report']
@@ -364,31 +441,31 @@ class SemanticService:
                     'path':report.get('path',''),'coverage':row['profile']['coverage'],'total':len(row['profile']['entries']),
                     'same_schema':row['signature']==signature,'updated_at':row['updated_at']})
             profile['reuse_candidates']=candidates[:12]
-            source=None;matched_by=''
             if source_model_id:
                 source=self.library.source(model['id'],source_model_id,source_updated_at)
-                matched_by='user_selection'
-            elif profile['status']!='ready':
-                report=model.get('report',{})
-                named=[r for r in history if same_report(report,r['report'])]
-                paths={normalize_path(r['report'].get('path')) for r in named if r['report'].get('path')}
-                if report.get('path') or len(paths)<=1:
-                    # The newest revision may contain corrections or an unfinished delta.
-                    # An older exact schema must not resurrect superseded definitions.
-                    source=next(iter(named),None)
-                    if source:matched_by='report'
-                if not source and identity:
-                    source=next((r for r in exact if r['profile'].get('connection_identity')==identity
-                                 and (not report.get('name') or not r['report'].get('name') or same_report(report,r['report']))),None)
-                    if source:matched_by='running_instance'
-                if not source and report.get('name') and not named:
-                    legacy=[r for r in exact if not r['report'].get('name') and r['profile']['status']=='ready']
-                    groups={r['profile'].get('connection_identity') or r['model_id'] for r in legacy}
-                    if len(groups)==1:
-                        source=legacy[0];matched_by='legacy_schema'
-            if source:
+                prior=source['report']
+                if (not can_answer(profile) and not profile.get('dictionary_name') and not profile.get('reuse') and not profile['business_dictionary']['revision']
+                    and (not prior.get('name') or not model['report'].get('name') or same_report(model['report'],prior)) and self.dictionary_id(model['id'])==model['id']
+                    and not any(i.port!=model['port'] and i.port==prior.get('engine_port') and i.pid==prior.get('engine_pid') for i in instances)):
+                    if self.library.busy(source_model_id):raise HTTPException(409,'所选词典正在使用，请完成任务后再关联')
+                    report={**prior,**model['report'],'path':model['report'].get('path') or prior.get('path','')}
+                    with self.db.connection() as db:
+                        self.advance_snapshot(db,source_model_id,model['id'])
+                        db.execute('DELETE FROM model_semantics WHERE model_id=?',(model['id'],))
+                        db.execute('INSERT OR REPLACE INTO model_reports VALUES (?,?,?)',(model['id'],encode(report),now()))
+                    model={**model,'report':report}
+                    if metadata_read:
+                        profile=self._metadata(model,model['fingerprint'],metadata)
+                    else:
+                        error=profile.get('error','')
+                        profile=self.ensure(model)
+                        profile.update(metadata_status='pending',status='inventory',error=error)
+                    profile['report_identity']=report
+                    if identity:profile['connection_identity']=identity
+                    self._store(model['id'],profile)
+                    return profile
                 self._claim_legacy(source,history,model.get('report',{}))
-                return self._reuse_from(model,profile,source,matched_by,metadata_read)
+                return self._reuse_from(model,profile,source,'user_selection',metadata_read)
             self._store(model['id'],profile)
         return profile
 
@@ -401,7 +478,7 @@ class SemanticService:
 
     def _merge(self,model_id,expected,updates=None,**changes):
         with self.lock:
-            row=self.db.one('SELECT payload,fingerprint FROM model_semantics WHERE model_id=?',(model_id,))
+            row=self.db.one('SELECT payload,fingerprint FROM model_semantics WHERE model_id=?',(self.dictionary_id(model_id),))
             if not row or row['fingerprint']!=expected:raise RuntimeError('模型结构已变化，旧语义梳理任务已停止')
             p=json.loads(row['payload']);updates=updates or {}
             for entry in p['entries']:
@@ -409,11 +486,12 @@ class SemanticService:
                 if entry['id'] in updates:
                     update=updates[entry['id']]
                     if 'facts' in update:entry['facts']=update['facts']
-                    if not entry.get('reviewed_at'):entry.update({k:v for k,v in update.items() if k!='facts'})
+                    if not entry.get('reviewed_at') and entry['state']!='confirmed':entry.update({k:v for k,v in update.items() if k!='facts'})
             p.update(changes);self._store(model_id,p)
             return p
 
     def _build(self,model_id,expected,provider):
+        summarizing=False
         try:
             check_cancelled()
             with self.powerbi.lock:
@@ -421,7 +499,7 @@ class SemanticService:
                 metadata=LiveDesktopSource(model['port']).semantic_metadata()
             p=self._metadata(model,expected,metadata)
             entries=p['entries'];total=len(entries)
-            pending=[e['id'] for e in entries if e['state']=='unresolved']
+            pending=set(pending_build_ids(p))
             work=[e for e in entries if e['id'] in pending];done=total-len(work)
             for start in range(0,len(work),20):
                 check_cancelled()
@@ -469,12 +547,20 @@ class SemanticService:
                 check_cancelled()
                 updates={e.id:{**e.model_dump(exclude={'id'}),'state':'candidate','source':'模型建议 · 待用户审阅'} for e in result.entries}
                 done+=len(batch)
-                self._merge(model_id,expected,updates,coverage=done,pending_ids=[e['id'] for e in work[start+len(batch):]])
-            self._merge(model_id,expected,status='ready',stage='语义梳理完成，待确认的定义仍明确标记',
+                remaining=[e['id'] for e in work[start+len(batch):]]
+                self._merge(model_id,expected,updates,coverage=done,pending_ids=remaining,
+                            **({'rebuild_remaining':remaining} if p.get('rebuild_remaining') else {}))
+            check_cancelled()
+            snapshot=self.get(model_id)
+            if not business.manual_overview(snapshot):
+                summarizing=True
+                snapshot=self._merge(model_id,expected,stage='对象词典已完成，正在总结业务总览')
+                self.business.summarize(model,snapshot,provider)
+            self._merge(model_id,expected,status='ready',rebuild_remaining=[],stage='对象词典与业务总览梳理完成，请审阅候选定义',
                 overview='已覆盖全部表、字段和度量值；模型事实与候选业务含义分开保存。待确认建议不能作为已确定的业务口径。')
         except Exception as exc:
-            try:self._merge(model_id,expected,status='error',stage='语义梳理未完成，可重新开始',
-                            error=exc.detail if isinstance(exc,HTTPException) else f'梳理失败（{type(exc).__name__}），已保留完成部分；重试将从已完成的批次继续')
+            try:self._merge(model_id,expected,status='error',stage='对象词典已保留，业务总览未完成' if summarizing else '语义梳理未完成，可重新开始',
+                            error=exc.detail if isinstance(exc,HTTPException) else '业务总览生成失败，可仅重试总览' if summarizing else f'梳理失败（{type(exc).__name__}），已保留完成部分；重试将从已完成的批次继续')
             except Exception:pass
         finally:
             with self.lock:self.jobs.pop(model_id,None)
@@ -494,11 +580,12 @@ class SemanticService:
             entry.update(**body.model_dump(exclude={'confirmed'}),state='confirmed' if body.confirmed else 'candidate',
                          source='用户确认' if body.confirmed else '用户编辑 · 待确认',reviewed_at=now())
             p['business_dictionary']['revision']+=1
-            p['pending_ids']=[e['id'] for e in p['entries'] if e['state']=='unresolved']
+            p['overview_pending']=not business.manual_overview(p)
+            p['pending_ids']=pending_build_ids(p)
             p['coverage']=len(p['entries'])-len(p['pending_ids'])
             if not p['pending_ids'] and p.get('metadata_status')=='read' and p['status']!='building':
                 p.update(status='ready',stage='语义词典已更新，候选定义仍待审阅',error='')
-            if p['entries'] and all(e['state']=='confirmed' for e in p['entries']):
+            if p['status']!='building' and not p['pending_ids'] and p['entries'] and all(e['state']=='confirmed' for e in p['entries']):
                 p.update(status='ready',coverage=len(p['entries']),stage='全部模型业务定义已由用户确认',error='')
             self._store(model_id,p)
             return p

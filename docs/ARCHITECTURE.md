@@ -183,11 +183,11 @@ frontend/app.js: syncCurrentModel()
 
 [business_dictionary.py](../backend/business_dictionary.py) 在原 `model_semantics.payload` 内维护 `business_dictionary`，不新增第二份模型事实表。`version=1`；首次读取旧记录补空业务词典和对象 `usage_notes`。`overview` 保存业务全貌；`items` 的 `kind` 为 `term / convention`，带别名、说明、适用范围、对象引用、可选列筛选、业务依据、候选／确认／待复核状态和审阅时间。全局 `revision` 用于编辑冲突检查，`deleted_ids` 防止历史复用恢复已删词条。
 
-API 位于 `/api/models/{model_id}/semantics/business`：`PUT /overview`、`POST /items`、`PUT/DELETE /items/{id}`、`POST /suggest`。引用必须是当前模型真实对象；筛选只能引用列，支持 `eq / in`，值按字符串保存。业务规则不修改原生关系或 DAX。新增词条上限 500；单词条关联最多 20 个对象、10 组筛选。
+手动编辑 API 位于 `/api/models/{model_id}/semantics/business`：`PUT /overview`、`POST /items`、`PUT/DELETE /items/{id}`。引用必须是当前模型真实对象；筛选只能引用列，支持 `eq / in`，值按字符串保存。业务规则不修改原生关系或 DAX。新增词条上限 500；单词条关联最多 20 个对象、10 组筛选。
 
 `_align()` 使用本次实际变更集合使引用受影响对象的业务记录失效，避免累计 UI 变更清单反复撤销刚确认的定义；业务总览在模型变化后保守转为待复核。历史复用深拷贝业务记录，目标词典的手动修改和删除优先。同一报表跨运行复用遵循现有报表身份匹配，不因结构相似就关联其他业务报表。
 
-“生成业务候选”使用独立后台任务及诊断阶段 `business_dictionary`，输入模型对象约 45,000 字符，轮流选择表、度量、列并声明遗漏数；JSON 结果最多八项，强制保持候选，不接受虚构对象或 AI 生成的筛选值。任务写回前比较模型 fingerprint 和词典 revision，冲突时丢弃本次建议，已有记录保持不变。用户编辑不被后台候选覆盖；服务重启后中断任务显式标错，可重试。
+业务总览属于对象语义任务的最后一个阶段（诊断标识 `semantic_overview`）。同一服务根据整个模型的对象数量、表结构索引、关系、日期表和对象词典进行总结；长模型分配独立的结构与定义预算，轮流采样不同表及对象类型，并声明遗漏数量。响应仅接受总览正文和业务主题，落库为待审阅；术语与分析约定没有 AI 生成入口。提交前重新核对模型和对象定义，保留人工总览以及同期修改的词条。总览失败后可单独重试。
 
 业务术语通过临时 `search_aliases` 参与对象检索，不写回对象业务别名，也不改变对象确认状态。总览提供全局业务背景，相关术语和范围命中的约定按预算装入 `business_dictionary` 提示词块；失效记录只输出待复核标记，省略旧含义及筛选值。约定可用于用户未指定的条件，显式要求和 DAX 优先。未命中词典的问题仍可组合真实模型对象查询。分析总结复用规划时的语义快照，实际数值仍来自 `evidence`。这些约束通过上下文指导生成，不是一个能证明业务正确性的查询编译器。
 
@@ -209,7 +209,7 @@ API 位于 `/api/models/{model_id}/semantics/business`：`PUT /overview`、`POST
 
 `dictionary_notice` 同时反映对象解释与业务记录的待更新状态，附加在完整词典和模型语义摘要中。业务记录仍失效时，即使对象语义覆盖已经完成也继续提示；完整扩展元数据未核对时标为 `unverified`。前端 [dictionaries.js](../frontend/dictionaries.js) 提供独立的历史目录、搜索、预览、关联和逐版本删除；入口位于连接窗口和模型工作台右上方“词典管理”。`showModal(...,{wide:true})` 仅对模型语义和词典管理启用加宽样式，其他弹窗恢复默认宽度；嵌套的字段预览沿用当前窗口宽度。
 
-`DELETE /api/semantic-dictionaries/{id}?current_model_id=...&updated_at=...` 仅删除对应 `model_semantics` 行，不删除模型、消息或其他版本。按当前目标、语义／业务候选后台任务和 Chat 会话锁阻止删除正在使用的版本，关联到忙碌目标也被拒绝；客户端携带保存时间，并在 SQL DELETE 中再次限定版本防止并发更新被误删。已关联副本独立保存，删除来源后仍可使用；旧会话重新生成时若其自身词典被删除，则需重新建立或关联。目录和关联操作不调用外部模型。
+`DELETE /api/semantic-dictionaries/{id}?current_model_id=...&updated_at=...` 仅删除对应 `model_semantics` 行，不删除模型、消息或其他版本。按当前目标、语义梳理后台任务和 Chat 会话锁阻止删除正在使用的版本，关联到忙碌目标也被拒绝；客户端携带保存时间，并在 SQL DELETE 中再次限定版本防止并发更新被误删。已关联副本独立保存，删除来源后仍可使用；旧会话重新生成时若其自身词典被删除，则需重新建立或关联。目录和关联操作不调用外部模型。
 
 ### 生成与增量复用
 

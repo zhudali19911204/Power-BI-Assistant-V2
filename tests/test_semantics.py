@@ -44,6 +44,9 @@ class DictionaryProvider:
     def close(self):self.closed=True
     def stream(self,system,messages,**opts):
         payload=json.loads(messages[0].content)
+        if 'object_definitions' in payload:
+            yield encode({'description':'本模型业务总览待审阅','topics':['费用']})
+            return
         self.calls.append((system,payload))
         if self.entered:self.entered.set()
         if self.resume:assert self.resume.wait(3)
@@ -264,12 +267,17 @@ def test_connect_prepares_local_facts_without_calling_any_model_service(setup,mo
 def test_reconnect_only_reuses_definitions_from_the_same_live_engine(setup,monkeypatch):
     app,client,model,ctx,conv=setup
     p=ready(app,model,ctx);p['connection_identity']='55:50001';app.state.semantics._store(model['id'],p)
-    new=app.state.powerbi.save('再次连接','desktop',50001,ctx)
-    monkeypatch.setattr('backend.semantics.find_instances',lambda:[SimpleNamespace(pid=55,port=50001)])
+    instance=SimpleNamespace(pid=55,port=50001)
+    monkeypatch.setattr('backend.powerbi.find_instances',lambda:[instance])
+    monkeypatch.setattr('backend.semantics.find_instances',lambda:[instance])
+    monkeypatch.setattr('backend.powerbi.reports_for_instances',lambda instances:{})
+    monkeypatch.setattr('backend.powerbi.LiveDesktopSource',lambda port:SimpleNamespace(load=lambda:ctx))
+    new=app.state.powerbi.connect(50001)
+    assert new['id']==model['id']
     assert app.state.semantics.on_connect(new,app.state.settings)['status']=='ready'
-    other=app.state.powerbi.save('另一实例同结构','desktop',50001,ctx)
-    monkeypatch.setattr('backend.semantics.find_instances',lambda:[SimpleNamespace(pid=77,port=50001)])
-    monkeypatch.setattr('backend.semantics.LiveDesktopSource',lambda *a:SimpleNamespace(semantic_metadata=lambda:{}))
+    instance.pid=77
+    other=app.state.powerbi.connect(50001)
+    assert other['id']!=model['id']
     assert app.state.semantics.on_connect(other,app.state.settings)['status']=='inventory'
 
 
@@ -299,7 +307,11 @@ def test_invalid_batch_is_retried_without_counting_unvalidated_objects(setup,mon
     app,client,model,ctx,conv=setup
     class NullableUnitProvider(DictionaryProvider):
         def stream(self,system,messages,**opts):
-            payload=json.loads(messages[0].content);self.calls.append((system,payload))
+            payload=json.loads(messages[0].content)
+            if 'object_definitions' in payload:
+                yield from super().stream(system,messages,**opts)
+                return
+            self.calls.append((system,payload))
             if len(self.calls)==2:
                 assert '格式问题类型' in messages[-1].content
             yield encode({'entries':[{'id':entry['id'],'business_name':'候选名称','meaning':'业务含义待确认',

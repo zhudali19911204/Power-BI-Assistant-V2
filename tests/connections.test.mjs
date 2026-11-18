@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createConnectionMonitor,connectionPresentation} from '../frontend/connections.js';
+import {createConnectionMonitor,connectionPresentation,releaseSnapshot} from '../frontend/connections.js';
+
+test('released model keeps its report identity but drops the cached field tree',()=>{
+  const original={id:'old',source:'desktop',live:true,context:{tables:{Sales:[{name:'Amount'}]}}};
+  const released=releaseSnapshot(original);
+  assert.equal(released.id,original.id);
+  assert.equal(released.live,false);
+  assert.deepEqual(released.context.tables,{});
+  assert.equal(connectionPresentation(released).label,'快照已释放');
+});
 
 test('connection states distinguish recovery, changed schema, ambiguity and demo',()=>{
   const model={source:'desktop',live:false};

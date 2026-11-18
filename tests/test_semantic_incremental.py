@@ -10,6 +10,7 @@ from backend.powerbi import fingerprint
 from backend.semantics import SemanticEdit, object_id
 from tests.test_report_reuse import setup, connect, context
 from tests.test_semantics import DictionaryProvider, wait_ready
+from backend.business_dictionary import OverviewEdit
 
 
 def test_in_place_revision_keeps_candidates_and_reviews_and_builds_only_the_delta(setup,monkeypatch):
@@ -178,13 +179,65 @@ def test_newest_revision_wins_over_an_older_exact_schema(setup):
     app.state.semantics.edit(second['id'],key,SemanticEdit(meaning='最新修订的金额定义',confirmed=True))
     third=connect(client,engine(ctx=context(),port=61001,pid=88))
     p=app.state.semantics.get(third['id'])
-    assert p['reuse']['source_model_id']==second['id']
+    assert p['dictionary_id']==first['id'] and p['model_id']==third['id']
+    assert app.state.db.all('SELECT model_id FROM model_semantics')==[{'model_id':first['id']}]
     assert next(e for e in p['entries'] if e['id']==key)['meaning']=='最新修订的金额定义'
+
+
+def test_full_build_refreshes_all_objects_in_place_without_overwriting_reviews(setup,monkeypatch):
+    app,client,state,engine,built=setup
+    model=connect(client,engine());built(model)
+    service=app.state.semantics
+    model_id=model['id'];endpoint=f'/api/models/{model_id}/semantics/build'
+    service.edit(model_id,object_id('column','Sales','Code'),SemanticEdit(meaning='人工候选',confirmed=False))
+    before=service.business.edit(model_id,OverviewEdit(description='人工总览',confirmed=True))
+    provider=DictionaryProvider();selected=[]
+    def choose(profile_id):
+        selected.append(profile_id)
+        return provider
+    monkeypatch.setattr(app.state.settings,'provider',choose)
+    assert client.post(endpoint,json={'mode':'invalid'}).status_code==422
+    response=client.post(endpoint,json={'mode':'full','llm_profile_id':'selected'})
+    assert response.status_code==200 and response.json()['status']=='building'
+    after=wait_ready(app,model_id)
+    assert after['status']=='ready' and after['dictionary_id']==before['dictionary_id'] and selected==['selected']
+    ids=[obj['id'] for _,batch in provider.calls for obj in batch['objects']]
+    assert sorted(ids)==sorted(entry['id'] for entry in before['entries'])
+    assert after['business_dictionary']==before['business_dictionary']
+    for old,new in zip(before['entries'],after['entries']):
+        if old['reviewed_at']:assert new==old
+        else:assert old['meaning']!=new['meaning'] and new['state']=='candidate'
+    assert not after['pending_ids'] and not after['rebuild_remaining']
+
+
+def test_failed_full_build_retains_original_entries_and_resumes_only_unfinished_batches(setup,monkeypatch):
+    app,client,state,engine,built=setup
+    expanded=context();expanded.tables['Sales'] += [Column(f'Extra{i}','string','Sales') for i in range(25)]
+    model=connect(client,engine(ctx=expanded));before=built(model)
+    class Interrupted(DictionaryProvider):
+        def stream(self,*args,**kwargs):
+            if self.calls:raise OSError('interrupted second batch')
+            yield from super().stream(*args,**kwargs)
+    provider=Interrupted();monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    endpoint=f"/api/models/{model['id']}/semantics/build"
+    assert client.post(endpoint,json={'mode':'full'}).status_code==200
+    partial=wait_ready(app,model['id'])
+    assert partial['status']=='error' and partial['coverage']==20
+    remaining=set(partial['rebuild_remaining']);assert len(remaining)==len(before['entries'])-20
+    assert [e for e in partial['entries'] if e['id'] in remaining]==[e for e in before['entries'] if e['id'] in remaining]
+    reopened=connect(client,engine(ctx=expanded,port=60001,pid=77))
+    assert reopened['id']==model['id'] and reopened['semantics']['can_answer']
+    provider=DictionaryProvider()
+    assert client.post(endpoint,json={}).status_code==200
+    finished=wait_ready(app,model['id'])
+    assert {e['id'] for _,batch in provider.calls for e in batch['objects']}==remaining
+    assert finished['status']=='ready' and not finished['rebuild_remaining']
 
 
 def test_no_change_build_does_not_create_a_provider_or_run_a_job(setup):
     app,client,state,engine,built=setup
     model=connect(client,engine());built(model)
+    app.state.semantics.business.edit(model['id'],OverviewEdit(description='已确认总览',confirmed=True))
     r=client.post(f"/api/models/{model['id']}/semantics/build",json={})
     assert r.status_code==200 and r.json()['status']=='ready'
     assert not app.state.semantics.jobs
@@ -235,7 +288,7 @@ def test_latest_all_changed_revision_is_still_reusable_history(setup,status):
     p['status']=status;app.state.semantics._store(second['id'],p)
     third=connect(client,engine(ctx=changed,port=61001,pid=88))
     reused=app.state.semantics.get(third['id'])
-    assert reused['reuse']['source_model_id']==second['id']
+    assert reused['dictionary_id']==first['id'] and third['id']==second['id']
     assert reused['has_history'] and reused['coverage']==0
     app.state.semantics.require_ready(third,changed)
     assert next(e for e in reused['entries'] if e['name']=='Actual')['previous_definition']['state']=='confirmed'

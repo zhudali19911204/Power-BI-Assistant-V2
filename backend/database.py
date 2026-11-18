@@ -37,6 +37,9 @@ class Database:
                 CREATE TABLE IF NOT EXISTS models (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL, port INTEGER,
                     fingerprint TEXT NOT NULL, context TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS released_snapshots (
+                    model_id TEXT PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
+                    schema_signature TEXT NOT NULL, connection_digest TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY, title TEXT NOT NULL, mode TEXT NOT NULL,
                     model_id TEXT NOT NULL REFERENCES models(id), query_name TEXT NOT NULL DEFAULT '',
@@ -92,6 +95,13 @@ class Database:
                 CREATE TABLE IF NOT EXISTS model_reports (
                     model_id TEXT PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS model_dictionary_bindings (
+                    model_id TEXT PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
+                    dictionary_id TEXT NOT NULL REFERENCES models(id), is_current INTEGER NOT NULL);
+                CREATE UNIQUE INDEX IF NOT EXISTS dictionary_current_snapshot ON model_dictionary_bindings(dictionary_id) WHERE is_current=1;
+                CREATE VIEW IF NOT EXISTS current_model_semantics AS SELECT COALESCE(b.model_id,s.model_id) AS model_id,
+                    s.model_id AS dictionary_id,s.fingerprint,s.payload,s.updated_at FROM model_semantics s
+                    LEFT JOIN model_dictionary_bindings b ON b.dictionary_id=s.model_id AND b.is_current=1;
                 CREATE TABLE IF NOT EXISTS conversation_bindings (
                     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
                     literal TEXT NOT NULL, table_name TEXT, column_name TEXT, created_at TEXT NOT NULL,

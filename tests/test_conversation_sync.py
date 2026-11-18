@@ -54,7 +54,8 @@ def test_sync_keeps_conversation_messages_artifacts_results_images_and_other_con
     assert len(app.state.db.all('SELECT * FROM conversations'))==2
     assert all(app.state.db.all(f'SELECT * FROM {t}')==saved[t] for t in tables)
     assert new['port']==60001 and new['semantics']['can_answer'] and new['semantics']['pending']==2
-    assert app.state.powerbi.get(old['id'])['context']==old['context']
+    assert app.state.powerbi.get(old['id'])['snapshot_released']
+    assert app.state.db.one('SELECT context FROM models WHERE id=?',(old['id'],))['context']=='null'
     rows=client.get(f"/api/conversations/{conv['id']}/messages").json()
     assert not rows[0]['model_stale'] and rows[1]['model_stale']
     assert rows[0]['images'][0]['id']==picture and rows[1]['analysis'][0]['rows']==result()['rows']

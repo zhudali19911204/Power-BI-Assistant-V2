@@ -35,13 +35,15 @@ def test_restart_restores_desktop_only_after_real_context_match(tmp_path,monkeyp
 
 def test_reconnecting_same_engine_restores_unchanged_historical_conversations(tmp_path,monkeypatch):
     service=PowerBIService(Database(tmp_path/'test.sqlite3'))
-    old=service.save('old','desktop',51413,context())
+    mock_engine(monkeypatch,context())
+    monkeypatch.setattr('backend.powerbi.find_instances',lambda:[SimpleNamespace(port=51413,pid=55)])
+    monkeypatch.setattr('backend.powerbi.reports_for_instances',lambda instances:{55:{'name':'Sales'}})
+    old=service.connect(51413)
     other=service.save('changed','desktop',51413,context('Other'))
     service.live_ids.clear()
-    mock_engine(monkeypatch,context())
     new=service.connect(51413)
-    assert new['live'] and service.get(old['id'])['live']
-    assert not service.get(other['id'])['live']
+    assert new['id']==old['id'] and new['live']
+    assert service.get(other['id'])['snapshot_released']
 
 
 def test_reused_port_with_different_model_cannot_restore_a_snapshot(tmp_path,monkeypatch):

@@ -33,17 +33,16 @@ def rename(client,model,name,**extra):
     return client.put('/api/semantic-dictionaries/'+model['id']+'/name',json={'name':name,**extra})
 
 
-def test_catalog_groups_report_revisions_and_retains_distinct_paths(setup):
+def test_catalog_reuses_current_dictionary_and_retains_distinct_paths(setup):
     app,client,state,engine,built=setup
     old=connect(client,engine());built(old)
     newer=connect(client,engine(port=61111,pid=77))
     other=connect(client,engine(path=r'F:\Other\费用分析.pbix',port=62222,pid=88));built(other)
     data=library(client,newer)
     rows={r['model_id']:r for r in data['dictionaries']}
-    assert len(rows)==3
-    assert rows[old['id']]['group']==rows[newer['id']]['group']
+    assert len(rows)==2 and old['id']==newer['id']
     assert rows[old['id']]['group']!=rows[other['id']]['group']
-    assert rows[newer['id']]['is_current'] and not rows[old['id']]['is_current']
+    assert rows[newer['id']]['is_current'] and not rows[other['id']]['is_current']
     assert rows[old['id']]['same_schema'] and rows[old['id']]['shared_objects']==rows[old['id']]['total']
     assert all('entries' not in row and 'context' not in row for row in rows.values())
 
@@ -163,7 +162,8 @@ def test_source_revision_change_requires_a_new_preview(setup):
 def test_deleted_source_cannot_be_associated_but_its_existing_copies_survive(setup):
     app,client,state,engine,built=setup
     source=connect(client,engine());built(source)
-    target=connect(client,engine(port=61111,pid=77))
+    target=connect(client,engine(name='另存报表',path=r'F:\另存报表.pbix',port=61111,pid=77))
+    app.state.semantics.reuse(target['id'],source['id'])
     before=copy.deepcopy(app.state.semantics.get(target['id']))
     assert delete(client,source).status_code==200
     after=app.state.semantics.get(target['id'])
@@ -171,8 +171,7 @@ def test_deleted_source_cannot_be_associated_but_its_existing_copies_survive(set
     assert source['id'] not in {r['model_id'] for r in library(client)['dictionaries']}
     assert preview(client,target,source).status_code==404
     assert client.post(f"/api/models/{target['id']}/semantics/reuse",json={'source_model_id':source['id']}).status_code==404
-    # Opening a deleted snapshot only creates fresh inventory, not the deleted definitions.
-    app.state.semantics.get(source['id'])
+    assert client.get(f"/api/models/{source['id']}/semantics").status_code==409
     assert app.state.semantics.get(target['id'])['reuse']['source_deleted']
     assert source['id'] not in {r['model_id'] for r in library(client)['dictionaries']}
 
@@ -180,7 +179,8 @@ def test_deleted_source_cannot_be_associated_but_its_existing_copies_survive(set
 def test_delete_keeps_models_conversations_and_other_dictionary_revisions(setup):
     app,client,state,engine,built=setup
     source=connect(client,engine());built(source)
-    target=connect(client,engine(port=61111,pid=77))
+    target=connect(client,engine(name='另存报表',path=r'F:\另存报表.pbix',port=61111,pid=77))
+    app.state.semantics.reuse(target['id'],source['id'])
     conv=client.post('/api/conversations',json={'model_id':source['id'],'mode':'dax'}).json()
     row=next(r for r in library(client)['dictionaries'] if r['model_id']==source['id'])
     response=delete(client,source,updated_at=row['updated_at'],current_model_id=target['id'])
@@ -192,13 +192,12 @@ def test_delete_keeps_models_conversations_and_other_dictionary_revisions(setup)
     assert delete(client,source).status_code==404
 
 
-@pytest.mark.parametrize('job',['objects','business','conversation'])
+@pytest.mark.parametrize('job',['objects','conversation'])
 def test_active_dictionary_cannot_be_deleted_or_reassociated(setup,job):
     app,client,state,engine,built=setup
     source=connect(client,engine());built(source)
     target=connect(client,engine(port=61111,pid=77))
     if job=='objects':app.state.semantics.jobs[target['id']]=True
-    elif job=='business':app.state.semantics.business.jobs[target['id']]=True
     else:
         conv=client.post('/api/conversations',json={'model_id':target['id'],'mode':'dax'}).json()
         lock=threading.Lock();lock.acquire();app.state.chat.locks[conv['id']]=lock
@@ -209,7 +208,7 @@ def test_active_dictionary_cannot_be_deleted_or_reassociated(setup,job):
         catalog=library(client,target)
         assert catalog['target_busy'] and next(r for r in catalog['dictionaries'] if r['is_current'])['busy']
     finally:
-        app.state.semantics.jobs.pop(target['id'],None);app.state.semantics.business.jobs.pop(target['id'],None)
+        app.state.semantics.jobs.pop(target['id'],None)
         if job=='conversation':lock.release()
 
 
@@ -327,13 +326,15 @@ def test_explicit_destination_dictionary_name_wins_over_historical_association(s
 def test_renaming_old_revision_does_not_resurrect_older_business_definitions(setup):
     app,client,state,engine,built=setup
     old=connect(client,engine());built(old)
-    newer=connect(client,engine(port=61111,pid=77))
+    changed=context();changed.tables['Sales'].append(Column('New','string','Sales'))
+    newer=connect(client,engine(port=61111,pid=77,ctx=changed))
     key=object_id('measure','Sales','Actual')
     app.state.semantics.edit(newer['id'],key,SemanticEdit(meaning='较新版本已修正的实际金额定义',confirmed=True))
-    assert rename(client,old,'给旧词典取个新名字').status_code==200
+    assert rename(client,old,'给旧词典取个新名字').status_code==409
+    assert rename(client,newer,'给原词典取个新名字').status_code==200
     new=connect(client,engine(port=62222,pid=88))
     p=app.state.semantics.get(new['id'])
-    assert p['reuse']['source_model_id']==newer['id']
+    assert p['dictionary_id']==old['id'] and p['dictionary_name']=='给原词典取个新名字'
     assert next(e for e in p['entries'] if e['id']==key)['meaning']=='较新版本已修正的实际金额定义'
 
 

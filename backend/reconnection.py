@@ -1,5 +1,7 @@
 """Reconnect only to a uniquely identified report with the saved schema."""
 import logging
+import hashlib
+from contextlib import nullcontext
 import threading
 import time
 from dataclasses import asdict
@@ -30,6 +32,13 @@ def connection_schema(context):
         if isinstance(value,list):return sorted((ordered(v) for v in value),key=encode)
         return value
     return encode(ordered(context))
+
+
+def connection_digest(context):
+    return hashlib.sha256(connection_schema(context).encode()).hexdigest()
+
+
+RELEASED_DETAIL = '旧模型快照已释放，历史对话和结果仍保留。请打开对应报表，点击“同步模型”后继续。'
 
 
 class ConnectionIssue(HTTPException):
@@ -71,6 +80,13 @@ class DesktopReconnector:
         self.failures.pop(model_id, None)
         self.update(model_id, 'connected', 'Desktop 已连接，已核对报表与模型结构',
                     retry_in=self.healthy_interval)
+
+    def forget(self, model_ids):
+        with self.lock:
+            for model_id in model_ids:
+                self.states.pop(model_id,None)
+                self.due.pop(model_id,None)
+                self.failures.pop(model_id,None)
 
     def lost(self, model_id):
         self.service.live_ids.discard(model_id)
@@ -115,6 +131,8 @@ class DesktopReconnector:
         service = self.service
         with service.lock:
             model = service.get(model_id)
+            if model.get('snapshot_released'):
+                raise ConnectionIssue('released', RELEASED_DETAIL)
             if model['source'] != 'desktop':
                 raise HTTPException(409, '请重新连接本机 Desktop 后实跑，模型快照不能执行代码')
             issue = None
@@ -150,15 +168,17 @@ class DesktopReconnector:
             self.update(model_id, issue.state, issue.detail, retry_in=retry)
             raise issue
 
-    def bind(self, model, instance, report):
+    def bind(self, model, instance, report, *, connection=None):
         service = self.service
         previous = model.get('report', {})
         report = {**previous, **report, 'engine_pid': getattr(instance, 'pid', None), 'engine_port': instance.port}
         if not report.get('path') and previous.get('path'):report['path']=previous['path']
         changed_engine = (instance.port != model['port'] or previous.get('engine_pid') != report['engine_pid'])
-        with service.db.connection() as db:
+        with nullcontext(connection) if connection is not None else service.db.connection() as db:
             if instance.port != model['port']:
                 db.execute('UPDATE models SET port=? WHERE id=?', (instance.port, model['id']))
+            if report.get('name') and report['name']!=model['name']:
+                db.execute('UPDATE models SET name=? WHERE id=?',(report['name'],model['id']))
             if report != previous:
                 db.execute('INSERT OR REPLACE INTO model_reports VALUES (?,?,?)', (model['id'], encode(report), now()))
             if changed_engine:
@@ -171,6 +191,8 @@ class DesktopReconnector:
 
     def poll(self, model_id):
         model = self.service.get(model_id)
+        if model.get('snapshot_released'):
+            return {'model_id':model_id,'live':False,'port':model['port'],'connection':model['connection']}
         if model['source'] != 'desktop':
             return {'model_id': model_id, 'live': False, 'port': model['port'],
                     'connection': {'status': 'demo', 'detail': '示例模型', 'checked_at': None, 'retry_in': 0}}
