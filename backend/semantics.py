@@ -520,6 +520,16 @@ class SemanticService:
 
     def prompt(self,model_id,question='',*,history=(),bindings=()):
         context=self.context(model_id,question,history=history,bindings=bindings)
+        return self.format_prompt(context)
+
+    @staticmethod
+    def format_prompt(context, *, merged=False):
+        grounding = ('\n语义条目和结构补充共同描述当前模型。业务口径、单位和别名按语义层的确认状态采用，省略的单位未知。'
+            '对象名、expression 和关系状态以本次模型快照为准。actual_dtype 优先取快照的具体类型，快照为 auto 时用扩展元数据补足；'
+            'semantic_dtype 记录有差异的语义类型。in_snapshot=false 的对象或关系不可用于编写查询。'
+            'calculated_table 表示 DAX 计算表，静态快照可能未列出其字段。业务定义与实际公式冲突且影响结果时指出差异，现有依据仍无法确定用户口径时再询问。'
+            '补查命中前文对象时只列标识和变更项，null 表示清除旧值。'
+            '词典项仅有标识时沿用前文定义。' if merged else '')
         return (SEMANTIC_RULES+business.RULES+'\n增量语义使用规则：词典更新未完成时仍正常回答，使用当前模型结构与未变化的定义。'
             '新增或变更条目的历史确认已失效；不要套用旧含义、单位或别名。只有问题依赖未知业务含义时才逐项澄清，'
             '或根据当前模型事实和实际查值回答并说明不确定性，不要求用户先重建整份语义层。'
@@ -530,7 +540,8 @@ class SemanticService:
             'omitted_relevant 或 omitted_relationships 大于零时，相关上下文未全部装入；检查 missing，'
             '不得声称已取得完整定义，若缺失内容影响本题口径则先补查相关语义，仍无法确定时再澄清。'
             'relationships 仅补充关系路径，必须结合单双向、激活状态和 DAX 判断筛选是否生效，不能据此替用户选择日期口径。'
-            '\n模型语义词典（未确认建议不可视为事实）：\n'+encode(context))
+            +grounding+'\n模型语义词典（未确认建议不可视为事实）：\n'
+            +(json.dumps(context,ensure_ascii=False,separators=(',', ':'),allow_nan=False) if merged else encode(context)))
 
     def bindings(self,conversation_id):
         return self.db.all('SELECT literal,table_name,column_name FROM conversation_bindings WHERE conversation_id=?',(conversation_id,))

@@ -46,6 +46,24 @@ def send(client, cid, content='计算总额', **extra):
     return [json.loads(line) for line in response.text.splitlines()]
 
 
+def test_m_chat_keeps_current_script_and_sends_output_column_types_once(client, app, monkeypatch):
+    conv, model = conversation(client, 'mquery')
+    provider = FakeProvider(['销售额是当前查询的金额列。'])
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    assert send(client, conv['id'], "解释 '销售明细'[销售额] 的类型")[-1]['type'] == 'done'
+    system = provider.calls[0][0]
+    tail = system.split('模型语义词典（未确认建议不可视为事实）：\n', 1)[1]
+    entries = json.JSONDecoder().raw_decode(tail)[0]['entries']
+    selected = {e['name']: e for e in entries if e['kind'] == 'column' and e['table'] == '销售明细'}
+    assert '销售额' in selected and not any('expression' in e for e in entries)
+    assert model['context']['table_queries']['销售明细'] in system
+    for column in model['context']['tables']['销售明细']:
+        name, dtype = column['name'], column['dtype']
+        assert (f'[{name}] ({dtype})' in system) == (name not in selected)
+        if name in selected:
+            assert selected[name]['actual_dtype'] == dtype
+
+
 def test_local_only_and_csrf(client):
     assert client.get('/api/health').json()['platform'] == 'desktop'
     assert client.get('/').status_code == 200

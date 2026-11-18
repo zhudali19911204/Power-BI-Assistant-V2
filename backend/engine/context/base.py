@@ -14,6 +14,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 
+def _table_ref(name: str) -> str:
+    return "'" + name.replace("'", "''") + "'"
+
+
+def _object_ref(name: str) -> str:
+    return "[" + name.replace("]", "]]") + "]"
+
+
 @dataclass
 class Column:
     name: str
@@ -83,11 +91,12 @@ class ModelContext:
         return list(self.table_queries) + list(self.shared_expressions)
 
     # --- prompt serialization ---
-    def serialize_for_prompt(self, focus: list[str] | None = None) -> str:
+    def serialize_for_prompt(self, focus: list[str] | None = None, *, group_columns: bool = False) -> str:
         """Render the model as compact text for an LLM prompt.
 
         When `focus` is given, include only those tables plus any directly related to them — this keeps
         large models within token budget while preserving the relationships needed to reason correctly.
+        With `group_columns`, the heading supplies the table name for each column below it.
         """
         table_names = list(self.tables)
         if focus:
@@ -97,13 +106,14 @@ class ModelContext:
                     keep.update({r.from_table, r.to_table})
             table_names = [t for t in table_names if t in keep]
 
-        lines: list[str] = ["TABLES:"]
+        lines: list[str] = ["TABLES:"] if table_names or not group_columns else []
         for t in table_names:
             marker = "  (marked Date table)" if t in self.date_tables else ""
-            lines.append(f"  '{t}'{marker}:")
+            lines.append(f"  {_table_ref(t)}{marker}:")
             for c in self.tables[t]:
                 card = f", ~{c.cardinality} distinct" if c.cardinality is not None else ""
-                lines.append(f"    '{t}'[{c.name}] ({c.dtype}{card})")
+                ref = _object_ref(c.name) if group_columns else _table_ref(t) + _object_ref(c.name)
+                lines.append(f"    {ref} ({c.dtype}{card})")
 
         rels = [
             r for r in self.relationships
@@ -115,19 +125,21 @@ class ModelContext:
                 arrow = "<->" if r.cross_filter == "both" else "->"
                 active = "" if r.is_active else "  [inactive]"
                 lines.append(
-                    f"  '{r.from_table}'[{r.from_column}] {arrow} '{r.to_table}'[{r.to_column}]{active}"
+                    f"  {_table_ref(r.from_table)}{_object_ref(r.from_column)} {arrow} "
+                    f"{_table_ref(r.to_table)}{_object_ref(r.to_column)}{active}"
                 )
 
         if self.calculated_tables:
             lines.append("CALCULATED TABLES (defined by DAX; columns not exposed by static parse):")
             for name in self.calculated_tables:
-                lines.append(f"  '{name}'  (calculated)")
+                lines.append(f"  {_table_ref(name)}  (calculated)")
 
         measures = [m for m in self.measures if not focus or m.table in table_names]
         if measures:
             lines.append("MEASURES:")
             for m in measures:
-                lines.append(f"  [{m.name}] = {m.expression}")
+                ref = _table_ref(m.table) + _object_ref(m.name) if group_columns else _object_ref(m.name)
+                lines.append(f"  {ref} = {m.expression}")
 
         return "\n".join(lines)
 

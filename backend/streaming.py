@@ -108,6 +108,7 @@ def completion_events(provider, system, messages, *, timeout=None, idle_timeout=
     opts.setdefault('max_tokens', getattr(provider, 'max_tokens', DEFAULT_MAX_TOKENS))
     report = report if report is not None else GenerationReport()
     report.max_tokens = opts['max_tokens']
+    report.input_text_chars = len(system) + sum(len(message.content) for message in messages)
     token = current_cancellation()
     context = copy_context()
     unregister = lambda: None
@@ -184,7 +185,10 @@ def completion_events(provider, system, messages, *, timeout=None, idle_timeout=
             if kind == 'activity':
                 continue
             if kind == 'delta':
-                report.output_chars += len(value.get('text', ''))
+                text = value.get('text', '')
+                report.output_chars += len(text)
+                if report.first_text_seconds is None and text.strip():
+                    report.first_text_seconds = round(received_at - started, 3)
             yield value
     except BaseException as exc:
         report.error_type = type(exc).__name__

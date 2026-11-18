@@ -63,6 +63,18 @@ def query_key(dax):
     return ''.join(parts)
 
 
+def _prompt_rows(rows, columns):
+    """Omit repeated keys only when each displayed row can be reconstructed exactly."""
+    if not rows or not isinstance(columns, list) or not columns:
+        return rows
+    if not all(isinstance(name, str) for name in columns):
+        return rows
+    names = set(columns)
+    if len(names) != len(columns) or any(not isinstance(row, dict) or row.keys() != names for row in rows):
+        return rows
+    return [[row[name] for name in columns] for row in rows]
+
+
 def evidence_context(records, *, max_chars=96000, preview_rows=None):
     """Keep the latest attempt per Q label and disclose any prompt-only omissions.
 
@@ -94,5 +106,7 @@ def evidence_context(records, *, max_chars=96000, preview_rows=None):
             item['rows'].append(row);size += cost
         item['shown_rows'] = len(item['rows'])
         item['context_truncated'] = len(item['rows']) < len(rows)
+        # Select the same evidence under the existing budget, then shorten its wire representation.
+        item['rows'] = _prompt_rows(item['rows'], item.get('columns'))
         result.append(item)
     return result

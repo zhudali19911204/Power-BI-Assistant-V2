@@ -211,6 +211,10 @@ def test_both_generation_paths_pass_current_question_and_user_history(setup, mon
         assert response.status_code == 200
         assert not any(e['type'] == 'error' for e in map(json.loads, response.text.splitlines()))
         tail = provider.calls[-1][0].split('模型语义词典（未确认建议不可视为事实）：\n', 1)[1]
-        payload, _ = json.JSONDecoder().raw_decode(tail)
+        payload, end = json.JSONDecoder().raw_decode(tail)
         assert expected in refs(payload) and absent not in refs(payload)
         assert payload['retrieval']['mode'] == 'question'
+        if expected[0] == 'measure':
+            measure = next(m for m in ctx.measures if (m.table, m.name) == expected[1:])
+            assert find(payload['entries'], *expected)['expression'] == measure.expression
+            assert f'[{measure.name}] = {measure.expression}' not in tail[end:]

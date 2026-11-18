@@ -39,6 +39,8 @@ class GenerationReport:
     output_chars: int = 0
     seconds: float = 0
     error_type: str | None = None
+    first_text_seconds: float | None = None
+    input_text_chars: int = 0
 
     def update(self, metadata):
         reason = metadata.get('finish_reason')

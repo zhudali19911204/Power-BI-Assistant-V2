@@ -50,10 +50,11 @@ def test_model_uses_semantic_layer_then_analyzes_without_forced_code_confirmatio
     assert events[-1]['type'] == 'done' and len(executed) == 1
     assert not any(e['type'] == 'clarification' for e in events)
     assert any('正在查询语义层' in e.get('text', '') for e in events)
-    retrieved = json.loads(provider.calls[1][0].split('语义层补充检索', 1)[1].split('\n', 1)[1])
+    payload = provider.calls[1][0].split('语义层补充检索', 1)[1].split('\n', 1)[1]
+    retrieved, _ = json.JSONDecoder().raw_decode(payload)
     assert retrieved[0]['ok'] and retrieved[0]['query'] == '[总销售额]'
-    assert any(e['name'] == '总销售额' and e['kind'] == 'measure'
-               for e in retrieved[0]['context']['entries'])
+    assert {'kind': 'measure', 'table': '销售明细', 'name': '总销售额'} in retrieved[0]['context']['entries']
+    assert "SUM('销售明细'[销售额])" not in payload
     assert '语义层补充检索' in provider.calls[-1][0]
     assert scope in latest(client, conv)['content']
     assert app.state.semantics.get(conv['model_id']) == before

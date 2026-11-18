@@ -73,8 +73,8 @@ def retrieve(entries, context, question='', *, history=(), bindings=(), max_char
     """Select definitions without upgrading candidate claims or importing old definitions.
 
     The character budget covers serialized entries (as in the previous prompt).
-    Bounded diagnostics disclose relevant omissions. The full structural schema
-    remains available separately; retrieval paths do not assert filter semantics.
+    Bounded diagnostics disclose relevant omissions. Prompt assembly supplies
+    remaining structural facts from the snapshot. Retrieval paths do not assert filter semantics.
     """
     objects = {e['id']: e for e in entries}
     identities = {_identity(e): e['id'] for e in entries}

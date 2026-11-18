@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.engine.llm.base import ChatMessage
 from backend.engine.llm.claude import ClaudeProvider
 from backend.engine.llm.diagnostics import GenerationReport
 from backend.engine.llm.openai_compat import OpenAICompatProvider
@@ -51,6 +52,7 @@ def test_openai_finish_reason_usage_and_request_id_survive_stream_without_privat
     assert report.usage == {'prompt_tokens': 30, 'completion_tokens': 16000,
                             'total_tokens': 16030, 'reasoning_tokens': 15998}
     assert report.request_id == 'chatcmpl-test' and report.reasoning_received
+    assert 0 <= report.first_text_seconds <= report.seconds
     assert 'private thought' not in json.dumps(report.as_dict()) + str(events)
     assert requests[0]['stream_options'] == {'include_usage': True}
     assert requests[0]['extra_body'] == {'enable_thinking': True}
@@ -75,7 +77,27 @@ def test_anthropic_start_and_delta_usage_merge_and_stop_reason_is_normalized():
     list(completion_events(provider, '', [], report=report))
     assert report.finish_reason == 'stop'
     assert report.usage == {'prompt_tokens': 40, 'completion_tokens': 8}
+    assert 0 <= report.first_text_seconds <= report.seconds
     assert report.interruption() is None
+
+
+def test_text_metrics_work_without_provider_usage_and_ignore_whitespace_and_status():
+    class Provider:
+        def stream_events(self, *args, **opts):
+            yield {'type': 'status', 'text': '正在思考'}
+            yield {'type': 'delta', 'text': ' \n'}
+            yield {'type': 'delta', 'text': '分析正文'}
+            yield {'type': 'delta', 'text': '。'}
+
+    report = GenerationReport()
+    events = completion_events(Provider(), '规则', [ChatMessage('user', '总额')], report=report)
+    assert next(events)['type'] == 'status' and report.first_text_seconds is None
+    assert next(events)['text'].isspace() and report.first_text_seconds is None
+    assert next(events)['text'] == '分析正文'
+    first = report.first_text_seconds
+    list(events)
+    assert first == report.first_text_seconds and 0 <= first <= report.seconds
+    assert report.input_text_chars == 4 and report.usage == {}
 
 
 class EventProvider:

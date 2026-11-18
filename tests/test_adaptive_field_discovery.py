@@ -25,7 +25,7 @@ def saved(client, conv):
 
 
 def quota(provider):
-    return json.loads(provider.calls[-1][0].split('\n', 1)[0].split('：', 1)[1])
+    return json.loads(provider.calls[-1][0].rsplit('\n本次分析额度（已扣除结论预留时间）：', 1)[1])
 
 
 def wire(setup, monkeypatch, replies, reader=None):
@@ -229,7 +229,9 @@ def test_explicit_checks_do_not_hide_inferred_filters_on_another_field(setup, mo
     assert send(client, conv)[-1]['type'] == 'done'
     assert calls == [('类别', []), ('地区', ['华东'])]
     # The mixed action is corrected before its inferred filter is checked and run.
-    assert '只能选择一种' in provider.calls[2][1][-1].content
+    feedback = provider.calls[2][1][-1].content
+    assert '只能选择一种' in feedback and '可以同批提交' in feedback
+    assert '"dax":' not in feedback
 
 
 def test_additional_rounds_replace_old_snapshots_but_retain_all_observations(setup, monkeypatch):

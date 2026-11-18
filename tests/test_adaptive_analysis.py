@@ -1,5 +1,6 @@
 import copy
 import json
+from os.path import commonprefix
 
 import pytest
 from fastapi import HTTPException
@@ -42,10 +43,27 @@ def test_two_batches_can_execute_more_than_four_queries_and_share_real_evidence(
     record=saved(app,client,conv)
     assert [r['label'] for r in record['analysis']]==[f'Q{i}' for i in range(1,7)]
     assert [r['batch'] for r in record['analysis']]==[1,1,1,2,2,2]
+    systems = [system for system, _ in provider.calls]
+    shared = commonprefix(systems)
+    assert 'columns' in shared and '模型语义词典' in shared and '"kind":"column"' in shared
+    marker = '模型语义词典（未确认建议不可视为事实）：\n'
+    planning, summary_semantics = [json.JSONDecoder().raw_decode(s.split(marker, 1)[1])[0]
+                                   for s in (systems[0], systems[-1])]
+    assert any(e.get('expression') for e in planning['entries'])
+    for entry in planning['entries']:
+        entry.pop('expression', None)
+    assert planning == summary_semantics and analysis_module.SUMMARY_SYSTEM in systems[-1]
+    quota_marker = '\n本次分析额度（已扣除结论预留时间）：'
+    initial, first_quota = provider.calls[0][0].rsplit(quota_marker, 1)
+    followup, next_quota = provider.calls[1][0].rsplit(quota_marker, 1)
+    assert initial == followup
+    assert json.loads(first_quota)['remaining_queries'] - json.loads(next_quota)['remaining_queries'] == 3
     continuation=json.loads(provider.calls[1][1][-1].content.split('\n',1)[1])
-    assert len(continuation['evidence'])==3 and continuation['evidence'][0]['rows']==[{'Value':125}]
+    assert len(continuation['evidence'])==3 and continuation['evidence'][0]['rows']==[[125]]
+    assert continuation['evidence'][0]['columns'] == ['Value']
     summary=json.loads(provider.calls[-1][1][-1].content.split('\n',1)[1])
     assert len(summary['evidence'])==6 and summary['analysis_state']['batches']==2
+    assert summary['evidence'][0]['rows'] == [[125]] and record['analysis'][0]['rows'] == [{'Value': 125}]
     assert summary['scope']=='当前模型既定业务范围'
     assert [g['stage'] for g in record['generations']]==['analysis_plan','analysis_continue','analysis_summary']
     assert '[Q6]' in record['content'] and '第 2 批' in ''.join(e.get('text','') for e in events)
@@ -246,3 +264,29 @@ def test_bounded_evidence_discloses_missing_rows_without_altering_saved_records(
     assert records==before
     repaired=[{'label':'Q1','title':'failed',**result(ok=False)}, {'label':'Q1','title':'fixed',**result()}]
     assert len(evidence_context(repaired))==1 and evidence_context(repaired)[0]['ok']
+
+
+def test_prompt_rows_round_trip_in_column_order_and_preserve_preview_boundaries():
+    columns = ['公司代码', '差异金额', '已确认']
+    rows = [{'差异金额': None, '已确认': True, '公司代码': '0810'},
+            {'已确认': False, '公司代码': '0087', '差异金额': 0},
+            {'公司代码': '0001', '差异金额': -1.5, '已确认': False}]
+    record = {'label': 'Q1', **result(rows), 'columns': columns}
+    before = copy.deepcopy(record)
+    item, = evidence_context([record], preview_rows=2)
+    assert item['rows'] == [['0810', None, True], ['0087', 0, False]]
+    assert [dict(zip(item['columns'], row)) for row in item['rows']] == rows[:2]
+    assert item['context_truncated'] and item['shown_rows'] == 2 and item['row_count'] == 3
+    assert not item['truncated'] and record == before
+
+
+@pytest.mark.parametrize('columns, rows', [
+    (['编号', '金额'], [{'编号': '0810', '金额': None}, {'编号': '0087'}]),
+    (['编号'], [{'编号': '0810', '说明': '额外列'}]),
+    (['编号', '编号'], [{'编号': '0810'}]),
+    (None, [{'编号': '0810'}]),
+])
+def test_prompt_keeps_named_rows_when_columns_cannot_represent_them(columns, rows):
+    record = {'label': 'Q1', **result(rows), 'columns': columns}
+    item, = evidence_context([record])
+    assert item['rows'] == rows and not item['context_truncated']
