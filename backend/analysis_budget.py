@@ -86,7 +86,7 @@ def evidence_context(records, *, max_chars=96000, preview_rows=None):
     share = max_chars // max(1, len(latest))
     for record in latest.values():
         item = {k: record[k] for k in ('label', 'title', 'dax', 'ok', 'row_count', 'truncated',
-                                       'columns', 'error', 'batch', 'scope') if k in record}
+                                       'columns', 'error', 'batch', 'scope', 'recovery') if k in record}
         item.update(rows=[], context_truncated=False, shown_rows=0)
         # The DAX itself is useful for checking filters, but a huge query must not
         # consume all space intended for its actual result.

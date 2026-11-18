@@ -22,6 +22,7 @@ from .engine.llm.diagnostics import GenerationReport
 from .generation import generation_recorder, record_format_validation
 from .analysis_protocol import (AnalysisPlan, QueryPlan, PlanFormatError, PlanResponseError,
                                 MAX_SEMANTIC_QUERIES, PLAN_ACTION_RULE, parse_plan, validate_action, correction_prompt)
+from .analysis_recovery import RECOVERY_RULE, recovery_candidates, recovery_problem
 from .cancellation import GenerationCancelled, CANCELLED_TEXT, check_cancelled, close_cancelled_provider
 from .reconnection import transport_disconnected
 from .analysis_budget import (AnalysisBudget, MAX_BATCH_QUERIES, MAX_QUERIES, MAX_BATCHES,
@@ -250,6 +251,7 @@ class AnalysisService:
         call_counts={}
         discovery_rounds=0;query_count=0;attempt_count=0;batch_count=0;format_corrections=0
         executed=set();planned_labels={};stop_reason='';unanswered=[];pending_card=None;format_failures=[]
+        recovery_used=False
         self.chat.active_messages[conv['id']]=message_id
 
         def remaining(limit,*,summary=False):
@@ -277,11 +279,13 @@ class AnalysisService:
                     on_report=generation_recorder(self.db,provider,stage=stage,attempt=call_counts[stage],
                         message_id=message_id,model_id=model['id']),**options)
             finally:
-                if stage in ('analysis_plan','analysis_continue','analysis_repair'):budget.observe('plan',budget.clock()-began)
+                if stage!='analysis_summary':budget.observe('plan',budget.clock()-began)
 
         def persist_query(query_id,label,title,dax,result,attempt):
             record={**result,'id':query_id,'label':label,'title':title,'dax':dax,
                     'attempt':attempt,'batch':batch_count,'scope':plan.scope or initial_scope,'created_at':now()}
+            if plan.recovery:
+                record['recovery']=plan.recovery.model_dump()
             self.db.execute('INSERT INTO analysis_queries VALUES (?,?,?,?,?,?,?)',(
                 query_id,message_id,model['id'],title,dax,encode(record),record['created_at']))
             evidence.append(record)
@@ -289,15 +293,18 @@ class AnalysisService:
         def request_plan(planning_messages,stage='analysis_plan',*,fields_closed=False):
             nonlocal format_corrections
             turns=list(planning_messages)
-            stage_name={'analysis_plan':'查询规划','analysis_continue':'后续分析','analysis_repair':'DAX 修复'}[stage]
-            for attempt in range(MAX_FORMAT_RETRIES+1):
+            stage_name={'analysis_plan':'查询规划','analysis_continue':'后续分析','analysis_repair':'DAX 修复',
+                        'analysis_recovery':'替代取数评估'}[stage]
+            lookup_closed=bool(semantic_closed) or stage in ('analysis_repair','analysis_recovery')
+            retries=0 if stage=='analysis_recovery' else MAX_FORMAT_RETRIES
+            for attempt in range(retries+1):
                 raw=''
                 report=GenerationReport()
                 allocation=encode({'remaining_work_seconds':round(budget.remaining(),1),
                     'suggested_batch_size':budget.batch_size(query_count),'remaining_queries':MAX_QUERIES-query_count,
                     'remaining_batches':MAX_BATCHES-batch_count,'field_checks_closed':fields_closed,
-                    'semantic_queries_closed':bool(semantic_closed) or stage=='analysis_repair',
-                    'remaining_semantic_queries':0 if semantic_closed or stage=='analysis_repair' else MAX_SEMANTIC_QUERIES-len(semantic_records),
+                    'semantic_queries_closed':lookup_closed,
+                    'remaining_semantic_queries':0 if lookup_closed else MAX_SEMANTIC_QUERIES-len(semantic_records),
                     'remaining_field_checks':0 if fields_closed else MAX_FIELD_CHECKS-len(field_records),
                     'max_searches_per_field':MAX_FIELD_SEARCHES,'completed_field_rounds':discovery_rounds})
                 system = planner + '\n本次分析额度（已扣除结论预留时间）：' + allocation
@@ -319,6 +326,8 @@ class AnalysisService:
                 except PlanFormatError as exc:
                     record_format_validation(self.db,message_id,stage,call_counts[stage],issues=exc.issues,correction_attempt=attempt)
                     detail=f'{stage_name}回复格式不符合要求，未取得有效查询计划：{exc}'
+                    if stage=='analysis_recovery':
+                        raise PlanResponseError(detail) from exc
                     if attempt>=MAX_FORMAT_RETRIES:
                         raise PlanResponseError(detail+'；已纠正一次，停止继续重试') from exc
                     if format_corrections>=MAX_FORMAT_CORRECTIONS:
@@ -476,6 +485,7 @@ class AnalysisService:
                 except Exception:
                     if final_reason:return finish(current,final_reason,checks)
                     raise
+                if current.recovery:return current  # Checked against its original Q before execution.
                 for scope in current.scope_checks:scope_terms.setdefault(scope.term.casefold(),scope.term)
                 if current.clarification and scope_terms:return current
                 if current.semantic_queries and not (semantic_closed and current.scope_checks):
@@ -723,7 +733,7 @@ class AnalysisService:
                         break
                     batch_count+=1
                     yield status(f'正在执行第 {batch_count} 批分析查询 · 本批 {len(batch)} 项')
-                    batch_results=[]
+                    batch_results=[];batch_start=len(evidence);repair_hints={}
                     for index,(label,planned) in enumerate(batch):
                         if attempt_count>=MAX_QUERY_ATTEMPTS:
                             stop_reason='已达到本轮查询执行次数上限（含修复重试）';break
@@ -738,7 +748,8 @@ class AnalysisService:
                             key=query_key(dax)
                             if key in executed:break
                             executed.add(key);attempt_count+=1
-                            yield status(f'正在 Desktop 查询 {label} · {planned.title}'+('（修复后重试）' if attempt else ''))
+                            detail=f'（替代 {plan.recovery.for_query}）' if plan.recovery else '（修复后重试）' if attempt else ''
+                            yield status(f'正在 Desktop 查询 {label} · {planned.title}'+detail)
                             began=budget.clock();result=None
                             try:
                                 for event in task_events(lambda query=dax:self.execute(model,query),timeout=remaining(100)):
@@ -753,12 +764,14 @@ class AnalysisService:
                             persist_query(uid(),label,planned.title,dax,result,attempt+1)
                             yield encode({'type':'analysis','queries':evidence})+'\n'
                             if result.get('connection_error'):stop_reason='模型连接或结构发生变化，已停止后续查询'
-                            if stop_reason or result['ok'] or attempt:break
+                            if stop_reason or result['ok'] or attempt or plan.recovery:break
                             if attempt_count>=MAX_QUERY_ATTEMPTS or not budget.can_plan():
                                 stop_reason='剩余额度不足以修复查询，已保留结果并转入总结';break
                             yield status(f'{label} 查询未通过，正在修复查询')
-                            repair=analysis_messages+[ChatMessage('user',
-                                '只修复下面这一个查询，保持原分析口径，按原 JSON 格式返回一个 queries 项。\n'+
+                            repair_instruction='只修复下面这一个查询，保持原分析口径，按原 JSON 格式返回一个 queries 项。'
+                            if not recovery_used and batch_count<MAX_BATCHES and query_count<MAX_QUERIES and attempt_count+1<MAX_QUERY_ATTEMPTS:
+                                repair_instruction+='若还知道另一种有依据的取数方法，可在 assessment 中写明具体做法并引用真实 [度量] 或 \'表\'[列]，否则留空。'
+                            repair=analysis_messages+[ChatMessage('user',repair_instruction+'\n'+
                                 encode({'scope':initial_scope,'query':dax,'error':result['error'],**field_feedback()}))]
                             try:
                                 fixed=yield from request_plan(repair,'analysis_repair',fields_closed=True)
@@ -770,6 +783,7 @@ class AnalysisService:
                                 if conflict:raise PlanResponseError(conflict[1])
                                 dax=fixed.queries[0].dax
                                 if query_key(dax) in executed or query_key(dax) in scheduled:break
+                                repair_hints[label]=fixed.assessment
                             except GenerationCancelled:raise
                             except PlanResponseError as exc:
                                 # A malformed repair must not discard other independent queries.
@@ -787,10 +801,14 @@ class AnalysisService:
                     if stop_reason:
                         unanswered.extend(title for label,title in planned_labels.items() if not any(r['label']==label for r in evidence))
                         break
-                    if not any(r and r['ok'] for r in batch_results):
-                        stop_reason='本批查询未取得成功结果，已停止继续补查';break
+                    batch_ok=any(r and r['ok'] for r in batch_results)
                     needs_review=plan.needs_more or bool(unanswered) or any(r and (not r['ok'] or r['truncated']) for r in batch_results)
                     if not needs_review:break
+                    candidates={} if recovery_used else recovery_candidates(
+                        evidence[batch_start:],repair_hints,ctx,body.content,[r for r in evidence if r['ok'] and r['row_count']])
+                    if not batch_ok and not candidates:
+                        stop_reason='替代查询仍未取得成功结果，已结束补救' if plan.recovery else '本批查询未取得成功结果，已停止继续补查'
+                        break
                     if query_count>=MAX_QUERIES:
                         stop_reason=f'已达到本轮 {MAX_QUERIES} 条业务查询上限';break
                     if batch_count>=MAX_BATCHES:
@@ -799,14 +817,26 @@ class AnalysisService:
                         stop_reason='已达到本轮查询执行次数上限（含修复重试）';break
                     if not budget.can_plan():
                         stop_reason='剩余时间不足以规划并执行补充查询，已为结论生成预留时间';break
-                    yield status('正在评估已有结果，决定是否需要补充查询')
-                    continuation=analysis_messages+[ChatMessage('user',
-                        '以下为本轮已经执行的真实结果。核对原问题是否已被回答，证据足够就停止；不足时只规划下一批必要查询。'
-                        '锁定既有口径，不能沿用历史消息中的旧数值。\n'+encode({
-                            'locked_scope':initial_scope,'previous_plan':plan.model_dump(exclude={'queries','field_checks','semantic_queries','scope_checks'}),
+                    review={'locked_scope':initial_scope,'previous_plan':plan.model_dump(exclude={'queries','field_checks','semantic_queries','scope_checks','recovery'}),
                             'evidence':evidence_context(evidence,max_chars=48000,preview_rows=16),
-                            **field_feedback(),'remaining_questions':unanswered}))]
-                    try:plan=yield from prepare_plan(continuation,'analysis_continue')
+                            **field_feedback(),'remaining_questions':unanswered}
+                    instruction=('以下为本轮已经执行的真实结果。锁定既有口径，不能沿用历史消息中的旧数值。'
+                                 '已有证据足够就停止，有独立问题待查时只规划必要查询。')
+                    if candidates:
+                        review['recovery_candidates']=candidates
+                        instruction+=RECOVERY_RULE
+                        instruction+=('独立待查问题仍可按常规续查。' if batch_ok else
+                                      '本步只评估替代取数。如无可行方案就返回空 queries。')
+                    elif any(r and not r['ok'] for r in batch_results):
+                        instruction+='已失败的项目没有可用的替代取数机会，保留成功结果，只评估其余独立问题。'
+                    continuation=analysis_messages+[ChatMessage('user',instruction+'\n'+encode(review))]
+                    yield status('正在评估已有结果，决定是否需要补充查询' if batch_ok else '常规修复未成功，正在评估一次替代取数机会')
+                    try:
+                        if batch_ok:
+                            plan=yield from prepare_plan(continuation,'analysis_continue')
+                        else:
+                            recovery_used=True
+                            plan=yield from request_plan(continuation,'analysis_recovery',fields_closed=True)
                     except GenerationCancelled:raise
                     except Exception as exc:
                         stop_reason=work_error(exc);break
@@ -815,6 +845,16 @@ class AnalysisService:
                         pending_card=save_analysis_card(plan.clarification)
                         yield encode({'type':'clarification','clarification':pending_card})+'\n'
                         stop_reason='进一步分析需要确认业务口径，已保留当前查询结果';break
+                    if plan.recovery:
+                        recovery_used=True
+                        problem=recovery_problem(plan,candidates,evidence,ctx,[*prior_fields,*field_records],body.content)
+                        conflict=filter_conflict(field_records,grouped_scopes(),plan)
+                        if problem or conflict:
+                            stop_reason='已停止替代取数：'+(problem or conflict[1]);break
+                        source=next(r for r in evidence if r['label']==plan.recovery.for_query)
+                        plan=plan.model_copy(update={'scope':source['scope']})
+                    elif not batch_ok:
+                        stop_reason='本批查询未取得成功结果，已结束替代取数评估';break
                     if not plan.queries and (plan.needs_more or unanswered):
                         stop_reason='后续分析仍有未解决问题，当前计划未提供可执行查询'
                 unanswered=list(dict.fromkeys(unanswered))
@@ -838,6 +878,8 @@ class AnalysisService:
                         'analysis_state':{'batches':batch_count,'queries':query_count,'attempts':attempt_count,
                             'stop_reason':stop_reason,'remaining_questions':unanswered,'clarification':pending_card}}))]
                     summary_system=analysis_system(for_summary=True)
+                    if any(q.get('recovery') for q in successful):
+                        summary_system+='\n有 recovery 的结果是替代取数。只用实际返回的基础值作比较，注明仍缺的期间或维度，并引用成功查询的编号。'
                     last_save=0
                     for summary_attempt in range(2):
                         answer='';report=GenerationReport();options={}
@@ -872,9 +914,10 @@ class AnalysisService:
                     sources='、'.join('['+q['label']+'] '+' '.join(q['title'].split()) for q in successful)
                     footer='\n\n---\n\n**本轮数据依据**：'+sources+'。查询和实际结果见下方。'
                     completed={q['label'] for q in successful}
+                    completed.update(q['recovery']['for_query'] for q in successful if q.get('recovery'))
                     missing=[label for label in planned_labels if label not in completed]
                     if missing:
-                        footer+=' '+ '、'.join(missing)+' 未取得成功结果，对应问题仍无法判断。'
+                        footer+=' '+ '、'.join(missing)+' 未取得成功结果。'
                     if any(q['truncated'] for q in successful):
                         footer+=' 本轮部分结果已截断，相关结论只适用于已保留的数据。'
                     if any(q['context_truncated'] for q in summary_evidence):

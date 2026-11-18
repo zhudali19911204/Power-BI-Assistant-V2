@@ -12,6 +12,14 @@ function query(extra={}) {
 }
 const element=html=>parseHTML('<html><body><section>'+html+'</section></body></html>').document.querySelector('section');
 
+test('replacement evidence names the failed query and displays its rationale as text',()=>{
+  const root=element(analysisEvidence([query({label:'Q2',recovery:{
+    for_query:'Q1',missing:'缺少去年同期数值',basis:'读取 [MPV] <img src=x onerror=alert(1)>'}})]));
+  assert.ok(root.querySelector('summary').textContent.includes('替代 Q1 · 1 行'));
+  assert.ok(root.textContent.includes('缺少去年同期数值'));
+  assert.ok(root.textContent.includes('读取 [MPV]'));
+  assert.equal(root.querySelector('img'),null);
+});
 test('analysis is a distinct mode with data overview, trend and contribution prompts',()=>{
   assert.equal(MODES.analysis.title,'数据分析助手');
   assert.equal(MODES.analysis.cards.length,3);

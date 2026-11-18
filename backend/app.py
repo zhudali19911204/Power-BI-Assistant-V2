@@ -440,6 +440,8 @@ def create_app(directory=None):
                 for query in profile['dax_queries']:text+='```dax\n'+query+'\n```\n\n'
             for result in message.get('analysis',[]):
                 text+=f"### {result['label']} · {result['title']}（第 {result['attempt']} 次执行）\n\n"
+                if recovery:=result.get('recovery'):
+                    text+=f"替代 {recovery['for_query']}。{recovery['missing']}。{recovery['basis']}\n\n"
                 text+='```dax\n'+result['dax']+'\n```\n\n'
                 if not result['ok']:
                     text+='查询未成功：'+result['error']+'\n\n';continue

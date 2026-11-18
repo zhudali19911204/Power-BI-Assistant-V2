@@ -29,6 +29,13 @@ class QueryPlan(BaseModel):
         return value
 
 
+class QueryRecovery(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    for_query: str = Field(pattern=r'^Q[1-9]\d?$')
+    missing: str = Field(min_length=1, max_length=300)
+    basis: str = Field(min_length=1, max_length=500)
+
+
 class AnalysisPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scope: str = Field(default='', max_length=3000)
@@ -38,6 +45,7 @@ class AnalysisPlan(BaseModel):
     scope_checks: list[ScopeCheck] = Field(default_factory=list, max_length=4)
     scope_resolutions: list[ScopeResolution] = Field(default_factory=list, max_length=12)
     queries: list[QueryPlan] = Field(default_factory=list, max_length=MAX_BATCH_QUERIES)
+    recovery: QueryRecovery | None = None
     needs_more: bool = False
     remaining_questions: list[str] = Field(default_factory=list, max_length=8)
     assessment: str = Field(default='', max_length=1500)
@@ -84,7 +92,8 @@ def _validation_issues(error):
     fields = {'scope', 'clarification', 'semantic_queries', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
               'assessment', 'title', 'dax', 'table', 'column', 'search_terms', 'reason',
               'topic', 'question', 'context', 'options', 'label', 'value', 'detail',
-              'scope_checks', 'scope_resolutions', 'term', 'related_term', 'aliases', 'candidates', 'field', 'basis'}
+              'scope_checks', 'scope_resolutions', 'term', 'related_term', 'aliases', 'candidates', 'field', 'basis',
+              'recovery', 'for_query', 'missing'}
     messages = {'missing': '缺少必填字段', 'string_type': '需要字符串', 'bool_type': '需要布尔值 true 或 false',
                 'list_type': '需要数组', 'model_type': '需要 JSON 对象', 'extra_forbidden': '包含未定义字段'}
     result = []
@@ -129,11 +138,18 @@ def validate_action(plan, stage):
         # An explicit request for business confirmation always pauses execution,
         # even if the model also supplied speculative work. Do not ask the model
         # to resolve the business ambiguity itself in a format-correction round.
-        return plan.model_copy(update={'queries': [], 'field_checks': [], 'semantic_queries': [], 'scope_checks': [], 'scope_resolutions': []})
+        return plan.model_copy(update={'queries': [], 'field_checks': [], 'semantic_queries': [], 'scope_checks': [], 'scope_resolutions': [], 'recovery': None})
     if sum(bool(action) for action in (plan.queries, plan.field_checks, plan.semantic_queries or plan.scope_checks)) > 1:
         raise issue('$', 'conflicting_actions', PLAN_ACTION_RULE)
     if plan.scope_resolutions and not plan.queries:
         raise issue('scope_resolutions', 'missing_queries', '在采用核对结果执行业务查询时填写 scope_resolutions')
+    if plan.recovery and (stage not in ('analysis_continue', 'analysis_recovery') or len(plan.queries) != 1):
+        raise issue('recovery', 'invalid_recovery', '替代取数只能用于失败后的评估，并且只提供一条替代查询')
+    if plan.recovery and plan.scope_resolutions:
+        raise issue('scope_resolutions', 'changed_recovery_scope', '替代取数须沿用原查询口径，需要重新选择时请返回 clarification')
+    if stage == 'analysis_recovery' and (plan.field_checks or plan.semantic_queries or plan.scope_checks
+                                         or (plan.queries and not plan.recovery)):
+        raise issue('recovery', 'missing_recovery', '只可提出一条有依据的替代查询、返回空 queries，或请求口径确认')
     if stage == 'analysis_repair':
         if len(plan.queries) != 1 or plan.field_checks or plan.semantic_queries or plan.scope_checks:
             raise issue('queries', 'repair_query_count', '修复只能返回一个 queries 项；业务口径不明确时返回 clarification')
