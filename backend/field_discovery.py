@@ -1,12 +1,129 @@
 """Reuse field evidence and finish bounded discovery with an explicit choice."""
 import json
+from datetime import datetime, timedelta, timezone
 
 from .clarifications import ClarificationOption, ClarificationQuestion
 from .fields import field_ref
+from .semantic_retrieval import _contains, _normalize
 
 
 MAX_FIELD_CHECKS = 12
 MAX_FIELD_SEARCHES = 3
+CLARIFICATION_EVIDENCE_AGE = timedelta(minutes=15)
+
+
+def _field_source(model):
+    return [model['id'], model['fingerprint'], model['port'], model.get('report', {}).get('engine_pid')]
+
+
+def _complete_observation(record):
+    profile = record.get('profile') or {}
+    return (record.get('ok') and profile.get('run_verified') and profile.get('truncated') is False
+            and not any(v.get('value_truncated') or v.get('nonfinite') for v in profile.get('values', [])))
+
+
+def clarification_field_sources(model, records):
+    """Keep references to the original reads, including across successive questions."""
+    ids = [r['id'] for r in records if _complete_observation(r)]
+    return {'source': _field_source(model), 'ids': ids[-MAX_FIELD_CHECKS:]} if ids else None
+
+
+def clarification_fields(db, conversation_id, model, ctx, reply):
+    if not reply:
+        return []
+    row = db.one('SELECT c.payload FROM message_clarifications c JOIN messages m ON m.id=c.message_id '
+                 'WHERE m.conversation_id=? AND c.message_id=?', (conversation_id, reply.message_id))
+    if not row:
+        return []
+    saved = json.loads(row['payload']).get('_field_sources')
+    cutoff = (datetime.now(timezone.utc) - CLARIFICATION_EVIDENCE_AGE).isoformat()
+    args = [model['id'], model['fingerprint'], conversation_id, cutoff]
+    query = ('SELECT f.result FROM field_observations f JOIN messages m ON m.id=f.message_id '
+             'LEFT JOIN field_value_profiles p ON p.model_id=? AND p.fingerprint=? '
+             "AND p.table_name=json_extract(f.result,'$.table') AND p.column_name=json_extract(f.result,'$.column') "
+             'WHERE m.conversation_id=? AND f.created_at>=? ')
+    if saved:
+        if saved['source'] != _field_source(model):
+            return []
+        ids = saved['ids'][-MAX_FIELD_CHECKS:]
+        query += 'AND f.id IN (' + ','.join('?' for _ in ids) + ') '
+        query += "AND (p.checked_at IS NULL OR p.checked_at <= json_extract(f.result,'$.profile.checked_at')) "
+        args.extend(ids)
+    else:
+        # Older cards have no connection stamp. The latest field preview is cleared
+        # on an engine change. Require the exact read time, not just a matching value.
+        query += "AND f.message_id=? AND p.checked_at=json_extract(f.result,'$.profile.checked_at') "
+        args.append(reply.message_id)
+    records = (json.loads(r['result']) for r in db.all(query + 'ORDER BY f.created_at,f.rowid', args))
+    return [r for r in records if r.get('model_id') == model['id'] and ctx.has_column(r['table'], r['column'])
+            and _complete_observation(r)]
+
+
+def prior_literal_check(check, records):
+    """An inferred equality needs proof of every literal in this specific column."""
+    if not check.search_terms:
+        return None
+    for record in reversed(records):
+        if (record['table'], record['column']) != (check.table, check.column):
+            continue
+        values = {v['value'] for v in record['profile']['values'] if isinstance(v.get('value'), str)}
+        if all(term in values for term in check.search_terms):
+            return record
+        # A later complete check may have superseded an earlier hit.
+        searched = {term.casefold() for term in record['search_terms']}
+        if any(term not in values and (not searched or term.casefold() in searched) for term in check.search_terms):
+            return None
+    return None
+
+
+def clarification_value_summary(records):
+    """Show the planner a few original values. Full profiles stay local until requested."""
+    summary = []
+    for record in records:
+        profile = record['profile']
+        values = [v['value'] for v in profile['values'] if isinstance(v.get('value'), str) and 0 < len(v['value']) <= 120]
+        if values:
+            terms = {t.casefold() for t in record['search_terms']}
+            values.sort(key=lambda value: value.casefold() not in terms)
+            summary.append({'table': record['table'], 'column': record['column'],
+                            'values': values[:4], 'checked_at': profile['checked_at']})
+    return summary
+
+
+def stalled_searches(records, checks, question):
+    """Spot repeated, fruitless legacy searches for an original user term."""
+    missed = {}
+    productive = set()
+    user_text = _normalize(question)
+    if any(_contains(user_text, _normalize(c.column)) or field_ref(c.table,c.column).casefold() in user_text
+           for c in checks):
+        return []
+    for record in records:
+        profile = record.get('profile') or {}
+        if record.get('scope_term') or not record['ok'] or not profile.get('run_verified'):
+            continue
+        terms = {term.casefold() for term in record.get('search_terms', [])}
+        for term in terms:
+            if not _contains(user_text, term):
+                continue
+            if profile.get('statistics', {}).get('matched_distinct_count') != 0:
+                productive.add(term)
+                continue
+            evidence = missed.setdefault(term, {'rounds': set(), 'fields': set(), 'spellings': set()})
+            evidence['rounds'].add(record['round'])
+            evidence['fields'].add((record['table'], record['column']))
+            evidence['spellings'].update(terms)
+    stalled = []
+    for check in checks:
+        words = {v.casefold() for v in check.search_terms}
+        # New aliases and genuine field-profile requests are still allowed.
+        term = next((t for t in sorted(words) if t in missed and t not in productive
+                     and len(missed[t]['rounds']) >= 2 and len(missed[t]['fields']) >= 2
+                     and words <= missed[t]['spellings']), None)
+        if not term:
+            return []
+        if term not in stalled:stalled.append(term)
+    return stalled
 
 
 def check_key(check):
@@ -21,6 +138,7 @@ def cached_check(check, records):
     """
     key = check_key(check)
     for record in reversed(records):
+        if record.get('scope_term'):continue  # Exact evidence cannot cover a substring search or a column profile.
         if (record['table'], record['column']) != key[:2]:continue
         profile = record.get('profile') or {}
         terms = tuple(sorted({term.strip().casefold() for term in record.get('search_terms', profile.get('search_terms', []))}))
@@ -49,7 +167,7 @@ def discovery_question(records, ctx, reason, checks=()):
     matches. Each option preserves the full original value, including leading zeros.
     """
     preferred = {(check.table, check.column) for check in checks}
-    ordered = sorted(reversed(records), key=lambda r: (
+    ordered = sorted((r for r in reversed(records) if not r.get('scope_term')), key=lambda r: (
         (r['table'], r['column']) not in preferred,
         not bool((r.get('profile') or {}).get('search_terms'))))
     for record in ordered:

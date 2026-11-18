@@ -18,6 +18,22 @@ function profile(extra={}) {
 function record(extra={}) {return {id:'field-1',model_id:'model',label:'F1',table:'分类表',column:'类别',
   reason:'核对人员费用对应的实际分类',ok:true,error:'',profile:profile(),...extra};}
 
+test('evidence distinguishes an empty search, exact hits, ambiguity and the adopted field',()=>{
+  const exact=(label,column,values,extra={})=>record({id:label,label,column,scope_term:'0887',query_label:'F1',...extra,
+    profile:{kind:'exact',values:values.map(value=>({value})),search_terms:['0887'],scope:'当前报表',dax_queries:[]}});
+  const rows=[
+    record({profile:profile({search_terms:['missing'],values:[],statistics:{matched_distinct_count:0}})}),
+    exact('F2','法人',['0887']),exact('F3','成本中心',['0887'],{adopted_value:'0887'}),
+    exact('F4','编码',[]),exact('F5','分类',['<img src=x>'],{scope_term:'成本'}),
+    record({ok:false,error:'读取失败',profile:null}),exact('F7','已选字段',['0999'],{scope_term:'0999',confirmed_value:'0999'})];
+  const root=element(fieldEvidence(rows));
+  assert.deepEqual([...root.querySelectorAll('details.field-evidence > summary > span')].map(n=>n.textContent),
+    ['未命中','多个候选命中','本次采用','未命中','精确命中','检查未完成','口径已确认']);
+  assert.ok(root.textContent.includes('实际命中 0887'));
+  assert.equal(root.querySelector('img'),null);
+  assert.ok(!root.querySelector('[data-field-evidence="F2"] .field-statistics'));
+});
+
 test('field preview shows distinct actual values, counts, model blanks and empty strings separately',()=>{
   const root=element(fieldProfile(profile()));
   assert.equal(root.querySelectorAll('tbody tr').length,4);

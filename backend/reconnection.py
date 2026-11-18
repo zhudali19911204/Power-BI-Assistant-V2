@@ -164,6 +164,7 @@ class DesktopReconnector:
             if changed_engine:
                 db.execute('DELETE FROM field_value_profiles WHERE model_id=?', (model['id'],))
                 db.execute('DELETE FROM model_value_lookups WHERE model_id=?', (model['id'],))
+                db.execute('DELETE FROM scope_value_hints WHERE model_id=?', (model['id'],))
         service.live_ids.add(model['id'])
         if changed_engine:
             logger.info('Desktop %s rebound port=%s; semantic definitions preserved, value caches cleared', model['id'], instance.port)

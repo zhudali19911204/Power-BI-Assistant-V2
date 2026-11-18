@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .analysis_budget import MAX_BATCH_QUERIES
 from .clarifications import ClarificationQuestion
 from .fields import FieldCheck
+from .scope_checks import ScopeCheck, ScopeResolution
 
 MAX_SEMANTIC_QUERIES = 6
 
@@ -31,6 +32,8 @@ class AnalysisPlan(BaseModel):
     clarification: ClarificationQuestion | str | None = None
     semantic_queries: list[str] = Field(default_factory=list, max_length=3)
     field_checks: list[FieldCheck] = Field(default_factory=list)
+    scope_checks: list[ScopeCheck] = Field(default_factory=list, max_length=4)
+    scope_resolutions: list[ScopeResolution] = Field(default_factory=list, max_length=12)
     queries: list[QueryPlan] = Field(default_factory=list, max_length=MAX_BATCH_QUERIES)
     needs_more: bool = False
     remaining_questions: list[str] = Field(default_factory=list, max_length=8)
@@ -77,7 +80,8 @@ def _validation_issues(error):
     # Never include rejected values, query text, or model-generated unknown key names.
     fields = {'scope', 'clarification', 'semantic_queries', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
               'assessment', 'title', 'dax', 'table', 'column', 'search_terms', 'reason',
-              'topic', 'question', 'context', 'options', 'label', 'value', 'detail'}
+              'topic', 'question', 'context', 'options', 'label', 'value', 'detail',
+              'scope_checks', 'scope_resolutions', 'term', 'related_term', 'aliases', 'candidates', 'field', 'basis'}
     messages = {'missing': '缺少必填字段', 'string_type': '需要字符串', 'bool_type': '需要布尔值 true 或 false',
                 'list_type': '需要数组', 'model_type': '需要 JSON 对象', 'extra_forbidden': '包含未定义字段'}
     result = []
@@ -122,13 +126,15 @@ def validate_action(plan, stage):
         # An explicit request for business confirmation always pauses execution,
         # even if the model also supplied speculative work. Do not ask the model
         # to resolve the business ambiguity itself in a format-correction round.
-        return plan.model_copy(update={'queries': [], 'field_checks': [], 'semantic_queries': []})
-    if sum(bool(action) for action in (plan.queries, plan.field_checks, plan.semantic_queries)) > 1:
+        return plan.model_copy(update={'queries': [], 'field_checks': [], 'semantic_queries': [], 'scope_checks': [], 'scope_resolutions': []})
+    if sum(bool(action) for action in (plan.queries, plan.field_checks, plan.semantic_queries or plan.scope_checks)) > 1:
         raise issue('$', 'conflicting_actions', '业务查询、字段检查和语义检索只能选择一种，获得依据后再规划下一步')
+    if plan.scope_resolutions and not plan.queries:
+        raise issue('scope_resolutions', 'missing_queries', '在采用核对结果执行业务查询时填写 scope_resolutions')
     if stage == 'analysis_repair':
-        if not plan.clarification and (len(plan.queries) != 1 or plan.field_checks or plan.semantic_queries):
+        if len(plan.queries) != 1 or plan.field_checks or plan.semantic_queries or plan.scope_checks:
             raise issue('queries', 'repair_query_count', '修复只能返回一个 queries 项；业务口径不明确时返回 clarification')
-    elif stage == 'analysis_plan' and not (plan.queries or plan.field_checks or plan.semantic_queries or plan.clarification):
+    elif stage == 'analysis_plan' and not (plan.queries or plan.field_checks or plan.semantic_queries or plan.scope_checks):
         raise issue('$', 'missing_action', '需要查询、语义检索、字段检查或口径确认，不能返回空计划')
     return plan
 
@@ -143,7 +149,8 @@ def correction_prompt(error, stage):
             '具体问题：' + str(error) + '\n'
             '只返回一个合法 JSON 对象，不加解释、代码围栏、注释或重复字段。'
             '需要澄清时 clarification 为一个问题和 2～4 个选项，queries=[]；'
-            '需要查值时使用 field_checks，queries=[]；查询时每项必须有字符串 title 和 dax。'
+            '按业务原词核对取值时使用 scope_checks，每项含 term 和 candidates（真实 table、column 对象数组），queries=[]。'
+            '字段样例和包含搜索使用 field_checks。查询时每项必须有字符串 title 和 dax。'
             '需要补查语义层时使用 semantic_queries 字符串数组，每次最多 3 项、每项 1～300 字，field_checks=[]、queries=[]。'
             'needs_more 必须是布尔值，remaining_questions 必须是字符串数组。\n'
             + ('当前仅修复一条失败查询，只能返回一个 queries 项，或返回口径确认。\n' if stage == 'analysis_repair' else

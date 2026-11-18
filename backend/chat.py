@@ -145,6 +145,7 @@ class ChatService:
             message['field_previews']=self.analysis.field_records(message['id'])
             record=self.db.one('SELECT payload FROM message_clarifications WHERE message_id=?',(message['id'],))
             message['clarification']=(json.loads(record['payload']) | {'answered':index<last_user}) if record else None
+            if record:message['clarification'].pop('_field_sources',None)
         return rows
 
     def begin(self, conversation_id, body, settings):

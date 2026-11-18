@@ -409,7 +409,17 @@ def create_app(directory=None):
                 text+=f"### 字段取值检查 {record['label']} · {record['table']}[{record['column']}]\n\n"
                 if not record['ok']:
                     text+='检查未完成：'+record['error']+'\n\n';continue
-                profile=record['profile'];stats=profile['statistics']
+                profile=record['profile']
+                if 'confirmed_value' in record:text+='用户已确认 '+encode(record['confirmed_value'])+'。\n\n'
+                if 'adopted_value' in record:text+='本次采用 '+encode(record['adopted_value'])+'。\n\n'
+                if record.get('scope_term'):
+                    text+='核对口径 '+encode(record['scope_term'])+'，精确搜索 '+encode(record['search_terms'])+'。\n\n'
+                    matches=[entry['value'] for entry in profile['values']]
+                    text+=('实际命中 '+encode(matches) if matches else '候选字段未命中')+'。\n\n'
+                    text+=profile['scope']+'。批量查询见 '+record['query_label']+'。\n\n'
+                    for query in profile['dax_queries']:text+='```dax\n'+query+'\n```\n\n'
+                    continue
+                stats=profile['statistics']
                 text+=profile['scope']+'。\n\n'
                 text+=f"总行数：{stats['row_count']}；不同取值（含空值）：{stats['distinct_count']}；空值行数：{stats['blank_count']}；空字符串：{stats['empty_string_count']}。\n\n"
                 text+='取值样例：'+encode(profile['samples'])+'\n\n'

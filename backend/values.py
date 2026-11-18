@@ -16,13 +16,14 @@ def codes_in(text):
     return list(dict.fromkeys(re.findall(CODE_PATTERN, text)))
 
 
-def exact_value_query(fields, literal):
-    # String comparison keeps 0257 distinct from numeric 257. Identifiers come from the
-    # live schema, not the user. No amounts, measures, or model writes are involved.
+def exact_values(ref, literal):
+    # Compare the complete text, including leading zeros. Wildcards are ordinary text.
     quoted = '"' + literal.replace('"', '""') + '"'
-    rows = [f'ROW("__index", {i}, "__match", COALESCE(COUNTROWS(FILTER('
-            f'DISTINCT({field_ref(table, column)}), '
-            f'({field_ref(table, column)} & "") == {quoted})), 0))'
+    return f'FILTER(DISTINCT({ref}), ({ref} & "") == {quoted})'
+
+
+def exact_value_query(fields, literal):
+    rows = [f'ROW("__index", {i}, "__match", COALESCE(COUNTROWS({exact_values(field_ref(table, column), literal)}), 0))'
             for i, (table, column) in enumerate(fields)]
     return 'EVALUATE ' + (rows[0] if len(rows) == 1 else 'UNION(' + ', '.join(rows) + ')')
 
@@ -40,14 +41,39 @@ class ValueEvidence:
                          encode(compact), profile['checked_at']))
 
     def preview_hints(self, model, literal):
-        hints = set()
-        for row in self.db.all('SELECT * FROM field_value_profiles WHERE model_id=? AND fingerprint=?',
+        return self.preview_hints_for(model, [literal])[literal.casefold()]
+
+    def preview_hints_for(self, model, literals):
+        hints = {literal.casefold(): set() for literal in literals}
+        if not hints:return hints
+        placeholders = ','.join('?' for _ in hints)
+        rows = self.db.all('SELECT literal,table_name,column_name FROM scope_value_hints '
+                           f'WHERE model_id=? AND fingerprint=? AND literal IN ({placeholders})',
+                           (model['id'], model['fingerprint'], *hints))
+        for row in rows:
+            hints[row['literal']].add((row['table_name'], row['column_name']))
+        for row in self.db.all('SELECT table_name,column_name,payload FROM field_value_profiles WHERE model_id=? AND fingerprint=?',
                                (model['id'], model['fingerprint'])):
             p = json.loads(row['payload'])
-            if any(v.get('value') == literal and not v.get('value_truncated')
-                   for v in p['values'] + p['samples']):
-                hints.add((row['table_name'], row['column_name']))
+            for v in p['values'] + p['samples']:
+                value = v.get('value')
+                if isinstance(value, str) and not v.get('value_truncated') and value.casefold() in hints:
+                    hints[value.casefold()].add((row['table_name'], row['column_name']))
         return hints
+
+    @staticmethod
+    def remember_exact(db, model, records):
+        """Cache field locations only. An exact miss removes the old hint for that literal."""
+        for r in records:
+            if not r['ok']:continue
+            matched={v.casefold() for v in r['profile']['matched_terms']}
+            for term in r['search_terms']:
+                key=(model['id'],model['fingerprint'],term.casefold(),r['table'],r['column'])
+                if term.casefold() in matched:
+                    db.execute('INSERT OR IGNORE INTO scope_value_hints VALUES (?,?,?,?,?)',key)
+                else:
+                    db.execute('DELETE FROM scope_value_hints WHERE model_id=? AND fingerprint=? AND literal=? '
+                               'AND table_name=? AND column_name=?',key)
 
     def locate(self, model_id, literal, entries, deadline=None):
         if not re.fullmatch(r'0\d{2,11}', literal):

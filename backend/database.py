@@ -105,6 +105,11 @@ class Database:
                     model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
                     literal TEXT NOT NULL, fingerprint TEXT NOT NULL, payload TEXT NOT NULL,
                     checked_at TEXT NOT NULL, PRIMARY KEY(model_id,literal));
+                CREATE TABLE IF NOT EXISTS scope_value_hints (
+                    model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+                    fingerprint TEXT NOT NULL, literal TEXT NOT NULL,
+                    table_name TEXT NOT NULL, column_name TEXT NOT NULL,
+                    PRIMARY KEY(model_id,fingerprint,literal,table_name,column_name));
                 CREATE INDEX IF NOT EXISTS field_observations_message ON field_observations(message_id);
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
                 CREATE TABLE IF NOT EXISTS conversation_model_syncs (

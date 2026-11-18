@@ -584,7 +584,11 @@ class SemanticService:
         if not reply:return
         row=self.db.one('SELECT payload FROM message_clarifications WHERE message_id=?',(reply.message_id,))
         card=json.loads(row['payload']) if row else {}
-        binding=card.get('semantic_binding')
+        binding=card.get('scope_binding')
+        if binding:
+            # A supplement may qualify or override a selection. The full reply stays in history.
+            if reply.supplement or reply.option_id not in binding['choices']:return
+        else:binding=card.get('semantic_binding')
         if not binding:return
         selected=binding['choices'].get(reply.option_id or '')
         if selected is None:
@@ -593,8 +597,18 @@ class SemanticService:
             if selected is None:raise HTTPException(422,'请在补充说明中写明完整字段引用，例如 \'表名\'[字段名]，以确定编号归属')
         if not selected.get('ignore') and not ctx.has_column(selected['table'],selected['column']):
             raise HTTPException(409,'确认的字段已不在模型中，请同步语义层')
-        self.db.execute('INSERT OR REPLACE INTO conversation_bindings VALUES (?,?,?,?,?)',
-            (conv['id'],binding['literal'],selected.get('table'),selected.get('column'),now()))
+        with self.db.connection() as db:
+            db.execute('INSERT OR REPLACE INTO conversation_bindings VALUES (?,?,?,?,?)',
+                (conv['id'],binding['literal'],selected.get('table'),selected.get('column'),now()))
+            if card.get('scope_binding'):
+                rows=db.execute('SELECT id,result FROM field_observations WHERE message_id=?',(reply.message_id,)).fetchall()
+                for row in rows:
+                    record=json.loads(row['result'])
+                    if (record.get('scope_term') or record.get('related_term','')).casefold()!=binding['literal'].casefold():
+                        continue
+                    record.pop('confirmed_value',None)
+                    if record['label']==selected['field']:record['confirmed_value']=selected['value']
+                    db.execute('UPDATE field_observations SET result=? WHERE id=?',(encode(record),row['id']))
 
     def unresolved_code(self,conv,body,ctx):
         """Legacy card construction; normal chat no longer runs this preflight."""

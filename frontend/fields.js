@@ -32,13 +32,44 @@ export function fieldProfile(profile,{compact=false}={}) {
   </div>`;
 }
 
+function evidenceStatus(record,matchedFields) {
+  if(!record.ok)return '检查未完成';
+  if(record.confirmed_value!=null)return '口径已确认';
+  if(record.adopted_value!=null)return '本次采用';
+  const profile=record.profile;
+  if(record.scope_term){
+    if(!profile.values.length)return '未命中';
+    return matchedFields.get(record.scope_term.toLowerCase())?.size>1?'多个候选命中':'精确命中';
+  }
+  if(!profile.search_terms.length)return '已读取取值';
+  const count=profile.statistics.matched_distinct_count;
+  if(count==null)return '已读取取值';
+  return count===0?'未命中':`匹配 ${number(count)} 个值`;
+}
+
+function exactEvidence(record) {
+  const p=record.profile;
+  const values=p.values.map(v=>fieldValue(v)).join('、');
+  return `<p class="field-preview-note">精确核对 ${p.search_terms.map(esc).join('、')}</p>
+    <p class="field-preview-note">${values?'实际命中 '+values:'该字段未命中本次核对的值。'}</p>
+    <p class="field-preview-scope">${esc(p.scope)}</p>
+    <p class="field-preview-time">本机实际读取 · ${esc(record.checked_at)}${record.batch_seconds!=null?' · 整批 '+esc(record.batch_seconds)+' 秒':record.query_label?' · 批量查询见 '+esc(record.query_label):''}</p>`;
+}
+
 export function fieldEvidence(records=[]) {
+  const matchedFields=new Map();
+  for(const r of records){
+    if(!r.scope_term||!r.ok)continue;
+    const term=r.scope_term.toLowerCase();
+    if(!matchedFields.has(term))matchedFields.set(term,new Set());
+    for(const v of r.profile.values)matchedFields.get(term).add(JSON.stringify([r.table,r.column,v.value]));
+  }
   return records.map(record=>`<details class="field-evidence ${record.ok?'':'failed'}" data-field-evidence="${esc(record.id)}">
-    <summary>${icon('search')}<strong>${esc(record.label)} · ${esc(record.table)}[${esc(record.column)}]</strong><span>${record.ok?'已核对取值':'检查未完成'}</span>${icon('chevron-down')}</summary>
+    <summary>${icon('search')}<strong>${esc(record.label)} · ${record.scope_term||record.related_term?esc(record.scope_term||record.related_term)+' · ':''}${esc(record.table)}[${esc(record.column)}]</strong><span>${evidenceStatus(record,matchedFields)}</span>${icon('chevron-down')}</summary>
     <div class="field-evidence-body">${record.reason?`<p class="field-preview-note">${esc(record.reason)}</p>`:''}
-      ${record.ok?fieldProfile(record.profile,{compact:true}):`<p class="field-preview-error">${esc(record.error)}</p>`}
+      ${record.ok?(record.scope_term?exactEvidence(record):fieldProfile(record.profile,{compact:true})):`<p class="field-preview-error">${esc(record.error)}</p>`}
       <button class="text-link" data-preview-model="${esc(record.model_id)}" data-preview-table="${esc(record.table)}" data-preview-column="${esc(record.column)}">${icon('table')}打开字段预览</button>
-      ${record.ok?`<details class="field-query-details"><summary>查看取值查询依据</summary>${record.profile.dax_queries.map(query=>codeBlock(query,'dax')).join('')}</details>`:''}
+      ${record.ok&&record.profile.dax_queries.length?`<details class="field-query-details"><summary>查看取值查询依据</summary>${record.profile.dax_queries.map(query=>codeBlock(query,'dax')).join('')}</details>`:''}
     </div></details>`).join('');
 }
 

@@ -22,12 +22,16 @@ class FieldPreviewInput(BaseModel):
         return value.strip()
 
 
-class FieldCheck(BaseModel):
+class CandidateField(BaseModel):
     model_config = ConfigDict(extra='forbid')
     table: str = Field(min_length=1, max_length=300)
     column: str = Field(min_length=1, max_length=300)
+
+
+class FieldCheck(CandidateField):
     search_terms: list[str] = Field(default_factory=list, max_length=3)
     reason: str = Field(default='', max_length=240)
+    related_term: str = Field(default='', max_length=120)
 
     @field_validator('search_terms')
     @classmethod
