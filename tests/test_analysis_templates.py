@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.database import Database, encode, now, uid
 from backend.powerbi import context_from_dict
+from backend.template_parameters import recognize_parameters
 
 
 class Provider:
@@ -141,10 +142,75 @@ def test_template_edit_delete_and_restart_preserve_existing_runs(setup, tmp_path
 @pytest.mark.parametrize('values', [{'月份': ''}, {'unknown': 'x'}])
 def test_invalid_parameters_do_not_create_conversations(setup, values):
     app, client, model, _, _ = setup
-    template = create(client, model)
+    template = create(client, model, defaults={})
     response, _ = run(client, template, model, values=values)
     assert response.status_code == 422
     assert not app.state.db.all('SELECT * FROM conversations')
+
+
+def test_blank_or_omitted_values_use_last_run_then_current_defaults_per_template(setup):
+    app, client, model, _, _ = setup
+    template = create(client, model, prompt='比较 {{工厂}} 在 {{月份}} 的销售额', defaults={'工厂': '0810', '月份': '2026-05'})
+    path = f'/api/analysis-templates/{template["id"]}'
+    assert client.get(path).json()['last_values'] == {}
+    first, first_body = run(client, template, model, values={'工厂': ' 0887 ', '月份': '   '})
+    assert first.status_code == 200
+    finish(app, first_body['request_id'])
+    repeat, repeat_body = run(client, template, model, values={'月份': '2026-06'})
+    assert repeat.status_code == 200
+    snapshot = json.loads(finish(app, repeat_body['request_id'])['snapshot'])
+    assert snapshot['values'] == {'工厂': '0887', '月份': '2026-06'}
+    assert snapshot['prompt'] == '比较 0887 在 2026-06 的销售额'
+    assert client.get(path).json()['defaults'] == template['defaults']
+    assert client.get('/api/analysis-templates').json()[0]['last_values'] == snapshot['values']
+    duplicate = run(client, template, model, **first_body)[0].json()
+    assert (duplicate['id'], duplicate['conversation']['id']) == (first_body['request_id'], first.json()['conversation']['id'])
+    assert len(client.get(path+'/runs').json()) == 2
+
+    other = create(client, model, prompt=template['prompt'], defaults=template['defaults'])
+    assert other['last_values'] == {}
+    edited = client.put(path, json={'name': '按工厂', 'revision': 1, 'prompt': '{{工厂}} 的前 {{数量}} 项销售额',
+                                   'defaults': {'工厂': '0001', '数量': '5'}}).json()
+    assert edited['last_values'] == {'工厂': '0887'}
+    third, body = run(client, edited, model, values={'工厂': '', '数量': '0'})
+    assert third.status_code == 200
+    assert json.loads(finish(app, body['request_id'])['snapshot'])['values'] == {'工厂': '0887', '数量': '0'}
+
+
+def test_recognize_multiple_values_in_text_and_scope_without_model_calls(setup):
+    app, client, model, provider, _ = setup
+    prompt = (" 💡看下0887 overhead 2026-5 实际费用和最新2026预测费用的差异，按'Dim_Cost Element'[Class 3I]拆分。"
+              "\n分析口径：成本中心0887，Overhead，2026年5月，版本FC_2026_8+4，总销售额。")
+    stamp = now()
+    app.state.db.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?)', ('source', '来源', 'analysis', model['id'], '', stamp, stamp))
+    app.state.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)', ('answer', 'source', 'assistant', '已分析', 'complete', stamp))
+    app.state.db.execute('INSERT INTO field_observations VALUES (?,?,?,?)', (uid(), 'answer', encode({
+        'model_id': model['id'], 'column': 'Class 2', 'adopted_value': 'Overhead'}), stamp))
+    for value, column in [('0887','CC Number'), ('overhead','其他字段')]:
+        app.state.db.execute('INSERT INTO scope_value_hints VALUES (?,?,?,?,?)', (model['id'], model['fingerprint'], value, '历史维度', column))
+    response = client.post('/api/analysis-templates/parameters/recognize', json={'model_id': model['id'], 'source_message_id': 'answer', 'prompt': prompt})
+    assert response.status_code == 200, response.text
+    candidates = response.json()['candidates']
+    assert [(v['name'], v['value']) for v in candidates] == [
+        ('成本中心', '0887'), ('Class 2', 'overhead'), ('月份', '2026-5'), ('预测年份', '2026'),
+        ('预测版本', 'FC_2026_8+4'), ('指标', '总销售额')]
+    for v, spellings in zip(candidates[:3], [['0887', '0887'], ['overhead', 'Overhead'], ['2026-5', '2026年5月']]):
+        assert [prompt[a:b] for a,b in v['spans']] == spellings
+    assert not provider.calls
+    assert client.get('/api/analysis-templates').json() == []
+
+
+def test_recognition_keeps_identifiers_and_existing_parameters_and_separates_roles():
+    prompt = ("比较 工厂0810 和 成本中心0810，2025年与2026年的各月，部门为研发，产品“蒸汽炉”，对比华东地区。"
+              "\n{{年份}}、`2025-11`、[FY 2027]、'2028'[Class 3I]、F1，排名前10项")
+    found = recognize_parameters(prompt)
+    assert {v['name']: v['value'] for v in found} == {
+        '工厂': '0810', '成本中心': '0810', '年份2': '2025', '年份3': '2026', '部门': '研发',
+        '产品': '蒸汽炉', '地区': '华东', '排名数量': '10'}
+    assert all(len(v['spans']) == 1 for v in found)
+
+    scoped = recognize_parameters("按'Dim 2026'[CC Number]='0887'和[Legal Entity]=0887筛选，`[CC Number]=0999`。")
+    assert [(v['name'], v['value']) for v in scoped] == [('CC Number', '0887'), ('Legal Entity', '0887')]
 
 
 def test_placeholders_are_validated_and_values_are_not_recursively_interpreted(setup):

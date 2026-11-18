@@ -548,7 +548,9 @@ node --test --test-isolation=none tests\app_navigation.test.mjs tests\workspaces
 
 `backend/analysis_templates.py` 提供模板目录、来源草稿、编辑冲突检查与独立运行；`frontend/analysis_templates.js` 提供模板管理、参数预览、运行记录。入口为左侧“分析模板”和已完成分析回复下的“保存为分析模板”。
 
-API：`GET/POST /api/analysis-templates`，`PUT/DELETE /api/analysis-templates/{id}`，`GET/POST /api/analysis-templates/{id}/runs`，`GET /api/messages/{id}/analysis-template`。历史运行通过 `GET /api/conversations/{id}` 打开，不依赖最近 300 个会话列表。
+模板 API 包括 `GET/POST /api/analysis-templates`、`GET/PUT/DELETE /api/analysis-templates/{id}`、`POST /api/analysis-templates/parameters/recognize`、`GET/POST /api/analysis-templates/{id}/runs` 和 `GET /api/messages/{id}/analysis-template`。历史运行通过 `GET /api/conversations/{id}` 打开。
+
+`backend/template_parameters.py` 在本地识别任务中的时间、编号、指标与筛选值，利用关联模型的度量名、已有精确命中和来源对话中已采用的取值。候选携带原值和原文位置，编辑器按勾选结果批量生成参数。重跑窗口打开时读取该模板最近保留的运行快照，逐项按本次输入、上次实际值、模板默认值的顺序取值。提交时固定预览中的取值，直接调用运行 API 也支持省略参数或传入空白。
 
 模板把 `{{参数}}` 单次替换为普通任务文字，最多 12 项，每项最多 500 字。每次运行先保存模板版本、参数和展开文本，再通过原 `ChatService.begin()`、`BackgroundStream`、语义检查、只读分析与取消机制取新数。前端跟随持久化消息快照；不直接替换 DAX 字符串，不复制历史结果或绕过只读检查。运行 `request_id` 幂等，传输不确定后的重试复用同一 ID；编辑模板需要 revision，旧版本运行请求拒绝。
 

@@ -47,9 +47,12 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const fieldRecord={id:'field-check',model_id:'model',table:'事实表',column:'金额',label:'F1',reason:'识别口径',
     ok:true,error:'',profile:fieldProfile};
   const json=value=>new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
+  const savedTemplate={id:'saved-analysis',name:'月度分析模板',model_id:'model',model_name:'测试模型',
+    prompt:'分析 {{月份}} 的金额',parameters:['月份'],defaults:{月份:'2026-10'},revision:1};
   async function fetchMock(path,opts={}) {
-    if(path==='/api/analysis-templates')return json([{id:'saved-analysis',name:'月度分析模板',model_id:'model',model_name:'测试模型',
-      prompt:'分析 {{月份}} 的金额',parameters:['月份'],defaults:{月份:'2026-10'},revision:1}]);
+    if(path==='/api/analysis-templates')return json([savedTemplate]);
+    if(path==='/api/analysis-templates/saved-analysis')return json(savedTemplate);
+    if(path==='/api/analysis-templates/parameters/recognize')return json({candidates:[{name:'月份',value:'2026-11',spans:[[3,10]]}]});
     if(path==='/api/analysis-templates/saved-analysis/runs'&&opts.method==='POST') {
       const body=JSON.parse(opts.body),conversation={id:'template-run',title:'月度分析模板',mode:'analysis',model_id:body.model_id};
       conversations.unshift(conversation);
@@ -536,9 +539,8 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('[data-evidence="template-query"]'),resultEvidence);assert.ok(resultEvidence.hasAttribute('open'));
     await click('[data-save-analysis-template="template-run-answer"]');
     assert.equal($('[name="prompt"]').value,'分析 2026-11 的金额');
-    assert.equal($('[data-template-parameter-count]').textContent,'固定任务');
-    const templatePrompt=$('[name="prompt"]');templatePrompt.selectionStart=3;templatePrompt.selectionEnd=10;
-    await click('[data-template-insert-parameter="月份"]');
+    assert.equal($('[data-template-selection]').textContent,'已选 1 项');
+    const templatePrompt=$('[name="prompt"]');await click('[data-template-apply-candidates]');
     assert.equal(templatePrompt.value,'分析 {{月份}} 的金额');
     assert.equal($('[data-template-default="月份"]').value,'2026-11');
     assert.equal($('[data-template-editor-preview]').textContent,'分析 2026-11 的金额');

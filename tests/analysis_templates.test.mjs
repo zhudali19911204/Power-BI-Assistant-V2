@@ -8,13 +8,14 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const initial={id:'template',name:'月度销售',model_id:'model',model_name:'销售报表',prompt:'分析 {{月份}} 的 {{部门}}，比较 {{月份}} 环比。',
   parameters:['月份','部门'],defaults:{月份:'2026-10',部门:'销售部'},revision:1};
 
-async function fixture({seed=null,templates=null}={}) {
+async function fixture({seed=null,templates=null,candidates=[]}={}) {
   const {document,window}=parseHTML('<html><body><section></section></body></html>');
   const root=document.querySelector('section'),calls=[],started=[],opened=[];
   let rows=structuredClone(templates??[initial]),waitRun=null,failRun=false,model={id:'model',source:'desktop',name:'销售报表'};
   async function api(path,options={}) {
     const body=options.body?JSON.parse(options.body):null;calls.push({path,...options,body});
     if(path==='/analysis-templates'&&!options.method)return structuredClone(rows);
+    if(path==='/analysis-templates/parameters/recognize')return {candidates};
     if(path==='/analysis-templates'&&options.method==='POST') {
       const row={...body,id:'new',revision:1,model_name:model.name,parameters:templateParameters(body.prompt)};rows.push(row);return row;
     }
@@ -28,6 +29,8 @@ async function fixture({seed=null,templates=null}={}) {
       return {id:body.request_id,conversation:{id:'run-conversation',mode:'analysis',model_id:body.model_id,title:'月度销售'}};
     }
     if(path.endsWith('/runs'))return [{conversation_id:'old-conversation',status:'complete',values:{月份:'2026-09'},revision:1,created_at:'2026-10-01T00:00:00Z'}];
+    const row=rows.find(item=>path==='/analysis-templates/'+item.id);
+    if(row&&!options.method)return structuredClone(row);
     throw new Error('Unexpected request '+path);
   }
   const manager=await mountAnalysisTemplates(root,{api,seed,getModel:()=>model,getService:()=>({ready:true,active_profile_id:'llm'}),
@@ -38,6 +41,7 @@ async function fixture({seed=null,templates=null}={}) {
   function select(start,end=start){const text=$('[name="prompt"]');text.selectionStart=start;text.selectionEnd=end;text.setSelectionRange=(start,end)=>{text.selectionStart=start;text.selectionEnd=end;};}
   async function submit(){const form=$('form');form.reportValidity=()=>true;form.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();}
   return {root,window,$,calls,started,opened,manager,click,input,select,submit,
+    remember(id,values){rows.find(row=>row.id===id).last_values=values;},
     defer(){let release;waitRun=new Promise(resolve=>{release=resolve;});return release;},
     fail(value){failRun=value;},setModel(value){model=value;}};
 }
@@ -143,7 +147,7 @@ test('turning selected values into parameters preserves the literal default and 
   await f.click('[data-template-insert-parameter="年份"]');
   assert.equal(f.$('[data-template-parameter-count]').textContent,'2 个可填写参数');
   assert.equal(f.$('[data-template-editor-preview]').textContent,prompt);
-  await f.submit();const saved=f.calls.find(call=>call.method==='POST').body;
+  await f.submit();const saved=f.calls.find(call=>call.path==='/analysis-templates'&&call.method==='POST').body;
   assert.deepEqual(saved.defaults,{工厂:'0810',年份:'2026'});assert.equal(saved.source_message_id,'answer');
 });
 
@@ -193,20 +197,84 @@ test('temporary task edits preserve defaults and only active parameters are save
   await f.submit();assert.deepEqual(f.calls.find(call=>call.method==='PUT').body.defaults,{月份:'2026-10'});
 });
 
-test('run guidance counts missing values, blocks whitespace and restores template defaults',async()=>{
+test('first run with defaults needs no typing and whitespace inherits the previewed value',async()=>{
   const f=await fixture();await f.click('[data-template-run]');
-  assert.ok(f.$('[data-template-run-status]').textContent.includes('2 / 2'));
+  assert.equal(f.$('[data-template-value="月份"]').value,'');
+  assert.equal(f.$('[data-template-value="月份"]').placeholder,'2026-10');
   f.input('[data-template-value="月份"]','   ');
-  assert.ok(f.$('[data-template-run-status]').textContent.includes('待填写：月份'));
-  await f.submit();assert.equal(f.calls.some(call=>call.method==='POST'),false);
-  assert.ok(f.$('[data-template-notice]').textContent.includes('请填写参数：月份'));
-  f.input('[data-template-value="部门"]','其他部门');await f.click('[data-template-reset-values]');
-  assert.equal(f.$('[data-template-value="月份"]').value,'2026-10');
-  assert.equal(f.$('[data-template-value="部门"]').value,'销售部');
-  assert.ok(f.$('[data-template-run-status]').textContent.includes('2 / 2'));
+  assert.ok(f.$('[data-template-run-status]').textContent.includes('沿用 2 项'));
   await f.submit();assert.deepEqual(f.calls.find(call=>call.method==='POST').body.values,initial.defaults);
 });
 
+test('rerun inherits the latest actual values by name, allows partial overrides and can restore saved defaults',async()=>{
+  const f=await fixture();f.remember('template',{月份:'2026-12',部门:'物流部'});
+  await f.click('[data-template-run]');
+  assert.equal(f.$('[data-template-value="月份"]').placeholder,'2026-12');
+  assert.equal(f.$('[data-template-value="月份"]').hasAttribute('required'),false);
+  f.input('[data-template-value="部门"]','研发');
+  assert.equal(f.$('[data-template-preview]').textContent,'分析 2026-12 的 研发，比较 2026-12 环比。');
+  f.remember('template',{月份:'2027-01',部门:'另一个窗口的修改'});
+  await f.submit();assert.deepEqual(f.calls.find(call=>call.method==='POST').body.values,{月份:'2026-12',部门:'研发'});
+  await f.click('[data-template-reset-values]');
+  assert.equal(f.$('[data-template-value="月份"]').value,'2026-10');
+  assert.equal(f.$('[data-template-value="部门"]').value,'销售部');
+});
+
+test('a manual parameter without a default or previous value is required only on first use',async()=>{
+  const f=await fixture({templates:[{...initial,defaults:{},last_values:{月份:'2026-12'}}]});await f.click('[data-template-run]');
+  assert.equal(f.$('[data-template-value="部门"]').hasAttribute('required'),true);
+  f.input('[data-template-value="部门"]','  ');await f.submit();
+  assert.ok(f.$('[data-template-run-status]').textContent.includes('待填写：部门'));
+  assert.ok(f.$('[data-template-notice]').textContent.includes('请填写参数：部门'));
+  assert.equal(f.started.length,0);
+  f.input('[data-template-value="部门"]','0');await f.submit();
+  assert.deepEqual(f.calls.find(call=>call.method==='POST').body.values,{月份:'2026-12',部门:'0'});
+});
+
+test('bulk recognition on a saved analysis applies checked literals at their Unicode offsets on save',async()=>{
+  const prompt='💡工厂0810在2026-5的费用，口径0810。按{{指标}}汇总';
+  const candidates=[{name:'工厂',value:'0810',spans:[[3,7],[20,24]]},{name:'月份',value:'2026-5',spans:[[8,14]]}];
+  const f=await fixture({candidates,seed:{model_id:'model',source_message_id:'answer',name:'费用',prompt,defaults:{指标:'实际费用'}}});
+  assert.equal(f.$('[data-template-selection]').textContent,'已选 2 项');
+  const month=f.$('[data-template-candidate="1"]');month.checked=false;month.dispatchEvent(new f.window.Event('change',{bubbles:true}));
+  assert.equal(f.$('[data-template-selection]').textContent,'已选 1 项');
+  await f.submit();
+  const scan=f.calls[0],saved=f.calls.find(call=>call.path==='/analysis-templates'&&call.method==='POST').body;
+  assert.deepEqual(scan.body,{prompt,model_id:'model',source_message_id:'answer'});
+  assert.equal(saved.prompt,'💡工厂{{工厂}}在2026-5的费用，口径{{工厂}}。按{{指标}}汇总');
+  assert.deepEqual(saved.defaults,{工厂:'0810',指标:'实际费用'});
+});
+
+test('changing text invalidates bulk suggestions and an existing fixed template can adopt all in one edit',async()=>{
+  const prompt='费用 0887',f=await fixture({templates:[{...initial,prompt,parameters:[],defaults:{}}],
+    candidates:[{name:'编号',value:'0887',spans:[[3,7]]}]});
+  await f.click('[data-template-edit]');await f.click('[data-template-recognize]');
+  f.input('[name="prompt"]','其他任务');assert.equal(f.$('[data-template-candidate-panel]').hidden,true);
+  f.input('[name="prompt"]',prompt);await f.click('[data-template-recognize]');
+  await f.click('[data-template-toggle-candidates]');assert.equal(f.$('[data-template-apply-candidates]').disabled,true);
+  await f.click('[data-template-toggle-candidates]');await f.click('[data-template-apply-candidates]');
+  assert.equal(f.$('[data-template-default="编号"]').value,'0887');assert.equal(f.$('[data-template-editor-preview]').textContent,prompt);
+  f.input('[data-template-default="编号"]','0257');await f.submit();
+  const updated=f.calls.find(call=>call.method==='PUT').body;
+  assert.equal(updated.prompt,'费用 {{编号}}');assert.deepEqual(updated.defaults,{编号:'0257'});
+});
+
+test('a new template offers all candidates beyond the remaining slots and saves only the selected subset',async()=>{
+  const marked=Array.from({length:11},(_,i)=>`{{p${i}}}`).join(' '),prompt=marked+' 工厂0810在2026年';
+  const candidates=[{name:'工厂',value:'0810'},{name:'年份',value:'2026'}].map(item=>{
+    const start=prompt.indexOf(item.value);return {...item,spans:[[start,start+item.value.length]]};
+  });
+  const f=await fixture({candidates});await f.click('[data-template-new]');
+  f.input('[name="name"]','新任务');f.input('[name="prompt"]',prompt);await f.click('[data-template-recognize]');
+  const [factory,year]=f.root.querySelectorAll('[data-template-candidate]');
+  assert.equal(factory.checked,true);assert.equal(year.checked,false);
+  year.checked=true;year.dispatchEvent(new f.window.Event('change',{bubbles:true}));await f.submit();
+  assert.ok(f.$('[data-template-notice]').textContent.includes('最多还能添加 1 项'));
+  assert.equal(f.$('[name="prompt"]').value,prompt);
+  factory.checked=false;factory.dispatchEvent(new f.window.Event('change',{bubbles:true}));await f.submit();
+  const saved=f.calls.find(call=>call.path==='/analysis-templates'&&call.method==='POST').body;
+  assert.equal(saved.prompt,marked+' 工厂0810在{{年份}}年');assert.equal(saved.defaults.年份,'2026');
+});
 test('editor previews and parameter chips treat values as text and ignore inherited object properties',async()=>{
   assert.equal(templatePreview('{{constructor}}',{}),'{{constructor}}');
   const f=await fixture({seed:{name:'分析',model_id:'model',prompt:'分析 {{指标}}',defaults:{指标:'<img src=x onerror=1>'}}});

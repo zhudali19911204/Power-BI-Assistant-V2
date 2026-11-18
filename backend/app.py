@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .chat import ChatService
-from .analysis_templates import AnalysisTemplates, TemplateCreate, TemplateEdit, TemplateRun
+from .analysis_templates import AnalysisTemplates, TemplateCreate, TemplateEdit, TemplateRun, TemplateScan
 from .database import Database, encode, now, uid
 from .engine.context.live_source import find_instances
 from .engine.context.live_writer import LiveDesktopWriter
@@ -316,6 +316,14 @@ def create_app(directory=None):
     @app.post('/api/analysis-templates', status_code=201)
     def create_analysis_template(body: TemplateCreate):
         return templates.save(body)
+
+    @app.post('/api/analysis-templates/parameters/recognize')
+    def recognize_template_parameters(body: TemplateScan):
+        return templates.scan(body)
+
+    @app.get('/api/analysis-templates/{template_id}')
+    def get_analysis_template(template_id: str):
+        return templates.get(template_id)
 
     @app.put('/api/analysis-templates/{template_id}')
     def edit_analysis_template(template_id: str, body: TemplateEdit):
