@@ -11,7 +11,7 @@ from backend.analysis_protocol import PlanFormatError, parse_plan, validate_acti
 from backend.app import create_app
 from backend.database import encode, now
 from backend.cancellation import GenerationCancelled
-from backend.engine.context.base import Column, ModelContext
+from backend.engine.context.base import Column, Measure, ModelContext
 from backend.fields import FieldCheck, field_ref
 from backend.field_discovery import cached_check
 from backend.scope_checks import ScopeCheck, candidate_probes, read_scope_batch
@@ -32,7 +32,8 @@ BUSINESS_DAX = '''EVALUATE SUMMARIZECOLUMNS(TREATAS({"0887"}, 'Dim_Cost Center'[
 @pytest.fixture
 def case(tmp_path, monkeypatch):
     app = create_app(tmp_path)
-    cols = {CC: ['CC Number', 'Legal Entity', 'Name', 'City', 'Active'], CE: ['Class 1', 'Class 2', 'Class 3I']}
+    cols = {CC: ['CC Number', 'Legal Entity', 'Name', 'City', 'Active', 'CC Cluster Number'],
+            CE: ['Class 1', 'Class 2', 'Class 3I', 'CE Category'], 'Dim_Plant': ['Company Code']}
     ctx = ModelContext(tables={t: [Column(n, 'string', t) for n in names] for t, names in cols.items()})
     model = app.state.powerbi.save('test report', 'desktop', 50100, ctx)
     semantic = app.state.semantics.ensure(model, ctx)
@@ -98,8 +99,8 @@ def test_both_terms_found_in_one_engine_read_and_two_plans(case):
 def test_conflicting_hits_ask_only_about_the_organization_then_resume(case, monkeypatch):
     s = case
     s.values[field_ref(CC, 'CC Number')].append('0887')
-    s.run([encode({'scope_checks': [ORG, CATEGORY]}), plan(BUSINESS_DAX)])
-    assert not s.amounts and len(s.reads)==1
+    s.run([encode({'scope_checks': [ORG, CATEGORY]})])
+    assert not s.amounts and len(s.reads)==1 and len(s.provider.calls)==1
     msg = latest(s.client, s.conv)
     card = msg['clarification']
     assert '0887' in card['question'] and 'overhead' not in card['question'].lower()
@@ -113,6 +114,107 @@ def test_conflicting_hits_ask_only_about_the_organization_then_resume(case, monk
         {'literal':'0887','table_name':CC,'column_name':'Legal Entity'}]
     prior=s.client.get(f"/api/conversations/{s.conv['id']}/messages").json()[1]
     assert [r['column'] for r in prior['field_previews'] if r.get('confirmed_value')=='0887']==['Legal Entity']
+
+
+def test_0257_card_follows_the_eight_field_results_without_another_model_call(case):
+    s = case
+    s.values[field_ref(CC, 'Legal Entity')].append('0257')
+    s.values[field_ref('Dim_Plant', 'Company Code')] = ['0257']
+    org = {'term': '0257', 'candidates': [{'table': t, 'column': c} for t, c in
+           [(CC, 'CC Number'), (CC, 'Legal Entity'), ('Dim_Plant', 'Company Code'), (CC, 'CC Cluster Number')]]}
+    overhead = {'term': 'overhead', 'candidates': [{'table': CE, 'column': c}
+                for c in ['Class 1', 'Class 2', 'CE Category', 'Class 3I']]}
+    events = s.run([encode({'scope_checks': [org, overhead]})], text='2026 年 0257的overhead和去年对比是什么情况')
+    kinds = [e['type'] for e in events]
+    assert kinds[kinds.index('field_previews') + 1] == 'clarification' and kinds[-1] == 'done'
+    assert len(s.provider.calls) == len(s.reads) == 1 and not s.amounts
+    saved = latest(s.client, s.conv)
+    assert len(saved['field_previews']) == 8
+    card = saved['clarification']
+    assert '0257' in card['question'] and 'overhead' not in card['question'].lower()
+    assert {c['field']: c['column'] for c in card['scope_binding']['choices'].values()} == {
+        'F3': 'Legal Entity', 'F5': 'Company Code'}
+    assert 'Class 2' in card['context'] and 'Overhead' in card['context']
+
+
+@pytest.mark.parametrize('source', ['user', 'alias', 'binding', 'dictionary', 'description', 'measure'])
+def test_multiple_exact_hits_still_use_existing_evidence_to_resolve_scope(case, source):
+    s = case
+    s.values[field_ref(CC, 'CC Number')].append('0887')
+    question = '分析 0887 的 overhead'
+    dax = BUSINESS_DAX
+    dictionary = s.app.state.semantics.get(s.model['id'])
+    entry = next(e for e in dictionary['entries'] if e['kind'] == 'column' and e['name'] == 'Legal Entity')
+    basis = ''
+    if source == 'user':
+        question = '分析 Legal Entity 0887 的 overhead'
+    elif source == 'alias':
+        entry.update(state='confirmed', aliases=['法人编号'])
+        question = '分析法人编号 0887 的 overhead'
+    elif source == 'binding':
+        s.app.state.db.execute('INSERT INTO conversation_bindings VALUES (?,?,?,?,?)',
+                               (s.conv['id'], '0887', CC, 'Legal Entity', now()))
+    elif source == 'dictionary':
+        dictionary['business_dictionary']['items'] = [{'id': 'org', 'kind': 'term', 'scope': 'model',
+            'state': 'confirmed', 'title': '0887', 'aliases': [], 'topic': '', 'targets': [], 'scope_object_ids': [],
+            'filters': [{'object_id': entry['id'], 'operator': 'eq', 'values': ['0887']}]}]
+    elif source == 'description':
+        basis = '运营口径中 0887 指本字段的法人实体'
+        entry['facts']['description'] = basis
+    else:
+        measure = Measure('运营金额', CC, f'CALCULATE([Amount], {field_ref(CC, "Legal Entity")} = "0887")')
+        s.ctx.measures.append(measure)
+        dax = 'EVALUATE ROW("Amount", [运营金额])'
+    s.app.state.semantics._store(s.model['id'], dictionary)
+    query = json.loads(plan(dax))
+    if basis:
+        query['scope_resolutions'] = [{'field': 'F2', 'value': '0887', 'basis': basis}]
+    s.run([encode({'scope_checks': [ORG]}), encode(query), '125 [Q1]'], text=question)
+    assert s.amounts == [dax] and not latest(s.client, s.conv)['clarification']
+    assert any(r.get('adopted_value') == '0887' and r['column'] == 'Legal Entity'
+               for r in latest(s.client, s.conv)['field_previews'])
+
+
+def test_ambiguous_followup_releases_the_card_with_earlier_query_results(case):
+    s = case
+    s.values[field_ref(CC, 'CC Number')].append('0887')
+    first = json.loads(plan())
+    first['needs_more'] = True
+    events = s.run([encode(first), encode({'scope_checks': [ORG, CATEGORY]})])
+    msg = latest(s.client, s.conv)
+    assert events[-1]['type'] == 'done' and len(s.provider.calls) == 2
+    assert '0887' in msg['clarification']['question'] and '[Q1]' in msg['content']
+    assert len(msg['analysis']) == len(s.amounts) == 1 and msg['analysis'][0]['ok']
+
+
+def test_immediate_card_only_asks_about_the_unresolved_term(case):
+    s = case
+    s.values[field_ref(CC, 'CC Number')].append('0887')
+    s.values[field_ref(CE, 'Class 1')] = ['Overhead']
+    s.run([encode({'scope_checks': [ORG, CATEGORY]})], text='对比 Legal Entity 0887 的 overhead')
+    card = latest(s.client, s.conv)['clarification']
+    assert len(s.provider.calls) == 1 and not s.amounts
+    assert 'overhead' in card['question'] and '0887' not in card['question']
+    assert {c['column'] for c in card['scope_binding']['choices'].values()} == {'Class 1', 'Class 2'}
+
+
+@pytest.mark.parametrize('situation', ['alias', 'partial', 'inferred'])
+def test_scope_checks_requiring_interpretation_keep_the_planning_step(case, situation):
+    s = case
+    s.values[field_ref(CE, 'Class 1')] = ['Overhead']
+    category = CATEGORY
+    text = '分析 overhead'
+    if situation == 'alias':
+        category = {**CATEGORY, 'term': '场地费用', 'aliases': ['overhead']}
+        text = '分析场地费用'
+    elif situation == 'partial':
+        # Class 3I failed, two other columns genuinely matched.
+        s.transform = lambda rows: [row for row in rows if row['[__index]'] != 0]
+    else:
+        text = '分析费用'
+    events = s.run([encode({'scope_checks': [category]}), clarify(COMPARISON_CARD)], text=text)
+    assert len(s.provider.calls) == 2 and len(s.reads) == 1 and events[-1]['type'] == 'done'
+    assert latest(s.client, s.conv)['clarification']['topic'] == COMPARISON_CARD['topic']
 
 
 ACTIVE_CHECK = {'table': CC, 'column': 'Active', 'search_terms': ['Yes', 'Y', 'Active']}
@@ -135,10 +237,10 @@ def test_clarification_resumes_with_verified_active_filter_and_still_asks_about_
     s = case
     reads = active_preview(monkeypatch, s)
     s.values[field_ref(CC, 'CC Number')].append('0887')
-    s.run([encode({'scope_checks': [ORG, CATEGORY]}), encode({'field_checks': [ACTIVE_CHECK]}), plan(ACTIVE_DAX)])
+    s.run([encode({'field_checks': [ACTIVE_CHECK]}), encode({'scope_checks': [ORG, CATEGORY]})])
     first = latest(s.client, s.conv)
     assert '0887' in first['clarification']['question'] and 'Active' not in first['clarification']['question']
-    assert first['field_previews'][-1]['profile']['values'][0]['value'] == 'Yes'
+    assert first['field_previews'][0]['column'] == 'Active' and first['field_previews'][0]['profile']['values'][0]['value'] == 'Yes'
 
     resumed = Provider([plan(ACTIVE_DAX), '125 [Q1]'])
     monkeypatch.setattr(s.app.state.settings, 'provider', lambda: resumed)
@@ -244,8 +346,8 @@ def test_ambiguous_selection_requires_an_existing_source(case):
     s.values[field_ref(CC,'CC Number')].append('0887')
     query = json.loads(plan(BUSINESS_DAX))
     query['scope_resolutions'] = [{'field':'F2','value':'0887','basis':'通常应该是法人'}]
-    s.run([encode({'scope_checks':[ORG]}), encode(query)])
-    assert not s.amounts and latest(s.client,s.conv)['clarification']
+    s.run([encode({'scope_checks':[ORG]}), encode(query)], text='分析 CC Number 0887')
+    assert len(s.provider.calls)==2 and not s.amounts and latest(s.client,s.conv)['clarification']
     query['scope_resolutions'][0]['basis']='Legal Entity 0887'
     s.run([encode({'scope_checks':[ORG]}),encode(query),'125 [Q1]'],text='分析 Legal Entity 0887')
     assert s.amounts == [BUSINESS_DAX]
@@ -256,9 +358,9 @@ def test_ai_requested_field_choice_uses_verified_options(case):
     s.values[field_ref(CC,'CC Number')].append('0887')
     ask={'topic':'字段归属','question':'请选择 0887 的归属？','options':[
         {'label':'模型猜测一','value':'猜测一'},{'label':'模型猜测二','value':'猜测二'}]}
-    s.run([encode({'scope_checks':[ORG, CATEGORY]}),encode({'clarification':ask})])
+    s.run([encode({'scope_checks':[ORG, CATEGORY]}),encode({'clarification':ask})],text='请核对 Legal Entity 0887 的 overhead')
     card=latest(s.client,s.conv)['clarification']
-    assert len(s.reads)==1 and not s.amounts
+    assert len(s.reads)==1 and len(s.provider.calls)==2 and not s.amounts
     assert len(card['scope_binding']['choices'])==2 and '猜测' not in encode(card)
     assert 'Class 2' in card['context']
 

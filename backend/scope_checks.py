@@ -262,9 +262,7 @@ def question_scope(question, groups):
         found = []
         for group in groups.values():
             term = group['term'].casefold()
-            pattern = '“' + re.escape(term) + '”' if quoted else re.escape(term)
-            if not quoted and term.isascii():
-                pattern = r'(?<![a-z0-9_])' + pattern + r'(?![a-z0-9_])'
+            pattern = '“' + re.escape(term) + '”' if quoted else _term_pattern(term)
             if re.search(pattern, text):
                 found.append(group)
         if found:
@@ -333,11 +331,16 @@ def filter_conflict(records, groups, plan):
     return None
 
 
-def _named_by_user(user_text, term, names, quote=''):
-    source = user_text.casefold()
+def _term_pattern(term):
     literal = re.escape(term.casefold())
     if term.isascii():
-        literal = r'(?<![a-z0-9_])' + literal + r'(?![a-z0-9_])'
+        return r'(?<![a-z0-9_])' + literal + r'(?![a-z0-9_])'
+    return literal
+
+
+def _named_by_user(user_text, term, names, quote=''):
+    source = user_text.casefold()
+    literal = _term_pattern(term)
     gap = r'[\s为是等于编号编码的:=：“”「」‘’"\'\-]{0,8}'
     for name in names:
         name = name.casefold()
@@ -348,6 +351,61 @@ def _named_by_user(user_text, term, names, quote=''):
                 or (quote and quote in source and name in quote and re.search(literal,quote))):
             return True
     return False
+
+
+def _column_sources(table, column, matches, entry):
+    names = [field_ref(table, column)]
+    if not any(m['column'].casefold() == column.casefold() and m['table'] != table for m in matches):
+        names.append(column)
+        if entry.get('state') == 'confirmed':
+            names.extend([entry.get('business_name', ''), *entry.get('aliases', [])])
+    definitions = [entry.get('facts', {}).get('description', '')]
+    if entry.get('state') == 'confirmed':
+        definitions.append(entry.get('meaning', ''))
+    return names, definitions
+
+
+def immediate_scope_question(groups, ctx, user_messages, bindings, dictionary):
+    """Offer an exact field collision immediately when no source can distinguish its hits."""
+    entries = {(e['table'], e['name']): e for e in dictionary.get('entries', []) if e['kind'] == 'column'}
+    for group in groups:
+        term, matches = group['term'], group['matches']
+        key = term.casefold()
+        fields = {(m['table'], m['column']) for m in matches}
+        if (len(fields) < 2 or group['incomplete']
+                or any(m['value'].casefold() != key or m.get('match_kind') for m in matches)):
+            continue
+        # Only ask about a term the user actually supplied. An attached image can
+        # contain the field choice, which is available to the planner but not here.
+        literal = re.compile(_term_pattern(term))
+        turns = [m for m in user_messages if literal.search(m.content.casefold())]
+        if not turns or any(m.images for m in turns) or user_messages[-1].images:
+            continue
+        if any(b['literal'].casefold() == key for b in bindings):
+            continue
+        mappings = {(t, c, v.casefold()) for t, c, v in confirmed_filters(dictionary, term)}
+        if len(mappings) == 1:
+            continue
+        # A measure can establish the field even when the question uses its business
+        # name. Leave the choice and its validation to the planner if such a filter exists.
+        dax_literal = key.replace('"', '""')
+        expressions = '\n'.join(query_key(m.expression).casefold() for m in ctx.measures
+                                if dax_literal in (m.expression or '').casefold())
+        for table, column in fields | {(m['table'], m['column']) for m in group['misses']}:
+            entry = entries.get((table, column), {})
+            names, definitions = _column_sources(table, column, matches, entry)
+            # Possible references merit review. Only select_scope can accept one.
+            names.append(table + '[' + column.replace(']', ']]') + ']')
+            if entry.get('state') == 'candidate':
+                names.extend([entry.get('business_name', ''), *entry.get('aliases', [])])
+            names = {n.casefold() for n in names if n and n.casefold() != key}
+            if (any(n in m.content.casefold() for m in turns for n in names)
+                    or any(text and literal.search(text.casefold()) for text in definitions)
+                    or key in _filter_literals(expressions, table, column)):
+                break
+        else:
+            return scope_question(group, '多个字段都含有这个原值。请选择本次用于筛选的字段。')
+    return None
 
 
 def select_scope(group, plan, ctx, user_text, bindings, dictionary):
@@ -399,19 +457,9 @@ def select_scope(group, plan, ctx, user_text, bindings, dictionary):
             and (b['table_name'], b['column_name']) == (table, column) for b in bindings)
         entries = dictionary.get('entries', [])
         entry = next((e for e in entries if (e['kind'], e['table'], e['name']) == ('column', table, column)), {})
-        descriptions = [column]
-        if entry.get('state') == 'confirmed':
-            descriptions.extend([entry.get('business_name', ''), *entry.get('aliases', [])])
+        names, definitions = _column_sources(table, column, matches, entry)
         basis = declarations[0].basis.casefold() if declarations else ''
-        qualified = field_ref(table,column)
-        if any(m['column'].casefold()==column.casefold() and m['table']!=table for m in matches):
-            descriptions=[qualified]
-        else:
-            descriptions.append(qualified)
-        explicit = _named_by_user(user_text,term,descriptions,basis)
-        definitions = [entry.get('facts',{}).get('description','')]
-        if entry.get('state') == 'confirmed':
-            definitions.append(entry.get('meaning',''))
+        explicit = _named_by_user(user_text,term,names,basis)
         documented = any(text and basis and text.casefold() in basis and term.casefold() in text.casefold()
                          and value.casefold() in text.casefold() for text in definitions)
         mapped = {(t,c,v.casefold()) for t,c,v in confirmed_filters(dictionary,term)} == {(table,column,value.casefold())}

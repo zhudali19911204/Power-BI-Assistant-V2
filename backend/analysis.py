@@ -29,8 +29,8 @@ from .analysis_budget import (AnalysisBudget, MAX_BATCH_QUERIES, MAX_QUERIES, MA
 from .field_discovery import (MAX_FIELD_CHECKS, MAX_FIELD_SEARCHES, cached_check, check_key,
                                clarification_field_sources, clarification_fields, clarification_value_summary, discovery_question,
                                field_stop_reason, prior_literal_check, stalled_searches)
-from .scope_checks import (annotate_card, candidate_probes, filter_conflict, next_scope_batch, question_scope, read_scope_batch,
-                           scope_evidence, scope_question, select_scope)
+from .scope_checks import (annotate_card, candidate_probes, filter_conflict, immediate_scope_question, next_scope_batch,
+                           question_scope, read_scope_batch, scope_evidence, scope_question, select_scope)
 
 logger=logging.getLogger(__name__)
 ROW_LIMIT=200
@@ -240,6 +240,7 @@ class AnalysisService:
         scope_terms={}; settled_scopes=set(); unchecked_scopes={}
         redirected_searches=set()
         scope_dictionary=None; scope_correction_used=False
+        immediate_question=None
         total_timeout=generation_timeout(provider)
         budget=AnalysisBudget(total_timeout);started=budget.started
         call_counts={}
@@ -423,7 +424,7 @@ class AnalysisService:
             return current
 
         def prepare_plan(planning_messages,stage='analysis_plan'):
-            nonlocal discovery_rounds,semantic_closed,scope_correction_used
+            nonlocal discovery_rounds,semantic_closed,scope_correction_used,immediate_question
             final_reason=''
             current=AnalysisPlan()
             checks=[]
@@ -508,9 +509,16 @@ class AnalysisService:
                     if not current.scope_checks:continue
                 if current.scope_checks:
                     reason=yield from check_scopes(current)
-                    if reason or not budget.can_review_fields():
-                        return scope_fallback(current,reason or '剩余时间不足以继续判断口径，已保留查值结果。')
+                    check_cancelled()
+                    if reason:return scope_fallback(current,reason)
+                    pending_groups=(g for k,g in grouped_scopes().items() if k not in settled_scopes)
+                    immediate_question=immediate_scope_question(pending_groups,ctx,user_messages,bindings,scope_dictionary or {})
+                    if immediate_question:
+                        return AnalysisPlan(scope=current.scope,clarification=immediate_question)
+                    if not budget.can_review_fields():
+                        return scope_fallback(current,'剩余时间不足以继续判断口径，已保留查值结果。')
                     feedback(current)
+                    yield status('字段取值已返回，正在结合语义和已有口径规划查询')
                     continue
                 if current.field_checks:
                     stalled=stalled_searches(field_records,current.field_checks,body.content)
@@ -647,7 +655,8 @@ class AnalysisService:
             yield encode({'type':'start','message_id':message_id})+'\n'
             yield encode({'type':'model','model_id':model['id'],'live':True})+'\n'
             messages=self.chat.images.llm_messages(history,user_id,body.content)
-            user_text='\n'.join(m.content for m in messages if m.role=='user')
+            user_messages=[m for m in messages if m.role=='user']
+            user_text='\n'.join(m.content for m in user_messages)
             analysis_messages=messages[:]
             prior_fields=clarification_fields(self.db,conv['id'],model,ctx,body.clarification_reply)
             values=clarification_value_summary(prior_fields)
@@ -798,6 +807,12 @@ class AnalysisService:
                 if not successful:
                     text='### 查询未完成\n\n本轮未取得可用于分析的数据，无法据此给出数值结论。请查看下方具体失败原因；格式错误或查询错误不代表模型中没有数据。'
                     display+=text;yield encode({'type':'delta','text':text})+'\n'
+                elif pending_card and immediate_question:
+                    # The card becomes actionable when this reply completes. Keep the
+                    # actual Q results available without blocking it on a summary call.
+                    labels='、'.join('['+q['label']+']' for q in successful)
+                    note='\n\n已完成 '+labels+'，可在下方查看结果。确认筛选字段后继续分析。'
+                    display+=note;yield encode({'type':'delta','text':note})+'\n'
                 else:
                     yield status('已取得真实数据，正在形成分析结论')
                     summary_evidence=evidence_context(evidence)
