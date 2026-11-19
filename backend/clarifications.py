@@ -91,8 +91,13 @@ def resolve_answer(db, conversation_id, reply):
     text = f"口径确认 · {card['topic']}\n{card['question']}"
     if option:
         text += f"\n选择：{option['label']}\n采用口径：{option['value']}"
-        if option['detail']:
-            text += '\n选项说明：' + option['detail']
+        detail = option['detail']
+        choice = card.get('scope_binding', {}).get('choices', {}).get(option['id'])
+        if choice:
+            # The observation label belongs to the card's turn. Keep the field reference.
+            detail = detail.removeprefix(choice['field'] + ' · ')
+        if detail:
+            text += '\n选项说明：' + detail
     if reply.supplement:
         text += '\n用户补充：' + reply.supplement
     return text

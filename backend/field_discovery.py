@@ -28,23 +28,25 @@ def clarification_field_sources(model, records):
     return {'source': _field_source(model), 'ids': ids[-MAX_FIELD_CHECKS:]} if ids else None
 
 
-def clarification_fields(db, conversation_id, model, ctx, reply):
+def clarification_evidence(db, conversation_id, model, ctx, reply):
+    """Return reusable reads and the verified field/value explicitly selected on this card."""
     if not reply:
-        return []
+        return [], None
     row = db.one('SELECT c.payload FROM message_clarifications c JOIN messages m ON m.id=c.message_id '
                  'WHERE m.conversation_id=? AND c.message_id=?', (conversation_id, reply.message_id))
     if not row:
-        return []
-    saved = json.loads(row['payload']).get('_field_sources')
+        return [], None
+    card = json.loads(row['payload'])
+    saved = card.get('_field_sources')
     cutoff = (datetime.now(timezone.utc) - CLARIFICATION_EVIDENCE_AGE).isoformat()
     args = [model['id'], model['fingerprint'], conversation_id, cutoff]
-    query = ('SELECT f.result FROM field_observations f JOIN messages m ON m.id=f.message_id '
+    query = ('SELECT f.message_id,f.result FROM field_observations f JOIN messages m ON m.id=f.message_id '
              'LEFT JOIN field_value_profiles p ON p.model_id=? AND p.fingerprint=? '
              "AND p.table_name=json_extract(f.result,'$.table') AND p.column_name=json_extract(f.result,'$.column') "
              'WHERE m.conversation_id=? AND f.created_at>=? ')
     if saved:
         if saved['source'] != _field_source(model):
-            return []
+            return [], None
         ids = saved['ids'][-MAX_FIELD_CHECKS:]
         query += 'AND f.id IN (' + ','.join('?' for _ in ids) + ') '
         query += "AND (p.checked_at IS NULL OR p.checked_at <= json_extract(f.result,'$.profile.checked_at')) "
@@ -54,9 +56,19 @@ def clarification_fields(db, conversation_id, model, ctx, reply):
         # on an engine change. Require the exact read time, not just a matching value.
         query += "AND f.message_id=? AND p.checked_at=json_extract(f.result,'$.profile.checked_at') "
         args.append(reply.message_id)
-    records = (json.loads(r['result']) for r in db.all(query + 'ORDER BY f.created_at,f.rowid', args))
-    return [r for r in records if r.get('model_id') == model['id'] and ctx.has_column(r['table'], r['column'])
-            and _complete_observation(r)]
+    choice = card.get('scope_binding', {}).get('choices', {}).get(reply.option_id)
+    selected = None
+    records = []
+    for row in db.all(query + 'ORDER BY f.created_at,f.rowid', args):
+        record = json.loads(row['result'])
+        if record.get('model_id') != model['id'] or not ctx.has_column(record['table'], record['column']) or not _complete_observation(record):
+            continue
+        records.append(record)
+        if (choice and not reply.supplement and row['message_id'] == reply.message_id
+                and (record['label'], record['table'], record['column']) == (choice['field'], choice['table'], choice['column'])
+                and any(v.get('value') == choice['value'] for v in record['profile']['values'])):
+            selected = choice
+    return records, selected
 
 
 def prior_literal_check(check, records):

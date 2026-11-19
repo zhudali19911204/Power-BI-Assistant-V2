@@ -116,6 +116,82 @@ def test_conflicting_hits_ask_only_about_the_organization_then_resume(case, monk
     assert [r['column'] for r in prior['field_previews'] if r.get('confirmed_value')=='0887']==['Legal Entity']
 
 
+def test_resumed_plan_can_repeat_the_selected_reference_without_another_read_or_retry(case, monkeypatch):
+    s = case
+    s.values[field_ref(CC, 'CC Number')].append('0887')
+    s.run([encode({'scope_checks': [ORG, CATEGORY]})])
+    msg = latest(s.client, s.conv)
+    choice = msg['clarification']['scope_binding']['choices']['A']
+    assert (choice['field'], choice['column']) == ('F1', 'CC Number')
+    dax = BUSINESS_DAX.replace('[Legal Entity]', '[CC Number]')
+    query = json.loads(plan(dax))
+    query['scope_resolutions'] = [{'field': 'F1', 'value': '0887', 'basis': '用户已选成本中心'}]
+    provider = Provider([encode(query), '125 [Q1]'])
+    monkeypatch.setattr(s.app.state.settings, 'provider', lambda: provider)
+
+    events = [json.loads(line) for line in reply(s.client, s.conv, msg).text.splitlines()]
+    assert events[-1]['type'] == 'done' and s.amounts == [dax]
+    assert len(s.reads) == 1 and len(provider.calls) == 2
+    system, turns = provider.calls[0]
+    assert encode({'table': CC, 'column': 'CC Number', 'value': '0887'}) in system
+    assert 'F1' not in turns[-1].content and 'CC Number' in turns[-1].content
+    assert not latest(s.client, s.conv)['field_previews']
+
+
+@pytest.mark.parametrize('mismatch', ['unselected_field', 'wrong_value', 'wrong_query', 'numeric_filter', 'expired', 'supplement'])
+def test_other_references_require_correction_before_executing_a_resumed_query(case, monkeypatch, mismatch):
+    s = case
+    s.values[field_ref(CC, 'CC Number')].append('0887')
+    s.run([encode({'scope_checks': [ORG]})])
+    msg = latest(s.client, s.conv)
+    if mismatch == 'expired':
+        s.app.state.db.execute('UPDATE field_observations SET created_at=? WHERE message_id=?',
+                               ('2000-01-01T00:00:00+00:00', msg['id']))
+    dax = BUSINESS_DAX.replace('[Legal Entity]', '[CC Number]')
+    invalid = json.loads(plan(BUSINESS_DAX if mismatch == 'wrong_query' else dax))
+    if mismatch == 'numeric_filter':
+        invalid['queries'][0]['dax'] = dax.replace('"0887"', '0887')
+    invalid['scope_resolutions'] = [{'field': 'F2' if mismatch == 'unselected_field' else 'F1',
+                                     'value': '887' if mismatch == 'wrong_value' else '0887', 'basis': '已确认'}]
+    provider = Provider([encode(invalid), plan(dax), '125 [Q1]'])
+    monkeypatch.setattr(s.app.state.settings, 'provider', lambda: provider)
+
+    events = [json.loads(line) for line in reply(s.client, s.conv, msg,
+              supplement='只看本期' if mismatch == 'supplement' else '').text.splitlines()]
+    assert events[-1]['type'] == 'done' and s.amounts == [dax]
+    assert len(provider.calls) == 3
+    assert '省略这项 scope_resolutions' in provider.calls[1][1][-1].content
+
+
+def test_repeated_unverified_reference_reports_missing_evidence_and_runs_no_query(case):
+    query = json.loads(plan(BUSINESS_DAX))
+    query['scope_resolutions'] = [{'field': 'F1', 'value': '0887', 'basis': '沿用之前的编号'}]
+    events = case.run([encode(query), encode(query)])
+    assert events[-1]['type'] == 'error' and not case.amounts
+    assert '本轮没有字段核对记录' in events[-1]['text']
+    assert '格式不符合要求' not in events[-1]['text']
+
+
+def test_new_field_check_owns_its_label_after_confirmation(case, monkeypatch):
+    s = case
+    s.values[field_ref(CC, 'CC Number')].append('0887')
+    s.run([encode({'scope_checks': [ORG]})])
+    msg = latest(s.client, s.conv)
+    assert msg['clarification']['scope_binding']['choices']['A']['field'] == 'F1'
+    dax = BUSINESS_DAX.replace('[Legal Entity]', '[CC Number]')
+    query = json.loads(plan(dax))
+    query['scope_resolutions'] = [{'field': 'F1', 'value': '0887', 'basis': '之前选中的成本中心'}]
+    new_check = {'term': 'overhead', 'candidates': [{'table': CE, 'column': 'Class 2'}]}
+    provider = Provider([encode({'scope_checks': [new_check]}), encode(query), plan(dax), '125 [Q1]'])
+    monkeypatch.setattr(s.app.state.settings, 'provider', lambda: provider)
+
+    events = [json.loads(line) for line in reply(s.client, s.conv, msg).text.splitlines()]
+    assert events[-1]['type'] == 'done' and s.amounts == [dax]
+    assert '省略这项 scope_resolutions' in provider.calls[2][1][-1].content
+    first = latest(s.client, s.conv)['field_previews'][0]
+    assert first['label'] == 'F1' and first['table'] == CE
+
+
 def test_0257_card_follows_the_eight_field_results_without_another_model_call(case):
     s = case
     s.values[field_ref(CC, 'Legal Entity')].append('0257')

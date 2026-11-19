@@ -303,7 +303,7 @@ def _field_pattern(table, column):
     return '(?:' + re.escape(quoted.casefold()) + r'|(?<![\w\x27])' + re.escape(plain.casefold()) + ')'
 
 
-def _filter_literals(code, table, column):
+def _filter_literals(code, table, column, *, keep_quotes=False):
     """Read simple equality, IN and TREATAS filters. Leave expression-valued filters to the planner."""
     ref = _field_pattern(table, column)
     atom = r'(?:"(?:[^"]|"")*"|-?\d+(?:\.\d+)?)'
@@ -313,7 +313,21 @@ def _filter_literals(code, table, column):
     lists += re.findall(ref + r'in\{' + many + r'\}', code)
     for sequence in lists:
         values.extend(re.findall(atom, sequence))
+    if keep_quotes:
+        return set(values)
     return {v[1:-1].replace('""', '"') if v.startswith('"') else v for v in values}
+
+
+def repeats_confirmed_choice(plan, choice):
+    """A redundant citation may be dropped only when every query already applies the chosen filter."""
+    if not choice or len(plan.scope_resolutions) != 1:
+        return False
+    decision = plan.scope_resolutions[0]
+    value = choice['value'].casefold()
+    text_literal = '"' + value.replace('"', '""') + '"'
+    return (decision.field == choice['field'] and decision.value.casefold() == value
+            and all(_filter_literals(query_key(q.dax).casefold(), choice['table'], choice['column'], keep_quotes=True) == {text_literal}
+                    for q in plan.queries))
 
 
 def filter_conflict(records, groups, plan):

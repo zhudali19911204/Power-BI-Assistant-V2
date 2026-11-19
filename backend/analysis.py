@@ -29,10 +29,10 @@ from .analysis_budget import (AnalysisBudget, MAX_BATCH_QUERIES, MAX_QUERIES, MA
                               MAX_QUERY_ATTEMPTS, MAX_FORMAT_RETRIES, MAX_FORMAT_CORRECTIONS,
                               evidence_context, query_key)
 from .field_discovery import (MAX_FIELD_CHECKS, MAX_FIELD_SEARCHES, cached_check, check_key,
-                               clarification_field_sources, clarification_fields, clarification_value_summary, discovery_question,
+                               clarification_field_sources, clarification_evidence, clarification_value_summary, discovery_question,
                                field_stop_reason, prior_literal_check, stalled_searches)
 from .scope_checks import (annotate_card, candidate_probes, filter_conflict, immediate_scope_question, next_scope_batch,
-                           question_scope, read_scope_batch, scope_evidence, scope_question, select_scope)
+                           question_scope, read_scope_batch, repeats_confirmed_choice, scope_evidence, scope_question, select_scope)
 
 logger=logging.getLogger(__name__)
 ROW_LIMIT=200
@@ -308,6 +308,8 @@ class AnalysisService:
                     'remaining_field_checks':0 if fields_closed else MAX_FIELD_CHECKS-len(field_records),
                     'max_searches_per_field':MAX_FIELD_SEARCHES,'completed_field_rounds':discovery_rounds})
                 system = planner + '\n本次分析额度（已扣除结论预留时间）：' + allocation
+                if not field_records:
+                    system += '\n本轮尚无字段核对编号。直接使用已确认的字段和取值，省略 scope_resolutions。需要新的取值依据时先请求核对。'
                 for event in generate(stage,system,turns,report=report):
                     if event['type']=='delta':
                         raw+=event['text']
@@ -317,18 +319,25 @@ class AnalysisService:
                 if report.interruption():raise HTTPException(422,report.interruption())
                 try:
                     parsed=validate_action(parse_plan(raw),stage)
+                    if not field_records and repeats_confirmed_choice(parsed, selected_choice):
+                        parsed=parsed.model_copy(update={'scope_resolutions': []})
                     if parsed.scope_resolutions:
                         known={(r['label'],v['value'].casefold()) for r in field_records if r['ok'] and r['profile'].get('run_verified')
                                for v in r['profile']['values'] if isinstance(v.get('value'),str) and not v.get('value_truncated')}
                         if any((d.field,d.value.casefold()) not in known for d in parsed.scope_resolutions):
                             raise PlanFormatError([{'path':'scope_resolutions','type':'unknown_match',
-                                'message':'采用说明只能引用本次实际命中的 F 编号及其对应的原值'}])
+                                'message':('采用说明只能引用本次实际命中的 F 编号及其对应的原值' if field_records
+                                           else '本轮没有字段核对记录，无法引用 F 编号')}])
                 except PlanFormatError as exc:
                     record_format_validation(self.db,message_id,stage,call_counts[stage],issues=exc.issues,correction_attempt=attempt)
-                    detail=f'{stage_name}回复格式不符合要求，未取得有效查询计划：{exc}'
+                    invalid_reference=any(i['type']=='unknown_match' for i in exc.issues)
+                    problem='引用的字段核对记录无效' if invalid_reference else '回复格式不符合要求'
+                    detail=f'{stage_name}{problem}，未取得有效查询计划：{exc}'
                     if stage=='analysis_recovery':
                         raise PlanResponseError(detail) from exc
                     if attempt>=MAX_FORMAT_RETRIES:
+                        if invalid_reference:
+                            raise PlanResponseError(detail+'；重新规划后仍无匹配记录，未执行该计划') from exc
                         raise PlanResponseError(detail+'；已纠正一次，停止继续重试') from exc
                     if format_corrections>=MAX_FORMAT_CORRECTIONS:
                         raise PlanResponseError(detail+f'；已达到本轮 {MAX_FORMAT_CORRECTIONS} 次格式纠正上限') from exc
@@ -336,7 +345,8 @@ class AnalysisService:
                         raise PlanResponseError(detail+'；剩余时间不足以纠正格式，已为结论预留时间') from exc
                     format_corrections+=1
                     turns=[*planning_messages,ChatMessage('assistant',raw),ChatMessage('user',correction_prompt(exc,stage))]
-                    yield status(f'{stage_name}回复格式不符合要求，正在纠正格式（{attempt+1}/{MAX_FORMAT_RETRIES}）')
+                    action='重新规划' if invalid_reference else '纠正格式'
+                    yield status(f'{stage_name}{problem}，正在{action}（{attempt+1}/{MAX_FORMAT_RETRIES}）')
                 else:
                     record_format_validation(self.db,message_id,stage,call_counts[stage],correction_attempt=attempt)
                     return parsed
@@ -682,7 +692,7 @@ class AnalysisService:
             user_messages=[m for m in messages if m.role=='user']
             user_text='\n'.join(m.content for m in user_messages)
             analysis_messages=messages[:]
-            prior_fields=clarification_fields(self.db,conv['id'],model,ctx,body.clarification_reply)
+            prior_fields,selected_choice=clarification_evidence(self.db,conv['id'],model,ctx,body.clarification_reply)
             values=clarification_value_summary(prior_fields)
             if values:
                 # Keep field data separate from both the user's wording and the summary evidence.
@@ -695,6 +705,8 @@ class AnalysisService:
                               '对象行按字段名读取，null 表示空值。')
             selection=None
             planner_notes=self.chat.model_sync_notice(conv['id'])
+            if selected_choice:
+                planner_notes+='\n用户在口径确认卡中选定的查询筛选：'+encode({k:selected_choice[k] for k in ('table','column','value')})
             bindings=[]
             if self.chat.semantics:
                 bindings=self.chat.semantics.bindings(conv['id'])

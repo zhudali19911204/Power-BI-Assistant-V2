@@ -159,6 +159,11 @@ def validate_action(plan, stage):
 
 
 def correction_prompt(error, stage):
+    if any(item['type'] == 'unknown_match' for item in error.issues):
+        return ('上次计划引用的字段核对编号和原值无法在本轮配对，查询尚未执行。'
+                '用户已确认的筛选直接按选定的表、字段和完整原值写入 DAX，保留前导零，省略这项 scope_resolutions。'
+                '其他采用说明只能引用本轮实查命中的编号和对应原值。需要新依据时先核对，切勿猜编号。'
+                '保留原指标、时间和其他筛选，按当前步骤返回完整 JSON。')
     hint = '请使用系统提示中与原步骤对应的 JSON 示例。'
     if stage == 'analysis_repair' or any(item['path'].split('[', 1)[0] == 'queries' for item in error.issues):
         example = {'scope': '<保持原业务口径>', 'queries': [{'title': '<原标题>', 'dax': '<完整的原查询或本次修复查询>'}]}
