@@ -53,7 +53,7 @@ def make_card(question, ctx):
         question = ClarificationQuestion(topic='分析指标', question='这次分析希望采用哪个指标口径？', options=options)
     card = question.model_dump()
     for index, option in enumerate(card['options']):
-        option['id'] = chr(65 + index)
+        option['id'] = chr(65 + index) if index < 26 else str(index + 1)
     card['answered'] = False
     return card
 
@@ -96,6 +96,9 @@ def resolve_answer(db, conversation_id, reply):
         if choice:
             # The observation label belongs to the card's turn. Keep the field reference.
             detail = detail.removeprefix(choice['field'] + ' · ')
+            members = card['scope_binding'].get('members')
+            if members:
+                text += '\n该字段对应的完整原值清单：' + encode(members)
         if detail:
             text += '\n选项说明：' + detail
     if reply.supplement:

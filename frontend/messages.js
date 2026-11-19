@@ -33,6 +33,14 @@ function patchNode(current, next) {
 }
 
 function patchChildren(current, next) {
+  // A hit can disappear after it is adopted. Remove hidden cards before patching
+  // by position so an expanded card stays attached to its own field.
+  if(current.firstElementChild?.hasAttribute('data-field-evidence')){
+    const visible=new Set([...next.children].map(child=>child.getAttribute('data-field-evidence')));
+    for(const child of [...current.children]){
+      if(child.hasAttribute('data-field-evidence')&&!visible.has(child.dataset.fieldEvidence))child.remove();
+    }
+  }
   let index=0;
   for(const wanted of [...next.childNodes]) {
     const existing=current.childNodes[index];

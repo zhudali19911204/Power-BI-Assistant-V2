@@ -45,7 +45,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     samples:[{value:125,value_truncated:false}],search_terms:[],truncated:false,limit:50,run_verified:true,
     checked_at:'2026-11-06T08:00:00Z',seconds:0.1,dax_queries:['EVALUATE ROW("x",1)']};
   const fieldRecord={id:'field-check',model_id:'model',table:'事实表',column:'金额',label:'F1',reason:'识别口径',
-    ok:true,error:'',profile:fieldProfile};
+    ok:true,error:'',scope_term:'125',profile:{...fieldProfile,kind:'exact',values:[{value:'125'}],search_terms:['125']}};
   const json=value=>new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
   const savedTemplate={id:'saved-analysis',name:'月度分析模板',model_id:'model',model_name:'测试模型',
     prompt:'分析 {{月份}} 的金额',parameters:['月份'],defaults:{月份:'2026-10'},revision:1};

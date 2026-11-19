@@ -701,7 +701,13 @@ class SemanticService:
             db.execute('INSERT OR REPLACE INTO conversation_bindings VALUES (?,?,?,?,?)',
                 (conv['id'],binding['literal'],selected.get('table'),selected.get('column'),now()))
             if card.get('scope_binding'):
-                rows=db.execute('SELECT id,result FROM field_observations WHERE message_id=?',(reply.message_id,)).fetchall()
+                original=reply.message_id
+                source_id=card.get('_field_sources',{}).get('choice_ids',{}).get(reply.option_id)
+                if source_id:
+                    source=db.execute('SELECT f.message_id FROM field_observations f JOIN messages m ON m.id=f.message_id '
+                                      'WHERE f.id=? AND m.conversation_id=?',(source_id,conv['id'])).fetchone()
+                    if source:original=source['message_id']
+                rows=db.execute('SELECT id,result FROM field_observations WHERE message_id=?',(original,)).fetchall()
                 for row in rows:
                     record=json.loads(row['result'])
                     if (record.get('scope_term') or record.get('related_term','')).casefold()!=binding['literal'].casefold():

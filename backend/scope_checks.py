@@ -2,7 +2,7 @@
 import json
 import re
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated
 
 from fastapi import HTTPException
@@ -10,30 +10,39 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from .analysis_budget import query_key
 from .cancellation import check_cancelled
-from .clarifications import ClarificationQuestion
+from .clarifications import ClarificationOption, ClarificationQuestion
 from .database import now
 from .engine.context.live_source import _LiveSession, find_adomd_dll, find_instances
-from .field_discovery import field_stop_reason
 from .fields import CandidateField, field_ref
 from .values import exact_values
 
 
 Term = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
-MAX_CANDIDATES = 4
+MAX_COMPARISONS_PER_READ = 36
+
+
+class ScopeCandidate(CandidateField):
+    basis: str = Field(default='', max_length=400)
 
 
 class ScopeCheck(BaseModel):
     model_config = ConfigDict(extra='forbid')
     term: Term
+    members: list[Term] = Field(default_factory=list)
     aliases: list[Term] = Field(default_factory=list, max_length=2)
-    candidates: list[CandidateField] = Field(min_length=1, max_length=MAX_CANDIDATES)
+    candidates: list[ScopeCandidate] = Field(min_length=1)
 
 
 class ScopeResolution(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    field: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r'^F[1-9]\d?$')]
+    field: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r'^F[1-9]\d*$')]
     value: str = Field(min_length=1, max_length=500)
     basis: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
+
+
+class VerifiedScopeQuestion(ClarificationQuestion):
+    """Each selectable field comes from a backend read."""
+    options: list[ClarificationOption] = Field(min_length=2)
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,7 @@ class Probe:
     table: str
     column: str
     literals: tuple[str, ...]
+    basis: str = field(default='', compare=False)
 
 
 def confirmed_filters(dictionary, term):
@@ -66,17 +76,19 @@ def candidate_probes(scopes, ctx, bindings, hints, dictionary=None):
     for scope in scopes:
         term = scope.term
         literals = [term]
+        members = {v.casefold() for v in scope.members}
         if not term.isdecimal():
             for alias in scope.aliases:
-                if alias.casefold() not in {v.casefold() for v in literals}:
+                if alias.casefold() not in members and alias.casefold() not in {v.casefold() for v in literals}:
                     literals.append(alias)
-        proposed = [(c.table, c.column) for c in scope.candidates]
+        proposed = list(dict.fromkeys((c.table, c.column) for c in scope.candidates))
+        reasons = {(c.table, c.column): c.basis for c in scope.candidates if c.basis}
         rules = confirmed_filters(dictionary or {}, term)
         known = [(b['table_name'], b['column_name']) for b in bindings if b['literal'].casefold() == term.casefold()]
         known.extend((table, column) for table, column, _ in rules)
         historical = sorted(hints.get(term.casefold(), ()), key=lambda pair: (pair not in proposed, pair))
         pairs = [p for p in known if ctx.has_column(*p)] + proposed[:1]
-        pairs.extend(p for p in historical[:2] if ctx.has_column(*p))
+        pairs.extend(p for p in historical if ctx.has_column(*p))
         pairs.extend(proposed[1:])
         for table, name in proposed:
             level = re.fullmatch(r'(.+?)[\s_-]*([1-9]\d?)[a-zA-Z]?', name)
@@ -87,14 +99,25 @@ def candidate_probes(scopes, ctx, bindings, hints, dictionary=None):
             number = int(level[2])
             levels.sort(key=lambda item: (item[0] >= number, abs(item[0] - number), bool(item[1])))
             pairs.extend((table, column) for _, _, column in levels)
-        for table, column in list(dict.fromkeys(pairs))[:MAX_CANDIDATES]:
+        for table, column in dict.fromkeys(pairs):
             defined = [v for t, c, v in rules if (t, c) == (table, column) and not term.isdecimal()]
             spellings = tuple(dict.fromkeys([term, *defined, *literals]))[:3]
-            probes.append(Probe(term, table, column, spellings))
+            pair = table, column
+            if pair in known:
+                basis = '会话或报表词典中已有确认的字段映射'
+            elif pair in reasons:
+                basis = '规划候选依据：' + reasons[pair]
+            elif pair in historical:
+                basis = '当前模型的历史查值记录含有该原词'
+            elif pair not in proposed:
+                basis = '该字段与规划候选属于同一组分类层级'
+            else:
+                basis = ''
+            probes.append(Probe(term, table, column, spellings, basis))
     return list(dict.fromkeys(probes))
 
 
-def next_scope_batch(probes, records, budget):
+def next_scope_batch(probes, records):
     queues = defaultdict(deque)
     for p in probes:
         queues[p.term.casefold()].append(p)
@@ -106,9 +129,7 @@ def next_scope_batch(probes, records, budget):
             previous[topic, r['table'], r['column']].append(({v.casefold() for v in r['search_terms']}, r['ok']))
             rounds[topic].add(r['round'])
     selected, skipped = [], []
-    charged = list(records)
-    # On each pass give each term one available candidate, including when another
-    # term has exhausted a particular column's allowance.
+    # Interleave terms so a slow physical read does not monopolize the deadline.
     while any(queues.values()):
         for topic, queue in queues.items():
             while queue:
@@ -117,15 +138,28 @@ def next_scope_batch(probes, records, budget):
                 terms = {v.casefold() for v in p.literals}
                 if any(terms == old or (ok and terms <= old) for old, ok in previous[key]):
                     continue
-                reason = field_stop_reason(p, charged, budget)
-                if len(rounds[topic]) >= 2 or reason:
-                    skipped.append((p, reason or '该原词已完成两批定向核对'))
+                if len(rounds[topic]) >= 2:
+                    skipped.append((p, '该原词已完成两批定向核对'))
                     continue
                 selected.append(p)
-                charged.append({'table': p.table, 'column': p.column})
                 previous[key].append((terms, False))
                 break
     return selected, skipped
+
+
+def scope_read_batches(probes):
+    """Split long UNIONs locally without discarding candidates or asking the planner again."""
+    batch = []
+    comparisons = 0
+    for p in probes:
+        if comparisons + len(p.literals) > MAX_COMPARISONS_PER_READ:
+            yield batch
+            batch = []
+            comparisons = 0
+        batch.append(p)
+        comparisons += len(p.literals)
+    if batch:
+        yield batch
 
 
 def read_scope_batch(powerbi, model_id, probes):
@@ -195,6 +229,8 @@ def scope_evidence(records):
             continue
         term = r['scope_term']
         group = groups.setdefault(term.casefold(), {'term': term, 'matches': [], 'misses': [], 'incomplete': []})
+        if r.get('scope_members'):
+            group['members'] = r['scope_members']
         field = {'field': r['label'], 'table': r['table'], 'column': r['column']}
         if not r['ok']:
             group['incomplete'].append(field)
@@ -228,23 +264,24 @@ def scope_evidence(records):
     return groups
 
 
-def _match_option(term, match):
+def _match_option(term, match, members=()):
     ref = field_ref(match['table'], match['column'])
     value = json.dumps(match['value'], ensure_ascii=False)
-    return {'label': f"{match['column']} · {match['value']}"[:100],
-            'value': f'本次将“{term}”按 {ref} 的实际取值 {value} 筛选，保留已确定的其他口径',
+    decision = (f'本次按 {ref} 中命中的 {value} 定位“{term}”所属字段，按原问题的包含或排除条件筛选全部 {len(members)} 个原值'
+                if members else f'本次将“{term}”按 {ref} 的实际取值 {value} 筛选，保留已确定的其他口径')
+    return {'label': f"{match['column']} · {match['value']}"[:100], 'value': decision,
             'detail': f"{match['field']} · {ref}"[:240]}
 
 
 def scope_question(group, reason):
     term = group['term']
     options = []
+    seen = set()
     for m in group['matches']:
-        option = _match_option(term, m)
-        if len(option['value']) <= 1000 and all(o['value'] != option['value'] for o in options):
+        option = _match_option(term, m, group.get('members'))
+        if len(option['value']) <= 1000 and option['value'] not in seen:
             options.append(option)
-        if len(options) == 4:
-            break
+            seen.add(option['value'])
     if not options:
         options.append({'label': '指定字段和取值', 'value': f'由我说明“{term}”在当前报表使用的字段和取值'})
     if len(options) < 4:
@@ -253,7 +290,7 @@ def scope_question(group, reason):
     if '?' in term or '？' in term:
         question = '本次分析中的这个原词具体指哪个口径？'
         reason = f'待确认原词为“{term}”。' + reason
-    return ClarificationQuestion(topic='筛选口径', question=question, context=reason[:400], options=options)
+    return VerifiedScopeQuestion(topic='筛选口径', question=question, context=reason[:400], options=options)
 
 
 def question_scope(question, groups):
@@ -278,15 +315,17 @@ def annotate_card(card, groups):
     if not focused:
         return card
     choices = {}
+    shown = {o['value']: o['id'] for o in card['options']}
     for m in focused['matches']:
         if m['value'].casefold() != focused['term'].casefold():
             continue
-        option = _match_option(focused['term'], m)
-        for shown in card['options']:
-            if shown['value'] == option['value']:
-                choices[shown['id']] = {'table': m['table'], 'column': m['column'], 'field': m['field'], 'value': m['value']}
+        option = _match_option(focused['term'], m, focused.get('members'))
+        if option['value'] in shown:
+            choices[shown[option['value']]] = {'table': m['table'], 'column': m['column'], 'field': m['field'], 'value': m['value']}
     if choices:
         card['scope_binding'] = {'literal': focused['term'], 'choices': choices}
+        if focused.get('members'):
+            card['scope_binding']['members'] = focused['members']
     for group in groups.values():
         if group is focused or group['incomplete'] or len(group['matches']) != 1:
             continue
@@ -297,36 +336,175 @@ def annotate_card(card, groups):
     return card
 
 
+# A contiguous enumeration is used only when the planner identifies one of its
+# members as a representative. Preserve source spelling, including leading zeros.
+_CODE = r'(?<![A-Za-z0-9_.-])(?:[A-Za-z]+[0-9]+|[0-9]{3,})(?![A-Za-z0-9_.-])'
+_CODE_LIST = re.compile(_CODE + r'(?:(?:[ \t、，,]+)' + _CODE + r')+')
+_FILTER_LABEL = r'编号|编码|代码|成本中心|物料|订单|客户|供应商|筛选|包含|排除|包括|剔除'
+
+
+def identifier_lists(question, *, filters_only=False):
+    """Recognize literal ID enumerations without interpreting years or formatted amounts as IDs."""
+    result = []
+    for match in _CODE_LIST.finditer(question):
+        if filters_only and not re.search('(?:' + _FILTER_LABEL + r')[为是：:\s]*$', question[:match.start()]):
+            continue
+        values = re.findall(_CODE, match[0])
+        shapes = {re.sub(r'[0-9]', '#', value.upper()) for value in values}
+        if len(shapes) != 1:
+            continue
+        if all(v.isdecimal() for v in values):
+            if not all(len(v) >= 5 or (v.startswith('0') and len(v) >= 4) for v in values):
+                continue
+        result.append(list(dict.fromkeys(values)))
+    if filters_only:
+        listed = {v for values in result for v in values}
+        for token in re.finditer(_CODE, question):
+            value = token[0]
+            if value in listed or (value.isdecimal() and not value.startswith('0')):
+                continue
+            before = re.search('(?:' + _FILTER_LABEL + r')[为是：:\s]*$', question[:token.start()])
+            after = re.match(r'\s*(?:' + _FILTER_LABEL + ')', question[token.end():])
+            if before or after:
+                result.append([value])
+                listed.add(value)
+    return result
+
+
+def scope_members(checks, question, lists, *, images=False):
+    reps = {s.term.casefold() for s in checks}
+    claimed = {s.term.casefold(): {v.casefold() for v in s.members} for s in checks}
+    groups = {}
+    for check in checks:
+        rep = check.term.casefold()
+        members = [check.term, *(v for v in check.members if images or re.search(_term_pattern(v), question.casefold()))]
+        for values in lists:
+            keys = {v.casefold() for v in values}
+            if reps & keys == {rep} and not any(keys & other for k, other in claimed.items() if k != rep):
+                members.extend(values)
+        distinct = {}
+        for value in members:
+            distinct.setdefault(value.casefold(), value)
+        if len(distinct) > 1:
+            groups[rep] = list(distinct.values())
+    return groups
+
+
 def _field_pattern(table, column):
     quoted = field_ref(table, column)
     plain = table + '[' + column.replace(']', ']]') + ']'
     return '(?:' + re.escape(quoted.casefold()) + r'|(?<![\w\x27])' + re.escape(plain.casefold()) + ')'
 
 
-def _filter_literals(code, table, column, *, keep_quotes=False):
-    """Read simple equality, IN and TREATAS filters. Leave expression-valued filters to the planner."""
+def _filter_literals(code, table, column, *, keep_quotes=False, exclusions=False, variables=False):
+    """Read equality, IN and TREATAS filters, including literal tables bound by VAR."""
     ref = _field_pattern(table, column)
     atom = r'(?:"(?:[^"]|"")*"|-?\d+(?:\.\d+)?)'
     many = '(' + atom + '(?:,' + atom + ')*)'
-    values = re.findall(ref + r'={1,2}(' + atom + r')(?=[),]|&&|\|\||$)', code)
+    comparison = r'(?:={1,2}|<>)' if exclusions else r'={1,2}'
+    values = re.findall(ref + comparison + '(' + atom + r')(?=[),]|&&|\|\||$)', code)
     lists = re.findall(r'treatas\(\{' + many + r'\},' + ref + r'\)', code)
     lists += re.findall(ref + r'in\{' + many + r'\}', code)
+    if variables:
+        for name, sequence in re.findall(r'var([\w]+)=\{' + many + r'\}', code):
+            if re.search(r'treatas\(' + re.escape(name) + ',' + ref + r'\)|' +
+                         ref + 'in' + re.escape(name) + r'(?=[,)&|]|$)', code):
+                lists.append(sequence)
     for sequence in lists:
         values.extend(re.findall(atom, sequence))
     if keep_quotes:
         return set(values)
-    return {v[1:-1].replace('""', '"') if v.startswith('"') else v for v in values}
+    return {_literal_value(v) for v in values}
 
 
-def repeats_confirmed_choice(plan, choice):
+_DAX_ATOMS = re.compile(r'''"(?:[^"]|"")*"|'(?:[^']|'')*'|\[(?:[^\]]|\]\])*\]|\w+(?:\.\d+)?''')
+
+
+def _literal_value(token):
+    if token.startswith('"'):
+        return token[1:-1].replace('""', '"')
+    if token.isdecimal():
+        return token.lstrip('0') or '0'
+    return token
+
+
+def _literal_values(code):
+    return {_literal_value(token) for token in _DAX_ATOMS.findall(code) if token.startswith('"') or token.isdecimal()}
+
+
+def missing_group_filter(records, plan, ctx, source_lists=(), dictionary=None):
+    """Check the full filter list, including when resuming a verified clarification."""
+    grouped = {}
+    spellings = defaultdict(set)
+    for r in records:
+        if not r.get('scope_term') or not r['ok'] or not r['profile']['values']:
+            continue
+        key = r['scope_term'].casefold()
+        field = r['table'], r['column']
+        spellings[key, field].update(v['value'].casefold() for v in r['profile']['values'])
+        if not r.get('scope_members'):
+            continue
+        fields, selected, members = grouped.setdefault(key, (set(), set(), {}))
+        fields.add(field)
+        if r.get('confirmed_value') is not None or r.get('adopted_value') is not None:
+            selected.add(field)
+        members.update((v.casefold(), v) for v in r['scope_members'])
+    if not grouped and not source_lists:
+        return ''
+    all_values = set()
+    codes = []
+    covered = {key for _, _, members in grouped.values() for key in members}
+    found = defaultdict(set)
+    for q in plan.queries:
+        code = query_key(q.dax).casefold()
+        expressions = [query_key(m.expression).casefold() for m in ctx.measures if m.expression and
+                       ('[' + m.name.replace(']', ']]') + ']').casefold() in code]
+        code = '\n'.join([code, *expressions])
+        codes.append(code)
+        literals = _literal_values(code)
+        all_values.update(literals)
+        for rep, (fields, selected, members) in grouped.items():
+            for table, column in selected or fields:
+                actual = _filter_literals(code, table, column, exclusions=True, variables=True)
+                found[rep, table, column].update(members.keys() & actual)
+                if spellings[rep, (table, column)] & actual:
+                    found[rep, table, column].add(rep)
+                if dictionary:
+                    for key in members.keys() - found[rep, table, column]:
+                        if any((t,c)==(table,column) and v.casefold() in actual
+                               for t,c,v in confirmed_filters(dictionary,members[key])):
+                            found[rep, table, column].add(key)
+    for rep, (fields, selected, members) in grouped.items():
+        best = max((found[rep, t, c] for t, c in selected or fields), key=len)
+        missing = [v for k, v in members.items() if k not in best]
+        if missing:
+            return f'“{rep}”是定位字段的代表词。请在该组字段的业务筛选中补全原值：' + '、'.join(missing)
+    missing = []
+    for values in source_lists:
+        for value in values:
+            key = value.casefold()
+            if key in covered or key in all_values:
+                continue
+            alternatives = [(t,c,v) for (term,(t,c)), actual in spellings.items() if term==key for v in actual]
+            if dictionary:
+                alternatives.extend(confirmed_filters(dictionary,value))
+            if not any(v.casefold() in _filter_literals(code,t,c,exclusions=True) for t,c,v in alternatives for code in codes):
+                missing.append(value)
+    if missing:
+        return '问题中的筛选编号尚未体现在查询中：' + '、'.join(missing) + '。如字段归属不明，先按业务角色分组并提交候选字段查值'
+    return ''
+
+
+def repeats_confirmed_choice(plan, choice, members=()):
     """A redundant citation may be dropped only when every query already applies the chosen filter."""
     if not choice or len(plan.scope_resolutions) != 1:
         return False
     decision = plan.scope_resolutions[0]
     value = choice['value'].casefold()
-    text_literal = '"' + value.replace('"', '""') + '"'
+    literals = {'"' + v.casefold().replace('"', '""') + '"' for v in (members or [value])}
     return (decision.field == choice['field'] and decision.value.casefold() == value
-            and all(_filter_literals(query_key(q.dax).casefold(), choice['table'], choice['column'], keep_quotes=True) == {text_literal}
+            and all(_filter_literals(query_key(q.dax).casefold(), choice['table'], choice['column'],
+                                     keep_quotes=True, variables=bool(members), exclusions=bool(members)) == literals
                     for q in plan.queries))
 
 
@@ -386,8 +564,7 @@ def immediate_scope_question(groups, ctx, user_messages, bindings, dictionary):
         term, matches = group['term'], group['matches']
         key = term.casefold()
         fields = {(m['table'], m['column']) for m in matches}
-        if (len(fields) < 2 or group['incomplete']
-                or any(m['value'].casefold() != key or m.get('match_kind') for m in matches)):
+        if group['incomplete']:
             continue
         # Only ask about a term the user actually supplied. An attached image can
         # contain the field choice, which is available to the planner but not here.
@@ -395,11 +572,22 @@ def immediate_scope_question(groups, ctx, user_messages, bindings, dictionary):
         turns = [m for m in user_messages if literal.search(m.content.casefold())]
         if not turns or any(m.images for m in turns) or user_messages[-1].images:
             continue
+        if not matches and group['misses']:
+            names = [m['column'] for m in group['misses']]
+            if group.get('members') or not (any(_named_by_user(m.content, term, names) for m in turns)
+                    or any(m.name.casefold() == key for m in ctx.measures)):
+                return scope_question(group, f'已在 {len(group["misses"])} 个候选字段核对代表原值“{term}”，均未命中。请确认字段或原值。')
+        if len({(m['table'],m['column'],m['value']) for m in matches}) < 2:
+            continue
+        if not group.get('members') and any(m['value'].casefold() != key or m.get('match_kind') for m in matches):
+            continue
         if any(b['literal'].casefold() == key for b in bindings):
             continue
         mappings = {(t, c, v.casefold()) for t, c, v in confirmed_filters(dictionary, term)}
         if len(mappings) == 1:
             continue
+        if group.get('members'):
+            return scope_question(group, '代表词在多个位置命中。请选择整组原值应使用的筛选字段。')
         # A measure can establish the field even when the question uses its business
         # name. Leave the choice and its validation to the planner if such a filter exists.
         dax_literal = key.replace('"', '""')
@@ -464,7 +652,7 @@ def select_scope(group, plan, ctx, user_text, bindings, dictionary):
             chosen = applied[0]
     if chosen:
         table, column, value = chosen['table'], chosen['column'], chosen['value']
-        used = value.casefold() in _filter_literals(dax+'\n'+expressions, table, column)
+        used = value.casefold() in _filter_literals(dax+'\n'+expressions, table, column, variables=True, exclusions=True)
         if len(choices) == 1 and not group['incomplete'] and not chosen.get('match_kind'):
             return (chosen if used else None), None
         bound = value.casefold()==term.casefold() and any(b['literal'].casefold() == term.casefold()

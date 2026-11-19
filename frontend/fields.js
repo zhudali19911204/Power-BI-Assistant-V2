@@ -32,45 +32,42 @@ export function fieldProfile(profile,{compact=false}={}) {
   </div>`;
 }
 
-function evidenceStatus(record,matchedFields) {
-  if(!record.ok)return '检查未完成';
-  if(record.confirmed_value!=null)return '口径已确认';
-  if(record.adopted_value!=null)return '本次采用';
-  const profile=record.profile;
-  if(record.scope_term){
-    if(!profile.values.length)return '未命中';
-    return matchedFields.get(record.scope_term.toLowerCase())?.size>1?'多个候选命中':'精确命中';
-  }
-  if(!profile.search_terms.length)return '已读取取值';
-  const count=profile.statistics.matched_distinct_count;
-  if(count==null)return '已读取取值';
-  return count===0?'未命中':`匹配 ${number(count)} 个值`;
-}
-
-function exactEvidence(record) {
+function exactEvidence(record,batch,queryLabel) {
   const p=record.profile;
   const values=p.values.map(v=>fieldValue(v)).join('、');
   return `<p class="field-preview-note">精确核对 ${p.search_terms.map(esc).join('、')}</p>
     <p class="field-preview-note">${values?'实际命中 '+values:'该字段未命中本次核对的值。'}</p>
     <p class="field-preview-scope">${esc(p.scope)}</p>
-    <p class="field-preview-time">本机实际读取 · ${esc(record.checked_at)}${record.batch_seconds!=null?' · 整批 '+esc(record.batch_seconds)+' 秒':record.query_label?' · 批量查询见 '+esc(record.query_label):''}</p>`;
+    <p class="field-preview-time">本机实际读取 · ${esc(record.checked_at)}${queryLabel!==record.label?' · 批量查询见 '+esc(queryLabel):batch.batch_seconds!=null?' · 整批 '+esc(batch.batch_seconds)+' 秒':''}</p>`;
 }
 
 export function fieldEvidence(records=[]) {
-  const matchedFields=new Map();
+  const matchedFields=new Map(),batchQueries=new Map(),visible=[];
   for(const r of records){
     if(!r.scope_term||!r.ok)continue;
+    if(r.profile.dax_queries?.length)batchQueries.set(r.label,r);
+    if(!r.profile.values.length)continue;
     const term=r.scope_term.toLowerCase();
     if(!matchedFields.has(term))matchedFields.set(term,new Set());
     for(const v of r.profile.values)matchedFields.get(term).add(JSON.stringify([r.table,r.column,v.value]));
+    if(r.confirmed_value==null&&r.adopted_value==null)visible.push(r);
   }
-  return records.map(record=>`<details class="field-evidence ${record.ok?'':'failed'}" data-field-evidence="${esc(record.id)}">
-    <summary>${icon('search')}<strong>${esc(record.label)} · ${record.scope_term||record.related_term?esc(record.scope_term||record.related_term)+' · ':''}${esc(record.table)}[${esc(record.column)}]</strong><span>${evidenceStatus(record,matchedFields)}</span>${icon('chevron-down')}</summary>
+  const queryLabels=new Map();
+  return visible.map(record=>{
+    // The original DAX owner may be hidden. Keep one expandable query per visible batch.
+    const batch=batchQueries.get(record.query_label)||record;
+    if(!queryLabels.has(batch))queryLabels.set(batch,record.label);
+    const queryLabel=queryLabels.get(batch);
+    const queries=queryLabel===record.label?batch.profile.dax_queries:[];
+    const status=matchedFields.get(record.scope_term.toLowerCase()).size>1?'多个候选命中':'精确命中';
+    return `<details class="field-evidence" data-field-evidence="${esc(record.id)}">
+    <summary>${icon('search')}<strong>${esc(record.label)} · ${esc(record.scope_term)} · ${esc(record.table)}[${esc(record.column)}]</strong><span>${status}</span>${icon('chevron-down')}</summary>
     <div class="field-evidence-body">${record.reason?`<p class="field-preview-note">${esc(record.reason)}</p>`:''}
-      ${record.ok?(record.scope_term?exactEvidence(record):fieldProfile(record.profile,{compact:true})):`<p class="field-preview-error">${esc(record.error)}</p>`}
+      ${exactEvidence(record,batch,queryLabel)}
       <button class="text-link" data-preview-model="${esc(record.model_id)}" data-preview-table="${esc(record.table)}" data-preview-column="${esc(record.column)}">${icon('table')}打开字段预览</button>
-      ${record.ok&&record.profile.dax_queries.length?`<details class="field-query-details"><summary>查看取值查询依据</summary>${record.profile.dax_queries.map(query=>codeBlock(query,'dax')).join('')}</details>`:''}
-    </div></details>`).join('');
+      ${queries?.length?`<details class="field-query-details"><summary>查看取值查询依据</summary>${queries.map(query=>codeBlock(query,'dax')).join('')}</details>`:''}
+    </div></details>`;
+  }).join('');
 }
 
 export async function mountFieldPreview(root,{api,modelId,table,column,onBack=null}) {

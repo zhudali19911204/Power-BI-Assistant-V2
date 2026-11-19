@@ -14,7 +14,7 @@ from backend.cancellation import GenerationCancelled
 from backend.engine.context.base import Column, Measure, ModelContext
 from backend.fields import FieldCheck, field_ref
 from backend.field_discovery import cached_check
-from backend.scope_checks import ScopeCheck, candidate_probes, read_scope_batch
+from backend.scope_checks import ScopeCheck, candidate_probes, identifier_lists, missing_group_filter, read_scope_batch, scope_members
 from tests.test_analysis import Provider, plan, result, send
 from tests.test_clarifications import clarify, latest, reply
 from tests.test_field_discovery import profile
@@ -566,17 +566,162 @@ def test_cancel_or_timeout_stops_the_batch_without_treating_failure_as_an_empty_
         assert all(not r['ok'] and r['profile'] is None for r in msg['field_previews'])
 
 
-def test_fair_global_budget_and_skipped_fields_remain_unverified(case):
+@pytest.mark.parametrize('outcome', ['unique', 'ambiguous', 'missing'])
+def test_all_candidates_across_physical_reads_are_considered_before_deciding(case, outcome):
     s=case
-    candidates=[{'table':CC,'column':c} for c in ('Name','Legal Entity','City','CC Number')]
-    groups=[{'term':term,'candidates':candidates} for term in ('A','B','C','D')]
-    s.run([encode({'scope_checks':groups}),plan(BUSINESS_DAX)])
-    records=latest(s.client,s.conv)['field_previews']
-    assert len(records)==12 and len(s.reads)==1
-    assert {r['scope_term'] for r in records}=={'A','B','C','D'}
-    assert all(sum(r['column']==field for r in records)<=3 for field in ('Name','Legal Entity','City','CC Number'))
-    feedback=json.loads(s.provider.calls[1][1][-1].content.split('\n',1)[1])
-    assert any(g['incomplete'] for g in feedback['scope_evidence'])
+    terms=['北区','西区','东区','南区','集团','配送','批发','海运']
+    columns=['Name','Legal Entity','City','CC Number','Active']
+    candidates=[{'table':CC,'column':c,'basis':'字段名称及与报表度量的关系'} for c in columns]
+    groups=[{'term':term,'candidates':candidates} for term in terms]
+    s.values[field_ref(CC,'Name')]=terms[:7] if outcome!='ambiguous' else terms
+    s.values[field_ref(CC,'Active')]=[] if outcome=='missing' else ['海运']
+    replies=[encode({'scope_checks':groups})]
+    if outcome=='unique':
+        replies.extend([plan(BUSINESS_DAX),'125 [Q1]'])
+    s.run(replies,text='分析'+'、'.join(terms))
+    msg=latest(s.client,s.conv)
+    records=msg['field_previews']
+    assert len(records)==40 and len(s.reads)==2 and {r['round'] for r in records}=={1}
+    assert records[-1]['label']=='F40' and records[-1]['column']=='Active'
+    assert all(sum(r['scope_term']==term for r in records)==5 for term in terms)
+    assert all(r['ok'] for r in records)
+    if outcome=='unique':
+        assert s.amounts==[BUSINESS_DAX] and not msg['clarification']
+        feedback=json.loads(s.provider.calls[1][1][-1].content.split('\n',1)[1])
+        assert feedback['scope_evidence'][-1]['matches'][0]['field']=='F40'
+    else:
+        assert not s.amounts and len(s.provider.calls)==1
+        card=msg['clarification']
+        assert '海运' in card['question']
+        if outcome=='ambiguous':
+            assert {c['field'] for c in card['scope_binding']['choices'].values()}=={'F8','F40'}
+        else:
+            assert '5 个候选字段' in card['context'] and 'scope_binding' not in card
+
+
+CENTERS = '46000 46211 46221 46243 46281 46251 46261 46300'.split()
+CENTER_QUESTION = '2025 年 0257 成本中心 ' + ' '.join(CENTERS) + ' 不包含K812的 overhead费用是多少'
+
+
+@pytest.mark.parametrize('lookup', [True, False])
+def test_representative_locates_column_and_omitted_members_are_restored_before_execution(case, lookup):
+    s=case
+    s.values[field_ref(CC,'CC Number')]=CENTERS
+    s.values[field_ref(CC,'Legal Entity')]=['0257']
+    s.values[field_ref(CE,'CE Category')]=['K812']
+    groups=[{**ORG,'term':'0257'},{'term':CENTERS[0],'members':CENTERS[:2],
+            'candidates':[{'table':CC,'column':'CC Number'}]},
+            {'term':'K812','candidates':[{'table':CE,'column':'CE Category'}]},CATEGORY]
+    def dax(members):
+        return ('EVALUATE SUMMARIZECOLUMNS(TREATAS({"0257"}, '+field_ref(CC,'Legal Entity')+'), '
+                +'TREATAS({'+','.join(json.dumps(v) for v in members)+'}, '+field_ref(CC,'CC Number')+'), '
+                +'TREATAS({"Overhead"}, '+field_ref(CE,'Class 2')+'), FILTER(ALL('+field_ref(CE,'CE Category')
+                +'), '+field_ref(CE,'CE Category')+' <> "K812"), "Year", 2025, "Amount", 125)')
+    incomplete=dax(CENTERS[:1])
+    if not lookup:
+        incomplete=incomplete.replace('"0257"','"0258"').replace('"K812"','"K811"')
+    s.run(([encode({'scope_checks':groups})] if lookup else [])+
+          [plan(incomplete),plan(dax(CENTERS)),'125 [Q1]'],text=CENTER_QUESTION)
+    assert s.amounts==[dax(CENTERS)]
+    assert len(s.reads)==int(lookup)
+    assert all(v not in ''.join(s.reads) for v in CENTERS[1:])
+    assert all(v in s.provider.calls[-2][1][-1].content for v in CENTERS[1:])
+    if not lookup:
+        assert all(v in s.provider.calls[-2][1][-1].content for v in ('0257','K812'))
+    if lookup:
+        r=next(r for r in latest(s.client,s.conv)['field_previews'] if r['scope_term']=='46000')
+        assert r['scope_members']==CENTERS and r['adopted_value']=='46000'
+
+
+def test_member_recovery_preserves_model_groups_and_does_not_invent_values_or_group_amounts():
+    assert not identifier_lists('2024、2025 年金额 100,000 元')
+    text='编码 A101 A102 A103 A104'
+    scopes=[ScopeCheck(term='A101', members=['A102','A999'],candidates=ORG['candidates']),
+            ScopeCheck(term='A103', members=['A104'],candidates=ORG['candidates'])]
+    assert scope_members(scopes,text,identifier_lists(text))=={'a101':['A101','A102'],'a103':['A103','A104']}
+
+
+def test_variable_filter_must_apply_the_list_to_the_verified_field():
+    records=[{'ok':True,'scope_term':'46000','scope_members':CENTERS,'table':CC,'column':'CC Number',
+              'profile':{'values':[{'value':'46000'}]}}]
+    def check(col):
+        dax=('DEFINE VAR targetCodes={'+','.join(CENTERS)+'} EVALUATE SUMMARIZECOLUMNS('
+             +field_ref(CC,'CC Number')+',TREATAS(targetCodes,'+field_ref(CC,col)+'),"Amount",1)')
+        return missing_group_filter(records,parse_plan(plan(dax)),ModelContext())
+    assert not check('CC Number') and CENTERS[-1] in check('Name')
+
+
+def test_repeated_partial_filter_does_not_ask_user_to_repeat_a_resolved_group(case):
+    s=case
+    s.values[field_ref(CC,'CC Number')]=CENTERS
+    group={'term':'46000','candidates':[{'table':CC,'column':'CC Number'}]}
+    partial=plan(f'EVALUATE CALCULATETABLE(ROW("A",1),TREATAS({{"46000"}},{field_ref(CC,"CC Number")}))')
+    s.run([encode({'scope_checks':[group]}),partial,partial],text='成本中心 '+' '.join(CENTERS))
+    message=latest(s.client,s.conv)
+    assert not message['clarification'] and not s.amounts and '遗漏同组筛选原值' in message['content']
+
+
+def test_group_confirmation_keeps_early_evidence_and_full_member_list(case, monkeypatch):
+    s=case
+    columns=['CC Number','Name','Legal Entity','Active','City']
+    candidates=[{'table':CC,'column':c} for c in columns]
+    terms=[CENTERS[0],'北区','甲方','海运']
+    s.values[field_ref(CC,'CC Number')]=CENTERS
+    s.values[field_ref(CC,'Name')]=terms
+    groups=[{'term':t,'candidates':candidates} for t in terms]
+    s.run([encode({'scope_checks':groups})],text='成本中心 '+' '.join(CENTERS)+'，北区、甲方和海运的费用')
+    first=latest(s.client,s.conv)
+    binding=first['clarification']['scope_binding']
+    assert len(first['field_previews'])==20 and binding['members']==CENTERS
+    assert binding['choices']['A']['field']=='F1'
+    def query(members):
+        dax='EVALUATE CALCULATETABLE(ROW("Amount", 125),TREATAS({'+','.join(json.dumps(v) for v in members)+'},'+field_ref(CC,'CC Number')+'))'
+        obj=json.loads(plan(dax))
+        obj['scope_resolutions']=[{'field':'F1','value':CENTERS[0],'basis':'已选择字段'}]
+        return dax,encode(obj)
+    complete,valid=query(CENTERS)
+    resumed=Provider([query(CENTERS[:1])[1],valid,'125 [Q1]'])
+    monkeypatch.setattr(s.app.state.settings,'provider',lambda:resumed)
+    response=reply(s.client,s.conv,first,option='A')
+    assert response.status_code==200 and s.amounts==[complete] and len(s.reads)==1
+    assert all(v in resumed.calls[0][1][-1].content for v in CENTERS)
+
+
+def test_two_ambiguous_terms_are_confirmed_in_sequence_from_the_original_read(case, monkeypatch):
+    s=case
+    s.values[field_ref(CC,'CC Number')]=CENTERS
+    s.values[field_ref(CC,'Name')]=CENTERS
+    for col in ('Class 1','CE Category'):
+        s.values[field_ref(CE,col)]=['K812']
+    groups=[{'term':CENTERS[0],'candidates':[{'table':CC,'column':c} for c in ('CC Number','Name')]},
+            {'term':'K812','candidates':[{'table':CE,'column':c} for c in ('Class 1','CE Category')]}]
+    s.run([encode({'scope_checks':groups})],text='成本中心 '+' '.join(CENTERS)+'，排除 K812 的费用')
+    first=latest(s.client,s.conv)
+    assert '46000' in first['clarification']['question']
+    assert reply(s.client,s.conv,first,option='A').status_code==200
+    second=latest(s.client,s.conv)
+    assert 'K812' in second['clarification']['question'] and not s.amounts
+    assert len(s.reads)==len(s.provider.calls)==1
+    dax=('EVALUATE CALCULATETABLE(ROW("A",1),TREATAS({'+','.join(json.dumps(v) for v in CENTERS)
+         +'},'+field_ref(CC,'CC Number')+'),'+field_ref(CE,'CE Category')+' <> "K812")')
+    resumed=Provider([plan(dax),'125 [Q1]'])
+    monkeypatch.setattr(s.app.state.settings,'provider',lambda:resumed)
+    assert reply(s.client,s.conv,second,option='B').status_code==200 and s.amounts==[dax]
+    records=s.app.state.chat.analysis.field_records(first['id'])
+    assert {(r['column'],r['confirmed_value']) for r in records if 'confirmed_value' in r}=={
+        ('CC Number','46000'),('CE Category','K812')}
+    assert len(s.reads)==1
+
+
+def test_every_verified_field_is_selectable_on_the_card(case):
+    s=case
+    columns=['CC Number','Legal Entity','Name','City','Active','CC Cluster Number']
+    for column in columns:
+        s.values[field_ref(CC,column)]=['0257']
+    group={'term':'0257','candidates':[{'table':CC,'column':column} for column in columns]}
+    s.run([encode({'scope_checks':[group]})],text='分析 0257 的费用')
+    card=latest(s.client,s.conv)['clarification']
+    assert len(card['options'])==6 and card['scope_binding']['choices']['F']['column']==columns[-1]
 
 
 def test_unknown_field_does_not_break_other_probes_and_literals_are_escaped(case):
@@ -590,7 +735,7 @@ def test_unknown_field_does_not_break_other_probes_and_literals_are_escaped(case
 
 
 @pytest.mark.parametrize('data', [
-    {'scope_checks':[{'term':' ','candidates':[]}]}, {'scope_checks':[ORG]*5},
+    {'scope_checks':[{'term':' ','candidates':[]}]}, {'scope_checks':[{'term':'A','candidates':[]}]},
     {'scope_checks':[ORG],'queries':json.loads(plan())['queries']},
     {'scope_resolutions':[{'field':'F1','value':'x','basis':'x'}]},
 ])

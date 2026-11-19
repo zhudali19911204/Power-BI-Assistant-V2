@@ -18,17 +18,23 @@ function profile(extra={}) {
 function record(extra={}) {return {id:'field-1',model_id:'model',label:'F1',table:'分类表',column:'类别',
   reason:'核对人员费用对应的实际分类',ok:true,error:'',profile:profile(),...extra};}
 
-test('evidence distinguishes an empty search, exact hits, ambiguity and the adopted field',()=>{
+test('only exact hits and ambiguous hits are shown, with the original numbering and full match counts',()=>{
   const exact=(label,column,values,extra={})=>record({id:label,label,column,scope_term:'0887',query_label:'F1',...extra,
     profile:{kind:'exact',values:values.map(value=>({value})),search_terms:['0887'],scope:'当前报表',dax_queries:[]}});
   const rows=[
-    record({profile:profile({search_terms:['missing'],values:[],statistics:{matched_distinct_count:0}})}),
+    exact('F1','未命中字段',[]),record({profile:profile({search_terms:['missing'],values:[],statistics:{matched_distinct_count:0}})}),
     exact('F2','法人',['0887']),exact('F3','成本中心',['0887'],{adopted_value:'0887'}),
     exact('F4','编码',[]),exact('F5','分类',['<img src=x>'],{scope_term:'成本'}),
-    record({ok:false,error:'读取失败',profile:null}),exact('F7','已选字段',['0999'],{scope_term:'0999',confirmed_value:'0999'})];
+    record({ok:false,error:'读取失败',profile:null}),exact('F7','已选字段',['0999'],{scope_term:'0999',confirmed_value:'0999'}),record()];
+  rows[0].profile.dax_queries=['EVALUATE ROW("candidate",1)'];
   const root=element(fieldEvidence(rows));
+  assert.deepEqual([...root.querySelectorAll('[data-field-evidence]')].map(n=>n.dataset.fieldEvidence),['F2','F5']);
   assert.deepEqual([...root.querySelectorAll('details.field-evidence > summary > span')].map(n=>n.textContent),
-    ['未命中','多个候选命中','本次采用','未命中','精确命中','检查未完成','口径已确认']);
+    ['多个候选命中','精确命中']);
+  assert.ok(root.querySelector('[data-field-evidence="F2"] .field-query-details'));
+  assert.equal(root.querySelectorAll('.field-query-details').length,1);
+  assert.ok(root.querySelector('[data-field-evidence="F5"]').textContent.includes('批量查询见 F2'));
+  assert.equal(fieldEvidence(rows.filter(r=>r.label!=='F2'&&r.label!=='F5')),'');
   assert.ok(root.textContent.includes('实际命中 0887'));
   assert.equal(root.querySelector('img'),null);
   assert.ok(!root.querySelector('[data-field-evidence="F2"] .field-statistics'));
@@ -69,11 +75,11 @@ test('empty search is not presented as an empty column',()=>{
 test('model values, query source and error messages cannot create active markup',()=>{
   const p=profile({values:[{value:'<img src=x onerror=1>',count:1,value_truncated:true}],
     samples:[{value:'<script>bad()</script>',value_truncated:false}],dax_queries:['EVALUATE "</code><iframe>"']});
-  const root=element(fieldEvidence([record({table:'<img src=x>',profile:p}),record({id:'failed',ok:false,error:'<script>error</script>'})]));
+  const root=element(fieldEvidence([record({table:'<img src=x>',scope_term:'精确值',profile:p}),record({id:'failed',ok:false,error:'<script>error</script>'})]));
   assert.equal(root.querySelector('img,script,iframe'),null);
   assert.ok(root.textContent.includes('<img src=x onerror=1>'));
   assert.ok(root.textContent.includes('值已截断'));
-  assert.ok(root.textContent.includes('<script>error</script>'));
+  assert.ok(!root.textContent.includes('<script>error</script>'));
   assert.equal(root.querySelector('[data-preview-column]').dataset.previewColumn,'类别');
 });
 
@@ -121,10 +127,14 @@ test('new field results keep the message, prior prose, and expanded evidence nod
     artifacts:m=>fieldEvidence(m.field_previews),status:()=>''});
   const message={role:'assistant',status:'streaming',content:'<p>保留原文</p>',field_previews:[]};
   renderer.render([message],{conversation:'c'});const article=root.firstChild,paragraph=root.querySelector('p');
-  message.field_previews=[record()];renderer.render([message],{conversation:'c'});
+  message.field_previews=[record({scope_term:'分类'})];renderer.render([message],{conversation:'c'});
   const details=root.querySelector('[data-field-evidence]');details.setAttribute('open','');
-  message.field_previews.push(record({id:'field-2',label:'F2'}));renderer.render([message],{conversation:'c'});
+  message.field_previews.push(record({id:'field-2',label:'F2',scope_term:'其他'}));renderer.render([message],{conversation:'c'});
   assert.equal(root.firstChild,article);assert.equal(root.querySelector('p'),paragraph);
   assert.equal(root.querySelector('[data-field-evidence]'),details);assert.ok(details.hasAttribute('open'));
   assert.equal(root.querySelectorAll('[data-field-evidence]').length,2);
+  const other=root.querySelector('[data-field-evidence="field-2"]');
+  message.field_previews[0].adopted_value='0257';renderer.render([message],{conversation:'c'});
+  assert.deepEqual([...root.querySelectorAll('[data-field-evidence]')].map(n=>n.dataset.fieldEvidence),['field-2']);
+  assert.equal(root.querySelector('[data-field-evidence]'),other);assert.ok(!other.hasAttribute('open'));
 });

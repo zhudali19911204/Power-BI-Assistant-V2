@@ -24,8 +24,8 @@ def _complete_observation(record):
 
 def clarification_field_sources(model, records):
     """Keep references to the original reads, including across successive questions."""
-    ids = [r['id'] for r in records if _complete_observation(r)]
-    return {'source': _field_source(model), 'ids': ids[-MAX_FIELD_CHECKS:]} if ids else None
+    ids = list(dict.fromkeys(r['id'] for r in records if _complete_observation(r)))
+    return {'source': _field_source(model), 'ids': ids} if ids else None
 
 
 def clarification_evidence(db, conversation_id, model, ctx, reply):
@@ -47,16 +47,16 @@ def clarification_evidence(db, conversation_id, model, ctx, reply):
     if saved:
         if saved['source'] != _field_source(model):
             return [], None
-        ids = saved['ids'][-MAX_FIELD_CHECKS:]
-        query += 'AND f.id IN (' + ','.join('?' for _ in ids) + ') '
+        query += 'AND f.id IN (SELECT value FROM json_each(?)) '
         query += "AND (p.checked_at IS NULL OR p.checked_at <= json_extract(f.result,'$.profile.checked_at')) "
-        args.extend(ids)
+        args.append(json.dumps(saved['ids']))
     else:
         # Older cards have no connection stamp. The latest field preview is cleared
         # on an engine change. Require the exact read time, not just a matching value.
         query += "AND f.message_id=? AND p.checked_at=json_extract(f.result,'$.profile.checked_at') "
         args.append(reply.message_id)
     choice = card.get('scope_binding', {}).get('choices', {}).get(reply.option_id)
+    original_id = (saved or {}).get('choice_ids', {}).get(reply.option_id)
     selected = None
     records = []
     for row in db.all(query + 'ORDER BY f.created_at,f.rowid', args):
@@ -64,10 +64,11 @@ def clarification_evidence(db, conversation_id, model, ctx, reply):
         if record.get('model_id') != model['id'] or not ctx.has_column(record['table'], record['column']) or not _complete_observation(record):
             continue
         records.append(record)
-        if (choice and not reply.supplement and row['message_id'] == reply.message_id
+        same_read = record['id'] == original_id if original_id else row['message_id'] == reply.message_id
+        if (choice and not reply.supplement and same_read
                 and (record['label'], record['table'], record['column']) == (choice['field'], choice['table'], choice['column'])
                 and any(v.get('value') == choice['value'] for v in record['profile']['values'])):
-            selected = choice
+            selected = {**choice, 'pending_ids': (saved or {}).get('pending_ids', [])}
     return records, selected
 
 

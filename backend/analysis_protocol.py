@@ -42,8 +42,8 @@ class AnalysisPlan(BaseModel):
     clarification: ClarificationQuestion | str | None = None
     semantic_queries: list[str] = Field(default_factory=list, max_length=3)
     field_checks: list[FieldCheck] = Field(default_factory=list)
-    scope_checks: list[ScopeCheck] = Field(default_factory=list, max_length=4)
-    scope_resolutions: list[ScopeResolution] = Field(default_factory=list, max_length=12)
+    scope_checks: list[ScopeCheck] = Field(default_factory=list)
+    scope_resolutions: list[ScopeResolution] = Field(default_factory=list)
     queries: list[QueryPlan] = Field(default_factory=list, max_length=MAX_BATCH_QUERIES)
     recovery: QueryRecovery | None = None
     needs_more: bool = False
@@ -92,7 +92,7 @@ def _validation_issues(error):
     fields = {'scope', 'clarification', 'semantic_queries', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
               'assessment', 'title', 'dax', 'table', 'column', 'search_terms', 'reason',
               'topic', 'question', 'context', 'options', 'label', 'value', 'detail',
-              'scope_checks', 'scope_resolutions', 'term', 'related_term', 'aliases', 'candidates', 'field', 'basis',
+              'scope_checks', 'scope_resolutions', 'term', 'members', 'related_term', 'aliases', 'candidates', 'field', 'basis',
               'recovery', 'for_query', 'missing'}
     messages = {'missing': '缺少必填字段', 'string_type': '需要字符串', 'bool_type': '需要布尔值 true 或 false',
                 'list_type': '需要数组', 'model_type': '需要 JSON 对象', 'extra_forbidden': '包含未定义字段'}
@@ -159,6 +159,8 @@ def validate_action(plan, stage):
 
 
 def correction_prompt(error, stage):
+    if any(item['type'] == 'missing_group_filter' for item in error.issues):
+        return str(error) + '。保持字段、包含或排除方向和其他口径，返回使用完整清单的查询计划。'
     if any(item['type'] == 'unknown_match' for item in error.issues):
         return ('上次计划引用的字段核对编号和原值无法在本轮配对，查询尚未执行。'
                 '用户已确认的筛选直接按选定的表、字段和完整原值写入 DAX，保留前导零，省略这项 scope_resolutions。'
