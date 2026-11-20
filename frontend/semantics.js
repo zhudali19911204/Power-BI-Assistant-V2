@@ -43,6 +43,7 @@ function editMarkup(entry) {
 export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},onPreview=()=>{},onManageDictionaries=()=>{}}) {
   let profile,service,editing=null,filter='',onlyPending=false,onlyChanges=false,busy=false,timer=null,disposed=false,paused=false;
   let tab='objects',renderedTab='objects',businessEditing=null;
+  let pendingImport=null;
   const scroll=root.closest('dialog')||root;
   const listViews={};
   function captureListView() {
@@ -82,13 +83,31 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
   function buildDisabled() {
     return profile.status==='building'||(profile.status==='ready'&&semanticSummary(profile).pending===0&&!overviewDue());
   }
+  function importDisabled() {
+    return profile.status==='building'||!!editing||!!businessEditing;
+  }
+  function importPanel() {
+    if(!pendingImport)return '';
+    const {name,preview:p}=pendingImport;
+    const count=p.objects+p.items+Number(p.overview);
+    return `<section class="notice semantic-import-preview" aria-label="导入预览"><strong>导入预览 · ${esc(name)}</strong>
+      <p>将合并 ${p.objects} 项对象定义、${p.items} 项业务术语或约定${p.overview?'和业务总览':''}。${p.unmatched?`当前模型缺少 ${p.unmatched} 个对象，已跳过。`:''}</p>
+      <p>${p.compatible?'同一对象和同一条业务记录采用文件中的定义，其他已有内容保留。':`模型结构或元数据有差异，导入内容需复核。保留当前词典已有的 ${p.protected} 项人工定义。`}${p.review?`共 ${p.review} 项待复核。`:''}</p>
+      <button type="button" class="secondary-button" data-cancel-semantic-import>取消</button>
+      ${count?'<button type="button" class="primary-button" data-confirm-semantic-import>确认导入</button>':''}</section>`;
+  }
   function render() {
     listViews[renderedTab]=captureListView()||listViews[renderedTab];
     const summary=semanticSummary(profile);
     const delta=profile.changes;
     const dictionaryName=profile.dictionary_name||profile.reuse?.source_name||profile.reuse?.report_name||(summary.can_answer&&profile.report_identity?.name);
     const canRebuild=summary.can_answer&&profile.entries.length>0;
-    root.innerHTML=`<header class="semantic-model-heading"><div><span class="semantic-section-label">当前模型</span><h3>${esc(profile.report_identity?.name||'模型业务语义')}</h3>${profile.report_identity?.path?`<p class="semantic-model-path">${esc(profile.report_identity.path)}</p>`:''}</div><button type="button" class="secondary-button semantic-library-action" data-manage-dictionaries>${icon('book')}词典管理</button></header>
+    root.innerHTML=`<header class="semantic-model-heading"><div><span class="semantic-section-label">当前模型</span><h3>${esc(profile.report_identity?.name||'模型业务语义')}</h3>${profile.report_identity?.path?`<p class="semantic-model-path">${esc(profile.report_identity.path)}</p>`:''}</div><div class="semantic-file-actions">
+      <input type="file" accept=".json,application/json" data-semantic-file hidden>
+      <button type="button" class="secondary-button" data-import-semantics ${importDisabled()?'disabled':''}>导入语义层</button>
+      <a class="secondary-button" href="/api/models/${encodeURIComponent(modelId)}/semantics/export" download>导出语义层</a>
+      <button type="button" class="secondary-button semantic-library-action" data-manage-dictionaries>${icon('book')}词典管理</button></div></header>
+      ${importPanel()}
       <div class="semantic-status-grid ${delta?'has-delta':''}"><div class="semantic-progress"><strong>${esc(profile.stage)}</strong><span>已梳理 ${profile.coverage}/${profile.entries.length} 项 · 用户确认 ${summary.confirmed} 项</span>${dictionaryName?`<p class="semantic-binding">词典：${esc(dictionaryName)}${profile.reuse?` · ${profile.reuse.matched_by==='user_selection'?'手动关联':'自动关联'}${profile.reuse.source_deleted?' · 来源历史版本已删除，当前副本保留':''}`:''}</p>`:''}</div>
       ${delta?`<div class="semantic-delta"><strong>本次模型同步</strong><p>保留 ${delta.preserved} 项 · 新增 ${delta.added} 项 · 修改或受影响 ${delta.modified} 项 · 删除 ${delta.removed} 项</p><p>${summary.can_answer?'可继续提问；未知业务口径按需确认。':'已有定义保留，只梳理待更新条目。'}</p>${delta.items.length?`<details><summary>查看变更清单</summary><ul>${delta.items.map(item=>`<li><b>${({added:'新增',modified:'修改或受影响',removed:'删除'})[item.change]}</b> ${esc(item.table)}${item.kind==='table'?'':'['+esc(item.name)+']'} · ${item.reasons.map(esc).join('；')}</li>`).join('')}</ul></details>`:''}</div>`:''}</div>
       ${profile.error?`<p class="semantic-error">${esc(profile.error)}</p>`:''}
@@ -133,7 +152,24 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
     try {await work();}catch(error){feedback(error.message,true);}
     finally {busy=false;root.querySelectorAll('button').forEach(button=>button.disabled=false);if(profile&&buildDisabled())$('[data-build-semantics]',root).disabled=true;
       const rebuild=$('[data-rebuild-semantics]',root);if(rebuild)rebuild.disabled=profile.status==='building';
+      const importButton=$('[data-import-semantics]',root);if(importButton)importButton.disabled=importDisabled();
     }
+  }
+  async function previewImport(file) {
+    pendingImport=null;
+    $('.semantic-import-preview',root)?.remove();
+    if(file.size>64*1024*1024)throw new Error('语义层文件超过 64 MB');
+    const body=await file.text();
+    const preview=await api(`/models/${modelId}/semantics/import-preview`,{method:'POST',body});
+    if(disposed)return;
+    pendingImport={name:file.name,body,preview};render();
+  }
+  async function applyImport() {
+    const {body,preview}=pendingImport;
+    const result=await api(`/models/${modelId}/semantics/import?updated_at=${encodeURIComponent(preview.updated_at)}`,{method:'POST',body});
+    if(disposed)return;
+    pendingImport=null;profile=result.profile;onUpdate(semanticSummary(profile));render();schedule();
+    feedback(`已导入 ${result.preview.objects} 项对象定义、${result.preview.items} 项业务术语或约定${result.preview.overview?'和业务总览':''}。`);
   }
   async function saveBusiness(confirmed) {
     const form=$('[data-business-form]',root);if(!form.reportValidity())return;
@@ -142,9 +178,12 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
     profile=await api(`/models/${modelId}/semantics/business/${path}`,{method,body:JSON.stringify(businessBody(form,businessEditing,confirmed))});
     businessEditing=null;onUpdate(semanticSummary(profile));render();feedback(confirmed?'业务定义已确认，将用于后续查询和回答':'已保存为候选，尚不作为已确认业务条件');schedule();
   }
-  function editBusiness(kind,record=null) {businessEditing={kind,record,revision:businessData(profile).revision};render();}
+  function editBusiness(kind,record=null) {pendingImport=null;businessEditing={kind,record,revision:businessData(profile).revision};render();}
   root.onclick=event=>{
     const button=event.target.closest('button');if(!button||busy)return;
+    if(button.hasAttribute('data-import-semantics'))$('[data-semantic-file]',root).click();
+    if(button.hasAttribute('data-cancel-semantic-import')){pendingImport=null;render();}
+    if(button.hasAttribute('data-confirm-semantic-import')&&pendingImport)void run(applyImport);
     if(button.hasAttribute('data-manage-dictionaries'))onManageDictionaries(modelId);
     if(button.dataset.semanticTab){tab=button.dataset.semanticTab;editing=null;businessEditing=null;render();}
     if(button.hasAttribute('data-review-business')){tab=businessData(profile).overview?.state==='unresolved'?'overview':'business';editing=null;businessEditing=null;render();}
@@ -161,7 +200,7 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
       profile=await api(`/models/${modelId}/semantics/business/items/${button.dataset.businessDeleteConfirm}?revision=${businessData(profile).revision}`,{method:'DELETE'});
       onUpdate(semanticSummary(profile));render();feedback('业务词条已删除');
     });
-    if(button.dataset.editSemantic){editing=profile.entries.find(e=>e.id===button.dataset.editSemantic);render();}
+    if(button.dataset.editSemantic){pendingImport=null;editing=profile.entries.find(e=>e.id===button.dataset.editSemantic);render();}
     if(button.hasAttribute('data-semantic-back')){editing=null;render();}
     if(button.hasAttribute('data-confirm-semantic'))void run(()=>save(true));
     if(button.hasAttribute('data-rebuild-semantics'))$('[data-rebuild-prompt]',root).hidden=false;
@@ -175,6 +214,10 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
   };
   root.oninput=event=>{if(event.target.matches('[data-semantic-search]')){filter=event.target.value;list();}};
   root.onchange=event=>{if(event.target.matches('[data-semantic-pending]')){onlyPending=event.target.checked;list();}if(event.target.matches('[data-semantic-changes]')){onlyChanges=event.target.checked;list();}
+    if(event.target.matches('[data-semantic-file]')){
+      const file=event.target.files?.[0];event.target.value='';
+      if(file&&!importDisabled())void run(()=>previewImport(file));
+    }
     if(event.target.matches('[data-business-scope]'))$('[data-business-scope-objects]',root).hidden=event.target.value!=='objects';};
   root.onsubmit=event=>{event.preventDefault();if(businessEditing)void run(()=>saveBusiness(false));else if(editing)void run(()=>save(false));};
   root.innerHTML='<p class="notice">正在读取模型语义词典…</p>';

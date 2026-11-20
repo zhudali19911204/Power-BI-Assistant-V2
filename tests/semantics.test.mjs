@@ -22,6 +22,8 @@ async function fixture(initial=profile()) {
   const api=async(path,opts={})=>{
     calls.push({path,...opts});
     if(path==='/settings')return {name:'模型服务',model:'test-model',base_url:'https://service.example/v1',active_profile_id:'selected'};
+    if(path.endsWith('/import-preview'))return {updated_at:'original-revision',compatible:false,objects:1,unmatched:2,protected:1,items:1,overview:true,review:3};
+    if(path.includes('/semantics/import?'))return {profile:{...current,stage:'已导入测试词典'},preview:{objects:1,items:1,overview:true}};
     if(path.startsWith('/semantic-dictionaries'))return {dictionaries:(current.reuse_candidates||[]).map(c=>({...c,group:c.model_id,updated_at:'saved-revision',confirmed:0,business_count:0})),target_busy:false};
     if(path.includes('/reuse-preview?'))return {source_model_id:'saved-dictionary',source_name:'采购费用',source_updated_at:'saved-revision',metadata_status:'read',changes:{preserved:2,added:0,modified:0,removed:0,items:[]},dictionary_notice:{status:'current',message:'可用定义已核对'}};
     if(path.includes('/business/')) {
@@ -54,6 +56,31 @@ function choose(root,name,value) {
   options.forEach(option=>option.selected=false);
   options.find(option=>option.value===value).selected=true;
 }
+
+test('semantic file import previews before writing, supports cancellation, and refreshes the workbench',async()=>{
+  const f=await fixture();
+  try{
+    const link=f.root.querySelector('a[download]');
+    assert.equal(link.getAttribute('href'),'/api/models/model/semantics/export');
+    const body='{"version":1}';
+    async function pick(){
+      const input=f.root.querySelector('[data-semantic-file]');
+      Object.defineProperty(input,'files',{configurable:true,value:[{name:'<费用>.json',size:body.length,text:async()=>body}]});
+      input.dispatchEvent(new f.window.Event('change',{bubbles:true}));await tick();
+    }
+    await pick();
+    assert.ok(f.root.querySelector('.semantic-import-preview').textContent.includes('2 个对象'));
+    assert.ok(!f.calls.some(c=>c.path.includes('/import?')));
+    await f.click('[data-cancel-semantic-import]');
+    assert.equal(f.root.querySelector('.semantic-import-preview'),null);
+    await pick();await f.click('[data-confirm-semantic-import]');
+    const write=f.calls.find(c=>c.path.includes('/import?'));
+    assert.equal(write.path,'/models/model/semantics/import?updated_at=original-revision');
+    assert.equal(write.body,body);
+    assert.equal(f.updates.at(-1).stage,'已导入测试词典');
+    assert.equal(f.root.querySelector('.semantic-import-preview'),null);
+  }finally{f.manager.dispose();}
+});
 
 test('business overview saves locally and is confirmed separately from candidate generation',async()=>{
   const f=await fixture();

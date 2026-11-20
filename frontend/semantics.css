@@ -45,6 +45,8 @@ dialog.wide-modal{width:1120px;max-width:calc(100vw - 32px);max-height:92dvh;pad
 .wide-modal .modal-heading{margin-bottom:18px}
 .semantic-model-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:16px}
 .semantic-model-heading>div{min-width:0}
+.semantic-file-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}
+.semantic-file-actions>a,.semantic-file-actions>button{white-space:nowrap}
 .semantic-section-label{font-size:var(--font-caption);color:var(--text-muted)}
 .semantic-model-heading h3{font-size:16px;font-weight:550;line-height:1.5;margin:4px 0;color:#465361;overflow-wrap:anywhere}
 .semantic-model-path{font-size:var(--font-caption);line-height:1.7;color:var(--text-muted);margin:3px 0 0;overflow-wrap:anywhere}
@@ -73,7 +75,8 @@ dialog.wide-modal{width:1120px;max-width:calc(100vw - 32px);max-height:92dvh;pad
 }
 @media(max-width:600px){
   dialog.wide-modal{max-width:calc(100vw - 24px);max-height:94dvh;padding:20px}
-  .semantic-model-heading{align-items:flex-start;gap:12px}
+  .semantic-model-heading{align-items:flex-start;gap:12px;flex-wrap:wrap}
+  .semantic-file-actions{justify-content:flex-start}
   .semantic-model-heading h3{font-size:14px}
   .semantic-model-notice{align-items:flex-start;flex-direction:column;gap:4px}
   .semantic-tabs{gap:6px}

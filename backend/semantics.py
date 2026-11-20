@@ -44,7 +44,7 @@ AI 根据证据采用的口径只用于本轮，不等于用户确认，不自�
 语义定义已能确定口径时无需机械查值；需要确认业务词对应的实际分类值时再查相关字段。发现无法消解的语义冲突时请用户选择，不以通过语法或运行验证替代业务正确性。'''
 
 
-class SemanticEdit(BaseModel):
+class DefinitionFields(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     business_name: str = Field(default='', max_length=160)
     meaning: str = Field(default='', max_length=1500)
@@ -52,6 +52,9 @@ class SemanticEdit(BaseModel):
     unit: str = Field(default='', max_length=100)
     usage_notes: str = Field(default='', max_length=1500)
     aliases: list[str] = Field(default_factory=list, max_length=15)
+
+
+class SemanticEdit(DefinitionFields):
     confirmed: bool = False
 
 
@@ -65,15 +68,8 @@ class SemanticReuseInput(BaseModel):
     source_updated_at: str | None = Field(default=None,max_length=64)
 
 
-class Suggestion(BaseModel):
-    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+class Suggestion(DefinitionFields):
     id: str
-    business_name: str = Field(default='', max_length=160)
-    meaning: str = Field(default='', max_length=1500)
-    role: str = Field(default='', max_length=120)
-    unit: str = Field(default='', max_length=100)
-    usage_notes: str = Field(default='', max_length=1500)
-    aliases: list[str] = Field(default_factory=list, max_length=15)
 
 
 class SuggestionBatch(BaseModel):
@@ -143,12 +139,18 @@ class SemanticService:
         db.execute('INSERT OR REPLACE INTO model_dictionary_bindings VALUES (?,?,0)',(previous,key))
         db.execute('INSERT INTO model_dictionary_bindings VALUES (?,?,1)',(model_id,key))
 
-    def _store(self,model_id,profile):
+    def _store(self,model_id,profile,*,expected=None):
         key=self.dictionary_id(model_id)
         profile['dictionary_id']=key
         profile['dictionary_notice']=dictionary_notice(profile)
         profile['updated_at']=now()
         profile['dictionary_content_updated_at']=profile['updated_at']
+        if expected is not None:
+            updated=self.db.execute('UPDATE model_semantics SET fingerprint=?,payload=?,updated_at=? WHERE model_id=? AND updated_at=? '
+                'AND NOT EXISTS (SELECT 1 FROM model_dictionary_bindings WHERE model_id=? AND is_current=0)',
+                (profile['fingerprint'],encode(profile),profile['updated_at'],key,expected,model_id))
+            if not updated:raise HTTPException(409,'词典或关联的模型刚刚更新，请重新预览后导入')
+            return
         self.db.execute('INSERT OR REPLACE INTO model_semantics VALUES (?,?,?,?)',
             (key,profile['fingerprint'],encode(profile),profile['updated_at']))
 

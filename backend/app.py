@@ -7,7 +7,7 @@ import io
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -30,6 +30,7 @@ from .reports import reports_for_instances
 from .semantics import SemanticBuildInput, SemanticEdit, SemanticReuseInput, SemanticService
 from .business_dictionary import BusinessEdit, OverviewEdit
 from .dictionary_library import DictionaryNameEdit
+from . import semantic_transfer
 from .streaming import BackgroundStream
 from .validation import validate
 from .images import MAX_UPLOAD_BYTES
@@ -68,7 +69,7 @@ def create_app(directory=None):
     def snapshot_in_use(model_id):
         return model_id in semantics.jobs or dictionary_in_use(model_id,include_sync=False)
     powerbi.snapshot_in_use=snapshot_in_use
-    app = FastAPI(title="Power BI Assistant", version="2.0.5", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="Power BI Assistant", version="2.0.8", docs_url="/api/docs", redoc_url=None)
     app.state.license_info = license_info
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
@@ -96,7 +97,9 @@ def create_app(directory=None):
             image_upload=request.method=='POST' and request.url.path=='/api/images'
             if not image_upload and "application/json" not in request.headers.get("content-type", ""):
                 return JSONResponse({"detail": "请求必须使用 JSON"}, status_code=415)
-            if not image_upload and len(await request.body()) > 4 * 1024 * 1024:
+            semantic_upload=(request.method=='POST' and request.url.path.startswith('/api/models/') and
+                             request.url.path.endswith(('/semantics/import','/semantics/import-preview')))
+            if not image_upload and not semantic_upload and len(await request.body()) > 4 * 1024 * 1024:
                 return JSONResponse({"detail": "请求过大"}, status_code=413)
         try:
             if request.url.path.startswith("/api/"):
@@ -117,7 +120,7 @@ def create_app(directory=None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "2.0.5", "storage": "sqlite", "platform": "desktop",
+        return {"status": "ok", "version": "2.0.8", "storage": "sqlite", "platform": "desktop",
                 "license": {"type": "trial" if license_info.issued_at is not None else "permanent",
                             "issued_at": license_info.issued_at, "expires_at": license_info.expires_at,
                             "summary": license_info.summary} if license_info else {"type": "development"}}
@@ -254,6 +257,32 @@ def create_app(directory=None):
     @app.get('/api/models/{model_id}/semantics')
     def get_semantics(model_id:str):
         return semantics.get(model_id)
+
+    @app.get('/api/models/{model_id}/semantics/export')
+    def export_semantics(model_id:str):
+        document=semantic_transfer.export_file(semantics,model_id)
+        name=document['dictionary_name'] or document['model_name'] or '模型'
+        name=''.join('_' if c in '<>:"/\\|?*' or ord(c)<32 else c for c in name)[:100]
+        filename=quote(name+'-语义层.json',safe='')
+        return JSONResponse(document,headers={'Content-Disposition':f"attachment; filename=\"semantic-layer.json\"; filename*=UTF-8''{filename}"})
+
+    async def load_semantics_file(model_id,request,expected=None):
+        data=bytearray()
+        async for chunk in request.stream():
+            if len(data)+len(chunk)>semantic_transfer.MAX_IMPORT_BYTES:
+                raise HTTPException(413,'语义层文件超过 64 MB')
+            data.extend(chunk)
+        def load():
+            return semantic_transfer.import_file(semantics,model_id,semantic_transfer.read_file(bytes(data)),expected=expected)
+        return await run_in_threadpool(load)
+
+    @app.post('/api/models/{model_id}/semantics/import-preview')
+    async def preview_semantics_file(model_id:str,request:Request):
+        return await load_semantics_file(model_id,request)
+
+    @app.post('/api/models/{model_id}/semantics/import')
+    async def import_semantics(model_id:str,request:Request,updated_at:str):
+        return await load_semantics_file(model_id,request,updated_at)
 
     @app.post('/api/models/{model_id}/semantics/build')
     def build_semantics(model_id:str,body:SemanticBuildInput):
