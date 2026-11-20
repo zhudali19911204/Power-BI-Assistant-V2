@@ -2,6 +2,12 @@
 .field-row:hover{background:#f1ead520}
 .field-row>.field-button{width:auto;flex:1;min-width:0;overflow-wrap:anywhere}
 .field-row>.field-preview-button{padding:5px;color:var(--text-muted);margin-right:3px;flex-shrink:0}
+.field-search-results+.field-search-results{border-top:1px solid var(--border);margin-top:4px;padding-top:4px}
+.field-search-results .field-button{padding:7px 5px;align-items:flex-start}
+.field-search-results .field-type,.field-search-results .field-button>.icon{flex-shrink:0;margin-top:3px}
+.field-result-label{display:grid;min-width:0;gap:2px;overflow-wrap:anywhere}
+.field-result-label strong{font-size:var(--font-ui);font-weight:550;color:var(--text-secondary)}
+.field-result-label small{font:inherit;color:var(--text-muted)}
 .field-preview-button .icon{width:13px;height:13px}
 .field-preview-button:hover{color:var(--text-warning);background:#f7efda}
 .field-preview-search{display:flex;gap:8px;align-items:center;margin:18px 0;flex-wrap:wrap}

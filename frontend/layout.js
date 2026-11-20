@@ -6,6 +6,7 @@ export function createWorkspaceLayout({root,panel,handle,toggle,sidebar=null,win
   let drag=null,saves=Promise.resolve();
   const mobile=()=>viewportWidth()<=MOBILE_BREAKPOINT;
   const visible=()=>mobile()?panel.classList.contains('mobile-open'):!panel.classList.contains('collapsed');
+  const close=panel.querySelector('#context-close');
   const shell=sidebar?.panel.parentElement,resizeRoot=shell||root;
   const available=()=>shell?.clientWidth||viewportWidth();
   const clamp=(item,value)=>Math.round(Math.max(item.min,Math.min(item.maximum(),value)));
@@ -36,7 +37,8 @@ export function createWorkspaceLayout({root,panel,handle,toggle,sidebar=null,win
       item.handle.hidden=!item.enabled();
     }
     toggle.setAttribute('aria-expanded',String(visible()));
-    toggle.setAttribute('aria-label',visible()?'收起模型面板':'展开模型面板');
+    toggle.title=visible()?'收起模型字段面板':'展开模型字段面板';
+    toggle.setAttribute('aria-label',toggle.title);
   }
   function persist(item) {
     item.touched=true;
@@ -84,13 +86,29 @@ export function createWorkspaceLayout({root,panel,handle,toggle,sidebar=null,win
       item.preferred=next;render();persist(item);
     });
   }
+  function dismissOverlay() {
+    if(!mobile()||!visible())return;
+    panel.classList.remove('mobile-open');render();toggle.focus();
+  }
+  close?.addEventListener('click',dismissOverlay);
+  panel.addEventListener('keydown',event=>{
+    if(event.key!=='Escape'||event.isComposing||event.keyCode===229||!mobile()||!visible())return;
+    event.preventDefault();dismissOverlay();
+  });
   toggle.addEventListener('click',()=>{
-    finish(false);panel.classList.toggle(mobile()?'mobile-open':'collapsed');render();
+    finish(false);
+    if(mobile()&&visible()){dismissOverlay();return;}
+    panel.classList.toggle(mobile()?'mobile-open':'collapsed');render();
+    if(mobile()){
+      const search=panel.classList.contains('has-model')?panel.querySelector('#field-search:not(:disabled)'):null;
+      (search||close)?.focus();
+    }
   });
   win.addEventListener('resize',()=>{finish(false);render();});
   win.addEventListener('blur',()=>finish(false));
   render();
   return {
+    dismissOverlay,
     restore(value) {
       for(const item of panels) {
         if(item.touched)continue;

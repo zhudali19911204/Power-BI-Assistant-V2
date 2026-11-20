@@ -47,12 +47,19 @@
       <header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="slash">/</span><strong id="page-title">DAX 助手</strong></div><div class="topbar-actions"><span class="desktop-tag"><span data-icon="monitor"></span>桌面工作台</span><button class="connection-button" id="connect-open"><span class="status-dot"></span><span id="connection-label">连接 Power BI</span><span data-icon="chevron-down"></span></button></div></header>
       <div class="workspace">
         <section class="conversation-panel">
-          <div class="conversation-toolbar"><span class="workspace-caption" id="conversation-caption">从想法到可靠的数据逻辑</span><div><button class="icon-button" id="export-chat" aria-label="导出当前对话" title="导出对话"><span data-icon="download"></span></button><button class="icon-button" id="toggle-context" aria-controls="context-panel" aria-expanded="true" aria-label="切换模型面板" title="模型面板"><span data-icon="panel"></span></button></div></div>
+          <div class="conversation-toolbar">
+            <span class="workspace-caption" id="conversation-caption">新对话</span>
+            <div class="conversation-tools">
+              <button class="icon-button" id="export-chat" aria-label="导出当前对话" title="导出对话"><span data-icon="download"></span></button>
+              <button class="icon-button" id="toggle-context" aria-controls="context-panel" aria-expanded="true" aria-label="收起模型字段面板" title="收起模型字段面板"><span data-icon="panel"></span><span class="context-toggle-label">模型字段</span></button>
+            </div>
+          </div>
           <div id="background-generations" class="background-generations" role="status" aria-live="polite" hidden></div>
           <button type="button" class="text-link template-return" id="template-return" hidden>← 返回原草稿</button>
           <div class="message-scroll" id="message-scroll"><div id="messages"></div></div>
           <div class="composer-area">
-            <div class="context-strip" id="context-strip"><span data-icon="database"></span><span id="composer-context">连接模型，让回答基于真实字段</span><button id="calibration-open" title="用已知结果校准最后一个度量值"><span data-icon="target"></span><span id="calibration-label">校准</span></button></div>
+            <div class="context-strip" id="context-strip" hidden><span data-icon="database"></span><span id="composer-context"></span><button id="calibration-open" title="用已知结果校准最后一个度量值"><span data-icon="target"></span><span id="calibration-label">校准</span></button></div>
+            <div class="prompt-actions" id="prompt-actions" role="group" aria-label="快捷任务" hidden></div>
             <form class="composer" id="composer-form">
               <div class="composer-image-tools"><button type="button" data-add-images title="选择图片">&#xFF0B; 图片</button><button type="button" data-screenshot title="打开 Windows 截图工具"><span data-icon="image"></span>截图</button><small>支持粘贴截图 · Ctrl+V</small><input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-input hidden></div>
               <div class="image-drafts" data-image-drafts hidden aria-label="待发送图片"></div>
@@ -65,7 +72,23 @@
         </section>
         <aside class="context-panel" id="context-panel">
           <div id="context-resizer" class="context-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="context-panel" aria-label="调整模型面板宽度" aria-describedby="context-resize-help" title="拖动调节宽度，双击恢复默认"></div><span class="sr-only" id="context-resize-help">左右方向键调节宽度，Shift 加大步长，Home 最窄，End 最宽，双击恢复默认。</span>
-          <div class="context-header"><span><span data-icon="layers"></span>模型上下文</span><button class="icon-button" id="refresh-model" title="同步模型" aria-label="同步模型"><span data-icon="refresh"></span></button></div><div id="model-summary"></div><div class="context-tabs" role="tablist" aria-label="模型内容"><button class="active" data-context-tab="tables" role="tab" aria-selected="true">结构</button><button data-context-tab="relations" role="tab" aria-selected="false">关系</button><button data-context-tab="queries" role="tab" aria-selected="false">查询</button></div><input class="field-search" id="field-search" placeholder="搜索表、字段或度量值" aria-label="搜索模型字段"><div id="model-tree" class="model-tree"></div><div class="context-bottom"><span data-icon="info"></span><span>点击字段，插入引用<br>生成内容会自动检查模型引用</span></div></aside>
+          <div class="context-header">
+            <span><span data-icon="layers"></span>模型上下文</span>
+            <div class="context-header-actions">
+              <button class="icon-button" id="refresh-model" title="同步模型" aria-label="同步模型"><span data-icon="refresh"></span></button>
+              <button class="icon-button context-close" id="context-close" type="button" title="收起模型字段面板" aria-label="收起模型字段面板"><span data-icon="close"></span></button>
+            </div>
+          </div>
+          <div id="model-summary"></div>
+          <div class="context-tabs" role="tablist" aria-label="模型内容">
+            <button class="active" data-context-tab="tables" role="tab" aria-selected="true">结构</button>
+            <button data-context-tab="relations" role="tab" aria-selected="false">关系</button>
+            <button data-context-tab="queries" role="tab" aria-selected="false">查询</button>
+          </div>
+          <input class="field-search" id="field-search" placeholder="搜表、字段、度量值或业务别名" aria-label="搜表、字段、度量值或业务别名">
+          <div id="model-tree" class="model-tree"></div>
+          <div class="context-bottom"><span data-icon="info"></span><span>点击字段，插入引用<br>生成内容会自动检查模型引用</span></div>
+        </aside>
       </div>
     </main>
   </div>

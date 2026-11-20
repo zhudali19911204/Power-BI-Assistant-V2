@@ -147,6 +147,17 @@ def test_user_review_wins_over_a_running_inference_and_survives_restart(setup,mo
     assert next(e for e in restarted.state.semantics.get(model['id'])['entries'] if e['id']==entry)['state']=='confirmed'
 
 
+def test_model_field_search_includes_only_current_confirmed_names(setup):
+    _,client,model,_,_=setup
+    path=f"/api/models/{model['id']}"
+    entry=object_id('column','Fact','Amount')
+    payload={'business_name':'实际金额','meaning':'费用发生额','aliases':['费用金额']}
+    for confirmed in [False,True,False]:
+        assert client.put(f'{path}/semantics/{entry}',json={**payload,'confirmed':confirmed}).status_code==200
+        names=client.get(path).json()['semantics']['search_names']
+        assert names==([{'kind':'column','table':'Fact','name':'Amount','business_name':'实际金额','aliases':['费用金额']}] if confirmed else [])
+
+
 @pytest.mark.parametrize('mode',['analysis','dax'])
 def test_bare_0257_reaches_ai_with_semantics_without_automatic_lookup(setup,monkeypatch,mode):
     app,client,model,ctx,conv=setup

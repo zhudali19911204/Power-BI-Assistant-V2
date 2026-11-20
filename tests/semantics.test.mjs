@@ -320,7 +320,10 @@ test('real values remain accessible and dictionary text cannot create executable
 });
 
 test('summary never conflates inferred entries with user-confirmed definitions',()=>{
-  assert.deepEqual(semanticSummary(profile()),{status:'ready',stage:'语义梳理完成',coverage:2,total:2,confirmed:0,can_answer:true,pending:1});
+  assert.deepEqual(semanticSummary(profile()),{status:'ready',stage:'语义梳理完成',coverage:2,total:2,confirmed:0,search_names:[],can_answer:true,pending:1});
+  const p=profile();
+  Object.assign(p.entries[0],{state:'confirmed',aliases:['CC']});
+  assert.deepEqual(semanticSummary(p).search_names,[{kind:'column',table:'成本中心',name:'CC Number',business_name:'成本中心编号',aliases:['CC']}]);
 });
 
 test('a matched report displays its saved name and path without starting another build',async()=>{

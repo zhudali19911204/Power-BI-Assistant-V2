@@ -5,8 +5,8 @@ import {createWorkspaceLayout} from '../frontend/layout.js';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(save,{withSidebar=false}={}) {
-  const {window,document}=parseHTML(`<html><body><section>${withSidebar?'<aside id="sidebar"><div role="separator"></div></aside>':''}<main><aside><div role="separator"></div></aside></main></section><button></button></body></html>`);
-  const root=document.querySelector('main'),panel=root.querySelector('aside'),handle=panel.querySelector('[role="separator"]'),toggle=document.querySelector('button');
+  const {window,document}=parseHTML(`<html><body><section>${withSidebar?'<aside id="sidebar"><div role="separator"></div></aside>':''}<main><aside><div role="separator"></div><button id="context-close"></button><input id="field-search"></aside></main></section><button id="toggle-context"></button></body></html>`);
+  const root=document.querySelector('main'),panel=root.querySelector('aside'),handle=panel.querySelector('[role="separator"]'),toggle=document.querySelector('#toggle-context');
   const sidebarPanel=document.querySelector('#sidebar'),sidebarHandle=sidebarPanel?.firstElementChild;
   let viewport=1440,captured=null;const writes=[],notices=[];
   root.clientWidth=1192;
@@ -77,6 +77,23 @@ test('collapsed and mobile panels disable resizing and preserve the desktop pref
   assert.ok(f.panel.classList.contains('mobile-open'));assert.equal(f.toggle.getAttribute('aria-expanded'),'true');
   assert.equal(f.handle.hidden,true);f.event('dblclick');await tick();assert.deepEqual(f.writes,[]);
   f.resize(1440,1192);f.toggle.click();assert.equal(f.width(),420);assert.equal(f.handle.hidden,false);
+});
+
+test('the narrow model panel focuses search and returns to its trigger on close or Escape',()=>{
+  const f=fixture(),search=f.panel.querySelector('#field-search'),close=f.panel.querySelector('#context-close');
+  let focused;
+  for(const el of [search,close,f.toggle])el.focus=()=>{focused=el;};
+  f.resize(1000,785);
+  f.toggle.click();assert.equal(focused,close);
+  close.click();assert.equal(focused,f.toggle);assert.equal(f.toggle.getAttribute('aria-expanded'),'false');
+  f.panel.classList.add('has-model');
+  f.toggle.click();assert.equal(focused,search);
+  f.event('keydown',{key:'Escape',isComposing:true},f.panel);
+  assert.equal(f.toggle.getAttribute('aria-expanded'),'true');
+  f.event('keydown',{key:'Escape'},f.panel);
+  assert.equal(focused,f.toggle);assert.equal(f.toggle.title,'展开模型字段面板');
+  f.resize(1440,1192);f.layout.dismissOverlay();
+  assert.equal(f.toggle.getAttribute('aria-expanded'),'true');
 });
 
 test('slow preference writes remain ordered and a failed save does not disable adjustment',async()=>{

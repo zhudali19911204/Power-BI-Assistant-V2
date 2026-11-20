@@ -9,6 +9,7 @@ import {mountModelManager} from './models.js';
 import {createWorkspaces, createGenerationManager} from './workspaces.js';
 import {clarificationCard, clarificationReply} from './clarification.js';
 import {fieldEvidence, mountFieldPreview} from './fields.js';
+import {modelTree} from './model_tree.js';
 import {mountSemanticWorkbench, semanticSummary} from './semantics.js';
 import {mountDictionaryLibrary} from './dictionaries.js';
 import {mountComposerImages, imageGallery} from './images.js';
@@ -103,7 +104,7 @@ function showModal(title,eyebrow,html,{wide=false,modelSettings=false}={}) {
 function closeModalLayer(){if(modalReturn)modalReturn();else $('#modal').close();}
 function modelSettingsEditing(){return !!$('#model-manager [data-model-form], [data-template-editor], [data-template-run-form]');}
 $('#modal-close').onclick=closeModalLayer;
-$('#modal').addEventListener('close',()=>{modalReturn=null;modalCleanup?.();modalCleanup=null;});
+$('#modal').addEventListener('close',()=>{if($('#modal').open)return;modalReturn=null;modalCleanup?.();modalCleanup=null;});
 $('#modal').addEventListener('cancel',event=>{
   // Escape can dismiss IME input too. Only an explicit close should discard this editor.
   if(modelSettingsEditing()){event.preventDefault();return;}
@@ -113,16 +114,26 @@ $('#modal').addEventListener('click', e=>{if(e.target===$('#modal')&&!modelSetti
 
 function welcome() {
   const mode=MODES[state.view.mode]||MODES.dax;
-  return `<section class="welcome"><div class="welcome-emblem">${icon(mode.icon)}</div><div class="eyebrow">YOUR POWER BI COPILOT</div><h1>${mode.headline}</h1><p class="welcome-subtitle">${mode.subtitle}</p><div class="quick-cards">${mode.cards.map((c,i)=>`<button class="quick-card" data-prompt="${i}"><span class="card-icon">${icon(c[0])}</span>${icon('arrow-right','card-arrow')}<strong>${c[1]}</strong><p>${c[2]}</p></button>`).join('')}</div><div class="workflow-line"><span><b>1</b>连接本机模型</span>${icon('arrow-right')}<span><b>2</b>描述业务需求</span>${icon('arrow-right')}<span><b>3</b>${mode.finalStep}</span></div></section>`;
+  const model=state.view.model;
+  const needsReport=!model||(state.view.mode==='analysis'&&model.source!=='desktop');
+  return `<section class="welcome" aria-labelledby="welcome-title">
+    <div class="welcome-emblem">${icon(needsReport?'database':mode.icon)}</div>
+    <h1 id="welcome-title">${needsReport?'从哪份报表开始？':mode.headline}</h1>
+    <p class="welcome-subtitle">${needsReport?'先在 Power BI Desktop 中打开报表，连接后即可使用其中的字段和度量值。':mode.subtitle}</p>
+    ${needsReport?`<button type="button" class="primary-button welcome-connect" id="welcome-connect">${icon('monitor')}连接 Power BI 报表</button>`:''}
+  </section>`;
 }
 function renderMessages(forceFollow=false) {
+  const view=state.view;
+  const showWelcome=!view.messages.length&&(!view.conversation||view.loaded)&&!view.loading&&!view.busy&&!view.preparing&&!view.syncing;
+  $('#prompt-actions').hidden=!showWelcome;
   for(const message of state.view.messages)if(message.clarification){
     message.clarificationDraft=state.view.clarificationDrafts[message.id]||{};
     message.clarificationLocked=!!(state.view.busy||state.view.preparing||state.view.loading||state.view.syncing||message.model_stale||message.status!=='complete'||message.clarification.answered||message!==state.view.messages.at(-1));
   }
   messageRenderer.render(state.view.messages,{
     conversation:state.view.key,
-    welcome:state.view.messages.length?'':welcome(),forceFollow,
+    welcome:showWelcome?welcome():'',forceFollow,
   });
 }
 function streamStatus(message) {
@@ -157,23 +168,29 @@ function renderBackgroundTasks() {
 }
 function renderContext() {
   const model=state.view.model, ctx=model?.context;
+  $('#context-panel').classList.toggle('has-model',!!model);
+  const search=$('#field-search');
+  search.disabled=!model||!!model.snapshot_released;
+  const searchLabel={tables:'搜表、字段、度量值或业务别名',relations:'搜索关系中的表或字段',queries:'搜索 Power Query 查询'}[state.contextTab];
+  search.placeholder=searchLabel;
+  search.setAttribute('aria-label',searchLabel);
   if(model?.snapshot_released){
     $('#model-summary').innerHTML=`<div class="model-name">${esc(model.name)}</div><div class="model-state">快照已释放</div>`;
     $('#model-tree').innerHTML='<p class="history-empty muted">历史消息和结果仍可查看。打开对应报表并点击“同步模型”，即可重新读取字段。</p>';
     return;
   }
-  $('#model-summary').innerHTML=model?`<div class="model-name">${esc(model.name)}</div><div class="model-state">${model.live?'● 本机实时连接':model.source==='demo'?'○ 示例数据结构 · 仅供体验':'○ 离线模型快照'}</div><div class="model-counts"><span><b>${Object.keys(ctx.tables).length}</b>表</span><span><b>${Object.values(ctx.tables).flat().length}</b>字段</span><span><b>${ctx.measures.length}</b>度量值</span></div>`:'<div class="model-name">尚未连接模型</div><div class="model-state">在 Power BI Desktop 打开报表后连接</div>';
+  $('#model-summary').innerHTML=model?`<div class="model-name">${esc(model.name)}</div><div class="model-state">${model.live?'● 本机实时连接':model.source==='demo'?'○ 示例数据结构 · 仅供体验':'○ 离线模型快照'}</div><div class="model-counts"><span><b>${Object.keys(ctx.tables).length}</b>表</span><span><b>${Object.values(ctx.tables).flat().length}</b>字段</span><span><b>${ctx.measures.length}</b>度量值</span></div>`:'';
   if(model?.source==='desktop')$('#model-summary').insertAdjacentHTML('beforeend',`<button class="text-link semantic-open-button" data-open-semantics="${esc(model.id)}">${icon('book')}模型语义层 <small>${['needs_update','unverified'].includes(model.semantics?.dictionary_notice?.status)?esc(model.semantics.dictionary_notice.message):model.semantics?.status==='ready'?'已梳理 · 可审阅定义':model.semantics?.can_answer?'已有语义可用 · 更新可稍后处理':model.semantics?.status==='building'?'正在后台梳理':'需要先梳理语义'}</small></button>`);
-  if(!model) {$('#model-tree').innerHTML=`<div class="model-empty"><div class="empty-model-icon">${icon('database')}</div><strong>让模型成为对话的上下文</strong><p>表、字段、关系与度量值<br>连接后将显示在这里</p><button class="text-link" id="empty-connect">连接 Power BI ${icon('arrow-right')}</button></div>`;return;}
+  if(!model) {$('#model-tree').innerHTML=`<div class="model-empty"><div class="empty-model-icon">${icon('database')}</div><p>连接报表后，可在这里查看字段并插入引用。</p></div>`;return;}
   renderConnectionStatus();
-  const needle=$('#field-search').value.toLowerCase();
+  renderModelTree();
+}
+function renderModelTree() {
+  const model=state.view.model;
+  if(!model||model.snapshot_released)return;
+  const ctx=model.context,needle=$('#field-search').value.trim().toLowerCase();
   if(state.contextTab==='tables') {
-    $('#model-tree').innerHTML=Object.entries(ctx.tables).map(([name,cols])=>{
-      const measures=ctx.measures.filter(m=>m.table===name);const match=name.toLowerCase().includes(needle);
-      const fields=cols.filter(c=>match||c.name.toLowerCase().includes(needle));const ms=measures.filter(m=>match||m.name.toLowerCase().includes(needle));
-      if(!fields.length&&!ms.length&&!match)return '';
-      return `<details class="table-group" ${needle?'open':''}><summary>${icon('chevron-right')}${icon('table')}${esc(name)}<small>${cols.length}</small></summary>${fields.map(c=>`<div class="field-row"><button class="field-button" data-ref="${esc("'"+name.replaceAll("'","''")+"'["+c.name.replaceAll(']',']]')+"]")}" title="${esc(c.dtype)}"><span class="field-type">${/int|double|decimal/.test(c.dtype)?'#':c.dtype==='datetime'?'◷':'Aa'}</span>${esc(c.name)}</button><button class="icon-button field-preview-button" data-preview-table="${esc(name)}" data-preview-column="${esc(c.name)}" title="查看字段取值" aria-label="查看 ${esc(name)}[${esc(c.name)}] 的取值">${icon('eye')}</button></div>`).join('')}${ms.map(m=>`<button class="field-button" data-ref="${esc('['+m.name.replaceAll(']',']]')+']')}">${icon('formula')}${esc(m.name)}</button>`).join('')}</details>`;
-    }).join('')||'<p class="history-empty muted">没有匹配的字段</p>';
+    $('#model-tree').innerHTML=modelTree(ctx,needle,model.semantics?.search_names);
   } else if(state.contextTab==='relations') {
     $('#model-tree').innerHTML=ctx.relationships.filter(r=>(r.from_table+r.to_table+r.from_column+r.to_column).toLowerCase().includes(needle)).map(r=>`<div class="relation-item">${esc(r.from_table)}[${esc(r.from_column)}]${icon('arrow-right')}${esc(r.to_table)}[${esc(r.to_column)}]<span>${r.cross_filter==='both'?'双向筛选':'单向筛选'} · ${r.is_active?'活动关系':'非活动关系'}</span></div>`).join('')||'<p class="history-empty muted">暂无匹配的关系</p>';
   } else {
@@ -209,7 +226,14 @@ function renderControls() {
   const mode=MODES[state.view.mode]||MODES.dax;
   $('#page-title').textContent=mode.title;
   $('#prompt').placeholder=mode.placeholder;
-  $('#conversation-caption').textContent=state.view.conversation?.title||mode.caption;
+  $('#conversation-caption').textContent=state.view.conversation?.title||'新对话';
+  $('#context-strip').hidden=!state.view.model;
+  const actions=$('#prompt-actions');
+  if(actions.dataset.modeFor!==state.view.mode){
+    actions.dataset.modeFor=state.view.mode;
+    actions.innerHTML=mode.cards.map(([symbol,label,description],i)=>
+      `<button type="button" data-prompt="${i}" title="${esc(description)}">${icon(symbol)}${esc(label)}</button>`).join('');
+  }
   $('.composer-note').innerHTML='<span class="tiny-dot"></span>'+(state.view.mode==='analysis'?'只读查询 · 查询结果用于 AI 分析 · 依据和结果本地留存':'模型在本机读取 · AI 在服务器推理 · 写入前由你确认');
   $$('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.mode===state.view.mode));
   renderBusy();
@@ -220,7 +244,9 @@ function saveDraft() {
     scrollTop:$('#message-scroll').scrollTop,pinned:$('#message-scroll').scrollHeight-$('#message-scroll').scrollTop-$('#message-scroll').clientHeight<100});
 }
 function showView() {
-  $('#prompt').value=state.view.draft;render();
+  const input=$('#prompt');
+  if(input.value!==state.view.draft)input.value=state.view.draft;
+  render();
   renderConnectionStatus();void connectionMonitor.refresh();
   if(state.view.scrollTop!==undefined&&!state.view.pinned)$('#message-scroll').scrollTo({top:state.view.scrollTop,behavior:'instant'});
 }
@@ -255,7 +281,19 @@ function keepLatestSnapshot(model) {
     view.model=view.model.id===model.id?model:releaseSnapshot(view.model);
   }
 }
-function useModel(model,connected=false) {saveDraft();if(connected)keepLatestSnapshot(model);workspace.newChat(state.view.mode,model);$('#modal').close();showView();if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)void openSemantics(model.id).catch(error=>toast(error.message,true));}
+function useModel(model,connected=false) {
+  saveDraft();
+  const view=state.view;
+  const firstReport=!view.model||(view.mode==='analysis'&&view.model.source==='demo'&&model.source==='desktop');
+  const keepDraft=firstReport&&!view.conversation&&!view.messages.length&&!view.busy;
+  if(connected)keepLatestSnapshot(model);
+  if(keepDraft)view.model=model;
+  else workspace.newChat(view.mode,model);
+  $('#modal').close();showView();
+  if(keepDraft)$('#prompt').focus();
+  if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)
+    void openSemantics(model.id).catch(error=>toast(error.message,true));
+}
 async function syncCurrentModel() {
   const view=state.view;
   if(!view.model)return openConnections();
@@ -310,10 +348,45 @@ async function openConversation(id) {
 }
 
 async function openConnections() {
-  showModal('连接 Power BI','LOCAL MODEL','<p class="notice">正在查找本机 Power BI Desktop 实例…</p>');
-  const [instances,models]=await Promise.all([api('/desktop/instances'),api('/models')]);state.models=models;
+  showModal('连接 Power BI','LOCAL MODEL','<p class="notice" id="connection-scanning">正在查找本机 Power BI Desktop 实例…</p>');
+  const scanning=$('#connection-scanning'),view=state.view;
+  const [instances,models]=await Promise.all([api('/desktop/instances'),api('/models')]);
+  if(!scanning.isConnected||!$('#modal').open||state.view!==view)return;
+  state.models=models;
   $('#modal-body').innerHTML=`<p class="notice">先在本机 Power BI Desktop 打开报表。连接后按报表名称与文件路径匹配本地语义词典，并核对字段、关系和公式；不会修改报表。</p>${instances.length?instances.map(i=>`<button class="instance-button" data-port="${i.port}">${icon('monitor')}<span>${esc(i.report?.name||'Power BI Desktop')} · ${i.port}<small>${esc(i.report?.path||'本地实例 · PID '+i.pid)}</small></span></button>`).join(''):'<p class="field-help">未找到已打开的实例。请打开报表后重新扫描。</p>'}${instances.some(i=>!i.report?.name)?'<label class="form-field">未识别报表名称时，可填写用于后续匹配的名称<input id="connection-report-name" maxlength="260" placeholder="例如：采购费用分析；以后打开同一报表填写相同名称"></label>':''}<div class="modal-actions"><button class="secondary-button" id="demo-load">体验示例模型</button><button class="primary-button" id="rescan">${icon('refresh')}重新扫描</button></div>${models.length?`<div class="snapshot-section"><div class="section-label">本地保存的模型结构</div>${models.slice(0,8).map(m=>`<button class="snapshot-button" data-snapshot="${m.id}">${icon('database')}<span>${esc(m.name)}<small>${m.live?'实时连接':m.source==='demo'?'示例模型':'离线快照 · 无法实跑'}</small></span></button>`).join('')}</div>`:''}`;
   $('#modal-body').insertAdjacentHTML('afterbegin','<div class="semantic-tools"><button type="button" class="secondary-button" id="manage-dictionaries">管理历史业务词典</button></div>');
+}
+
+async function selectConnection(button) {
+  const view=state.view,dialog=$('#modal');
+  const current=()=>dialog.open&&button.isConnected&&state.view===view;
+  if(!current()||button.disabled)return;
+  for(const control of $$('#modal-body button'))control.disabled=true;
+  const {port,snapshot}=button.dataset;
+  try {
+    let model;
+    if(port){
+      button.textContent='正在读取模型…';
+      const reportName=$('#connection-report-name')?.value.trim()||'';
+      model=await post('/models/connect',{port:Number(port),report_name:reportName});
+    }else if(snapshot)model=await api(`/models/${snapshot}`);
+    else model=await post('/models/demo');
+    if(!current()){
+      if(port)void connectionMonitor.refresh();
+      return;
+    }
+    useModel(model,!!port);
+    if(port)toast(model.semantics?.dictionary_notice?.message||(model.semantics?.status==='ready'&&model.semantics.stage)||'已读取 Desktop 模型');
+  }catch(error){
+    if(!current())return;
+    await openConnections();throw error;
+  }
+}
+
+function updateModelSemantics(modelId,summary) {
+  for(const model of state.models)if(model.id===modelId)model.semantics=summary;
+  for(const view of workspace.all())if(view.model?.id===modelId)view.model.semantics=summary;
+  if(state.view.model?.id===modelId)renderContext();
 }
 
 async function openDictionaryLibrary() {
@@ -321,14 +394,9 @@ async function openDictionaryLibrary() {
   showModal('业务词典管理','DICTIONARY LIBRARY','<section id="dictionary-library"></section>',{wide:true});
   const root=$('#dictionary-library');
   const manager=await mountDictionaryLibrary(root,{api,modelId,onAssociate:async profile=>{
-    const summary=semanticSummary(profile);
-    for(const view of workspace.all())if(view.model?.id===modelId)view.model.semantics=summary;
-    if(state.view.model?.id===modelId)renderContext();
+    updateModelSemantics(modelId,semanticSummary(profile));
     toast(profile.dictionary_notice?.message||'业务词典已关联');await openSemantics(modelId);
-  },onDeleted:deletedId=>{
-    for(const view of workspace.all())if(view.model?.id===deletedId)view.model.semantics=null;
-    if(state.view.model?.id===deletedId)renderContext();
-  }});
+  },onDeleted:deletedId=>updateModelSemantics(deletedId,null)});
   if(root.isConnected&&$('#modal').open)modalCleanup=()=>manager.dispose();else manager.dispose();
 }
 
@@ -381,14 +449,11 @@ async function openSemantics(modelId=state.view.model?.id) {
     return childPanel({id:'dictionary-library',title:'业务词典管理',eyebrow:'DICTIONARY LIBRARY',
       onReturn:()=>void manager?.refresh(),mount:(child,back)=>mountDictionaryLibrary(child,{api,modelId,onBack:back,
         onAssociate:profile=>{toast(profile.dictionary_notice?.message||'业务词典已关联');back();},
-        onDeleted:deletedId=>{for(const view of workspace.all())if(view.model?.id===deletedId)view.model.semantics=null;}
+        onDeleted:deletedId=>updateModelSemantics(deletedId,null)
       })});
   }
   manager=await mountSemanticWorkbench(root,{api,modelId,
-    onUpdate:summary=>{
-      for(const view of workspace.all())if(view.model?.id===modelId)view.model.semantics=summary;
-      if(state.view.model?.id===modelId)renderContext();
-    },onPreview:(...args)=>void preview(...args),onManageDictionaries:()=>void dictionaries()});
+    onUpdate:summary=>updateModelSemantics(modelId,summary),onPreview:(...args)=>void preview(...args),onManageDictionaries:()=>void dictionaries()});
   if(root.isConnected&&$('#modal').open)modalCleanup=()=>{previewCleanup?.();manager.dispose();};
   else {previewCleanup?.();manager.dispose();}
 }
@@ -423,7 +488,7 @@ async function send(e) {
     if(view.model.source==='desktop'&&view.mode!=='mquery'&&view.model.semantics?.status!=='ready'){
       const dictionary=await api(`/models/${modelId}/semantics`);
       if(state.view!==view||view.model?.id!==modelId)return;
-      view.model.semantics=semanticSummary(dictionary);
+      updateModelSemantics(modelId,semanticSummary(dictionary));
       if(!view.model.semantics.can_answer){await openSemantics(modelId);toast('先建立初始语义词典，再继续这条需求');return;}
     }
     if(view.busy||view.loading||view.syncing)return;
@@ -501,7 +566,7 @@ $('#connect-open').onclick=guard(openConnections);$('#calibration-open').onclick
 $('#analysis-templates-open').onclick=guard(()=>openAnalysisTemplates());
 $('#template-return').onclick=()=>{const target=state.view.templateReturn;if(target){saveDraft();workspace.restore(target);showView();}};
 $('#search-toggle').onclick=()=>{const input=$('#history-search');input.hidden=!input.hidden;if(!input.hidden)input.focus();else{input.value='';renderHistory();}};
-$('#history-search').oninput=renderHistory;$('#field-search').oninput=renderContext;
+$('#history-search').oninput=renderHistory;$('#field-search').oninput=renderModelTree;
 $('#refresh-model').onclick=guard(syncCurrentModel);
 $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.view.conversation)newChat('mquery');state.view.queryName=query;$('#query-select').value=query;};
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
@@ -531,13 +596,24 @@ document.addEventListener('click',guard(async e=>{
   }
   if(el.dataset.mode)switchMode(el.dataset.mode);
   if(el.dataset.contextTab){state.contextTab=el.dataset.contextTab;$$('[data-context-tab]').forEach(b=>{const active=b===el;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));});renderContext();}
-  if(el.dataset.prompt!==undefined){$('#prompt').value=MODES[state.view.mode].cards[Number(el.dataset.prompt)][3];$('#prompt').focus();}
-  if(el.dataset.ref){const input=$('#prompt'),start=input.selectionStart;input.setRangeText(el.dataset.ref,start,input.selectionEnd,'end');input.focus();}
-  if(el.id==='empty-connect'||el.id==='rescan')await openConnections();
+  if(el.dataset.prompt!==undefined){
+    const input=$('#prompt'),cards=MODES[state.view.mode].cards;
+    const previous=cards.find(card=>input.value.startsWith(card[3]));
+    const draft=previous?input.value.slice(previous[3].length):input.value;
+    input.value=cards[Number(el.dataset.prompt)][3]+draft;
+    state.view.draft=input.value;
+    input.focus();
+  }
+  if(el.dataset.ref){
+    const input=$('#prompt');
+    input.setRangeText(el.dataset.ref,input.selectionStart,input.selectionEnd,'end');
+    state.view.draft=input.value;
+    contextLayout.dismissOverlay();
+    input.focus();
+  }
+  if(el.id==='welcome-connect'||el.id==='rescan')await openConnections();
   if(el.id==='manage-dictionaries')await openDictionaryLibrary();
-  if(el.id==='demo-load')useModel(await post('/models/demo'));
-  if(el.dataset.port){const reportName=$('#connection-report-name')?.value.trim()||'';el.disabled=true;el.textContent='正在读取模型…';try{const model=await post('/models/connect',{port:Number(el.dataset.port),report_name:reportName});useModel(model,true);toast(model.semantics?.dictionary_notice?.message||(model.semantics?.status==='ready'?model.semantics.stage:'已读取 Desktop 模型'));}catch(err){await openConnections();throw err;}}
-  if(el.dataset.snapshot)useModel(await api(`/models/${el.dataset.snapshot}`));
+  if(el.id==='demo-load'||el.dataset.port||el.dataset.snapshot){await selectConnection(el);return;}
   if(el.dataset.query){const ctx=state.view.model.context,code=ctx.table_queries[el.dataset.query]??ctx.shared_expressions[el.dataset.query];showModal(el.dataset.query,'POWER QUERY',`${codeBlock(code,'powerquery')}<div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">在清洗助手中使用</button></div>`);}
   if(el.dataset.useQuery){newChat('mquery');state.view.queryName=el.dataset.useQuery;$('#query-select').value=el.dataset.useQuery;$('#modal').close();}
   if(el.dataset.conversation)await openConversation(el.dataset.conversation);

@@ -5,11 +5,15 @@ import {businessData,hasBusinessKnowledge,businessMarkup,businessEditMarkup,busi
 const $=(selector,root)=>root.querySelector(selector);
 const states={confirmed:'用户已确认',candidate:'候选含义 · 待确认',unresolved:'业务含义未知'};
 const kinds={table:'表',column:'字段',measure:'度量值'};
-export const semanticSummary=p=>({status:p.status,stage:p.stage,coverage:p.coverage,total:p.entries.length,
-  confirmed:p.entries.filter(e=>e.state==='confirmed').length,
-  can_answer:hasBusinessKnowledge(p)||p.status==='ready'||!!p.has_history||p.entries.some(e=>['candidate','confirmed'].includes(e.state)||e.previous_definition),
-  pending:p.entries.filter(e=>e.state==='unresolved').length,
-  ...(p.dictionary_notice?{dictionary_notice:p.dictionary_notice}:{})});
+export function semanticSummary(p) {
+  const confirmed=p.entries.filter(entry=>entry.state==='confirmed');
+  return {status:p.status,stage:p.stage,coverage:p.coverage,total:p.entries.length,confirmed:confirmed.length,
+    search_names:confirmed.filter(entry=>entry.business_name||entry.aliases?.length)
+      .map(({kind,table,name,business_name,aliases})=>({kind,table,name,business_name,aliases})),
+    can_answer:hasBusinessKnowledge(p)||p.status==='ready'||!!p.has_history||p.entries.some(e=>['candidate','confirmed'].includes(e.state)||e.previous_definition),
+    pending:p.entries.filter(e=>e.state==='unresolved').length,
+    ...(p.dictionary_notice?{dictionary_notice:p.dictionary_notice}:{})};
+}
 
 function facts(entry) {
   const f=entry.facts;

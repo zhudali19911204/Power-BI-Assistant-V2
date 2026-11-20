@@ -5,6 +5,80 @@ import {parseHTML} from 'linkedom';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
+test('first report selection resumes the unsent question and attachments in their own workspace',async()=>{
+  const {window,document}=parseHTML(await readFile(new URL('../frontend/index.html',import.meta.url),'utf8'));
+  const $=s=>document.querySelector(s),modal=$('#modal'),input=$('#prompt');
+  Object.defineProperty($('#query-select'),'value',{value:'',writable:true});
+  modal.showModal=()=>{modal.open=true;};
+  modal.close=()=>{modal.open=false;modal.dispatchEvent(new window.Event('close'));};
+  const context={tables:{Sales:[]},measures:[],relationships:[],table_queries:{},shared_expressions:{}};
+  const model={id:'real',name:'销售报表',source:'desktop',live:true,semantics:{status:'ready'},context};
+  const demo={id:'demo',name:'示例模型',source:'demo',live:false,context};
+  const file=Object.assign(new Blob(['screenshot'],{type:'image/png'}),{name:'截图.png'});
+  const image={id:'b'.repeat(32),name:file.name,url:'/api/images/'+'b'.repeat(32)};
+  let pendingConnect,pendingUpload,focusCount=0;
+  input.focus=()=>{focusCount++;};
+  const requests=[],savedGlobals={};
+  const responses={'/api/settings':{ready:true},'/api/models':[], '/api/conversations':[], '/api/ui/layout':{},
+    '/api/desktop/instances':[{port:51001,report:{name:model.name}}],'/api/models/connect':model,
+    '/api/models/demo':demo,'/api/models/real/connection':{model_id:model.id,live:true,connection:{status:'connected'}},
+    '/api/images':image};
+  async function fetchMock(path){
+    requests.push(path);
+    if(!Object.hasOwn(responses,path))throw new Error('Unexpected '+path);
+    if(path==='/api/models/connect')await pendingConnect;
+    if(path==='/api/images')await pendingUpload;
+    return Response.json(responses[path]);
+  }
+  for(const [key,value] of Object.entries({document,window,fetch:fetchMock,innerWidth:1440,setInterval:()=>0,
+    requestAnimationFrame:setImmediate,cancelAnimationFrame:clearImmediate})){
+    savedGlobals[key]=Object.getOwnPropertyDescriptor(globalThis,key);
+    Object.defineProperty(globalThis,key,{value,writable:true,configurable:true});
+  }
+  async function click(selector){$(selector).click();await tick();await tick();}
+  function draft(text){input.value=text;input.dispatchEvent(new window.Event('input',{bubbles:true}));}
+  async function paste(){
+    const event=new window.Event('paste',{bubbles:true,cancelable:true});
+    Object.defineProperty(event,'clipboardData',{value:{items:[{kind:'file',type:file.type,getAsFile:()=>file}]}});
+    input.dispatchEvent(event);await tick();await tick();
+  }
+  try{
+    await import('../frontend/app.js?first-connection-test');await tick();await tick();
+    draft('按月计算销售额');await paste();
+    const imageKey=$('.image-draft').dataset.imageKey;
+    await $('#composer-form').onsubmit({preventDefault(){}});
+    assert.equal($('#modal-title').textContent,'连接 Power BI');
+    await click('#modal-close');assert.equal(input.value,'按月计算销售额');
+    await click('#welcome-connect');await click('[data-port]');
+    assert.equal(input.value,'按月计算销售额');assert.equal($('.image-draft').dataset.imageKey,imageKey);
+    assert.equal($('.image-draft img').getAttribute('src'),image.url);
+    assert.ok(focusCount);assert.equal(modal.open,false);assert.equal($('#welcome-connect'),null);
+    assert.equal($('#send-button').disabled,false);
+
+    await click('#connect-open');await click('#demo-load');
+    assert.equal(input.value,'');assert.equal($('.image-draft'),null);
+    await click('[data-mode="analysis"]');draft('比较各地区的销售额');
+    let finishUpload;pendingUpload=new Promise(resolve=>{finishUpload=resolve;});
+    await paste();assert.ok($('.image-draft.uploading'));
+    let finishConnect;pendingConnect=new Promise(resolve=>{finishConnect=resolve;});
+    await click('#welcome-connect');await click('[data-port]');
+    await click('#modal-close');await click('[data-mode="dax"]');draft('另一个工作区');
+    finishConnect();await tick();await tick();
+    assert.equal(input.value,'另一个工作区');assert.equal($('#connection-label').textContent,'示例模型');
+    assert.equal($('.image-draft'),null);
+    await click('[data-mode="analysis"]');await click('#welcome-connect');await click('[data-port]');
+    assert.equal(input.value,'比较各地区的销售额');assert.ok($('.image-draft.uploading'));
+    finishUpload();await tick();await tick();
+    assert.equal($('.image-draft img').getAttribute('src'),image.url);assert.equal($('#send-button').disabled,false);
+    assert.equal(requests.filter(p=>p==='/api/conversations').length,1); // Initial history load only.
+    assert.equal($('#welcome-connect'),null);
+  }finally{
+    for(const [key,descriptor] of Object.entries(savedGlobals)){
+      if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];
+    }
+  }
+});
+
 test('actual app navigation keeps background streams, drafts and independent send controls',async()=>{
   const html=await readFile(new URL('../frontend/index.html',import.meta.url),'utf8');
   const {window,document}=parseHTML(html),savedGlobals={};
@@ -23,7 +97,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const layoutWrites=[];
   const settings={ready:true,model:'test-service',active_profile_id:'profile',name:'测试服务',
     reasoning_level:'low',reasoning_control:{supported:true}};
-  const model={id:'model',name:'测试模型',source:'desktop',live:true,semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
+  const model={id:'model',name:'测试模型',source:'desktop',live:false,connection:{status:'disconnected'},semantics:{status:'inventory',coverage:0,total:1,confirmed:0},
     context:{tables:{事实表:[{name:'金额',dtype:'double'}],度量表:[]},measures:[],relationships:[],table_queries:{事实表:'let x=1 in x'},shared_expressions:{}}};
   const knownModels=new Map([[model.id,model]]),syncRequests=[];let pendingSync=null,failSync=false;
   function refreshedModel(previous){
@@ -35,7 +109,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
   let nextId=0,pendingPreview=null,pendingSemantics=null;
   const imageMeta={id:'a'.repeat(32),name:'截图.png',url:'/api/images/'+'a'.repeat(32),mime_type:'image/png',width:80,height:40,size:100};
   const uploads=[],cancellations=[],writes=[],dictionaryDeletes=[],dictionaryAssociations=[];let failWrite=true;
-  const intervals=[];let connectionStatus='connected',connectionPort=51413;
+  const intervals=[];let connectionStatus='disconnected',connectionPort=51413;
   let semanticProfile={model_id:'model',status:'inventory',stage:'本地事实已整理',error:'',coverage:0,entries:[{
     id:'amount',kind:'column',table:'事实表',name:'金额',facts:{dtype:'double'},state:'unresolved',business_name:'金额',
     meaning:'业务口径待确认',role:'数值',unit:'',aliases:[]}]};
@@ -160,8 +234,43 @@ test('actual app navigation keeps background streams, drafts and independent sen
   async function click(selector){$(selector).click();await tick();await tick();}
   function draft(text){$('#prompt').value=text;$('#prompt').dispatchEvent(new window.Event('input',{bubbles:true}));}
   async function send(text){draft(text);$('#composer-form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();}
+  async function pollConnection(status){
+    connectionStatus=status;intervals.find(timer=>timer.ms===3000).callback();await tick();await tick();
+  }
   try {
     await import('../frontend/app.js?navigation-test');await tick();await tick();
+    assert.ok($('#messages #welcome-connect'));
+    await click('[data-mode="mquery"]');
+    assert.equal($('#connection-label').textContent,'等待 Desktop');
+    assert.equal($('#messages #welcome-connect').textContent,'连接 Power BI 报表');
+    await click('#welcome-connect');
+    assert.equal(modal.open,true);assert.equal($('#modal-title').textContent,'连接 Power BI');
+    await click('#modal-close');
+    await pollConnection('connected');assert.equal($('#welcome-connect'),null);
+    draft('清洗查询的待发送草稿');
+    const snapshotFields=$('#model-tree').firstChild;
+    await pollConnection('disconnected');
+    assert.ok($('#messages #welcome-connect'));
+    assert.equal($('#prompt').value,'清洗查询的待发送草稿');
+    assert.equal($('#model-tree').firstChild,snapshotFields);
+    await pollConnection('connected');
+    assert.equal($('#welcome-connect'),null);assert.equal($('#prompt').value,'清洗查询的待发送草稿');
+    await click('[data-mode="dax"]');
+    assert.equal($('#welcome-connect'),null);
+    const shortcuts=$('#prompt-actions');
+    assert.equal(shortcuts.hidden,false);
+    assert.deepEqual([...shortcuts.querySelectorAll('button')].map(b=>b.textContent),['生成指标','解释 DAX','优化公式']);
+    await click('#prompt-actions [data-prompt="0"]');
+    const starter=$('#prompt').value;
+    draft(starter+'本月的采购总额');
+    await click('#prompt-actions [data-prompt="1"]');
+    assert.match($('#prompt').value,/请解释下面的 DAX.+\n本月的采购总额$/);
+    await click('#prompt-actions [data-prompt="1"]');
+    assert.equal($('#prompt').value.split('请解释下面的 DAX').length,2);
+    draft('SUM(费用[金额])');
+    await click('#prompt-actions [data-prompt="2"]');
+    assert.match($('#prompt').value,/请检查并优化.*\nSUM\(费用\[金额\]\)$/);
+    assert.equal(streams.size,0);
     assert.equal($('#context-resizer').getAttribute('aria-valuenow'),'360');
     assert.equal($('#sidebar-resizer').getAttribute('aria-valuenow'),'300');
     await click('#toggle-context');assert.equal($('#toggle-context').getAttribute('aria-expanded'),'false');
@@ -175,6 +284,30 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.deepEqual(layoutWrites.at(-1),{sidebar_width:316});
     assert.equal($('#connection-label').textContent,'Desktop 已连接');
     assert.equal($('#active-llm').textContent,'test-service · 低强度');
+    const initialProfile=semanticProfile;
+    semanticProfile={...initialProfile,entries:initialProfile.entries.map(entry=>({
+      ...entry,state:'confirmed',business_name:'已发生费用',aliases:['实际支出'],
+    }))};
+    await click('[data-open-semantics]');await click('#modal-close');
+    globalThis.innerWidth=1000;window.dispatchEvent(new window.Event('resize'));
+    await click('#toggle-context');
+    const fieldSearch=$('#field-search'),prompt=$('#prompt');
+    fieldSearch.value='实际支出';fieldSearch.dispatchEvent(new window.Event('input'));
+    const hit=$('#model-tree [data-ref]');
+    assert.equal(hit.querySelector('strong').textContent,'已发生费用');
+    assert.equal(hit.querySelector('small').textContent,"'事实表'[金额]");
+    draft('按字段排序');
+    // LinkeDOM has no textarea selection API.
+    prompt.selectionStart=1;prompt.selectionEnd=3;
+    prompt.setRangeText=(ref,start,end)=>{prompt.value=prompt.value.slice(0,start)+ref+prompt.value.slice(end);};
+    await click('#model-tree [data-ref]');
+    assert.equal(prompt.value,"按'事实表'[金额]排序");
+    assert.equal($('#toggle-context').getAttribute('aria-expanded'),'false');
+    globalThis.innerWidth=1440;window.dispatchEvent(new window.Event('resize'));
+    semanticProfile=initialProfile;
+    await click('[data-open-semantics]');await click('#modal-close');
+    assert.equal($('#model-tree [data-ref]'),null);
+    fieldSearch.value='';fieldSearch.dispatchEvent(new window.Event('input'));
     const treeNode=$('#model-tree').firstChild;draft('重连期间保留的草稿');
     connectionStatus='reconnecting';intervals.find(timer=>timer.ms===3000).callback();await tick();await tick();
     assert.equal($('#connection-label').textContent,'自动重连中');assert.equal($('#prompt').value,'重连期间保留的草稿');
@@ -291,11 +424,17 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await click('[data-mode="dax"]');assert.equal($('[data-image-drafts]').hidden,true);
     await click('[data-mode="analysis"]');assert.equal($('[data-image-drafts]').querySelectorAll('.image-draft').length,1);
     await send('分析请求');const analysis=streams.get('c1');assert.ok(analysis);
+    assert.equal(shortcuts.hidden,true);
     assert.deepEqual(analysis.body.image_ids,[imageMeta.id]);assert.equal(analysis.body.images,undefined);
     assert.equal($('[data-image-drafts]').hidden,true);
     assert.ok($('#messages').querySelector('.message-image img'));
     await click('[data-open-image]');assert.ok($('#modal-body').querySelector('.image-full-preview'));await click('#modal-close');
     analysis.emit({type:'start',message_id:'answer-c1'});analysis.emit({type:'delta',text:'第一段分析。'});await tick();await tick();
+    const streamingReply=$('#messages article.message.assistant');
+    await pollConnection('disconnected');
+    assert.equal($('#messages article.message.assistant'),streamingReply);
+    assert.ok(streamingReply.textContent.includes('第一段分析。'));assert.equal($('#welcome-connect'),null);
+    await pollConnection('connected');
     assert.equal($('#send-button').disabled,true);
     assert.equal($('#stop-button').disabled,false);assert.equal($('#send-button').getAttribute('aria-label'),'发送消息');
     await click('[data-mode="dax"]');draft('DAX 页面草稿');
