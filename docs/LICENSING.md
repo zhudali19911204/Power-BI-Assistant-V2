@@ -1,137 +1,93 @@
-# 授权安装包与 CD-KEY
+# 授权安装与发布
 
-## 当前授权规则
+本文供签发 CD-KEY 和制作 Windows 安装包的发布者使用。客户只需要交付包和对应机器的 CD-KEY。安装、配置模型服务及第一次连接报表的操作见[使用指南](USER_GUIDE.md)。
 
-- **离线一机一码，支持永久授权或 7 天试用**。同一个机器码可以按需签发两种 CD-KEY；客户粘贴后才能安装。试用期从你生成 CD-KEY 的时间开始，精确持续 **7×24 小时（604800 秒）**，不是从客户首次安装开始。
-- 安装完成后，程序每次启动都会自动验证已保存的授权，无需反复输入。使用过程中也会检查试用到期：到期后拒绝新的 API 请求，正在生成的 DAX/M、分析和语义梳理停止并保留已完成的内容；不会因为一直开着软件就无限试用。浏览器预览参数、静默安装参数和数据目录环境变量都不会关闭正式安装版的授权校验。
-- 使用 Ed25519 签名。发布包仅内嵌验证公钥，不包含签发私钥、发码工具、模型 API Key、用户数据库或已激活的授权文件。
-- CD-KEY 较长是正常现象，请完整复制粘贴。机器码以 `PBI2M-` 开头，永久 CD-KEY 以 `PBI2K-` 开头，试用 CD-KEY 以 `PBI2T-` 开头，不要混淆。安装确认页和试用版窗口标题显示到期时间，统一标明 UTC（北京时间为 UTC+8）。
-- 当前 `2.0.8` 安装包沿用 `2.0.1` 的签发公钥和授权规则，之前发出的永久 CD-KEY 继续有效，未到期试用 CD-KEY 保留原到期日；旧 `2.0.0` 安装包不支持试用 CD-KEY，试用客户必须使用新版安装包。
+## 为客户签发 CD-KEY
 
-这是授权控制，不是无法破解的程序加密。机器码来自 Windows `MachineGuid` 的产品专用哈希，不上传原始标识；同一 Windows 安装中重装助手不会改变机器码，但重装 Windows 可能需要重新发码。克隆系统或主动修改系统标识可能绕过这种设备绑定。离线永久授权不能远程撤销，也不限制相同系统标识下的重装次数。
-
-试用到期时间受数字签名保护，重装软件、删除数据目录或重复输入同一个试用 CD-KEY 不会重新获得 7 天。离线检查依赖系统时间；启动时间早于签发时间会被拒绝，程序本次运行中使用单调计时防止回拨时钟延长试用，但**不能完全防止重启后改时间、恢复系统快照等离线绕过**。需要强制可信时间或远程撤销时，应改用联网授权。
-
-源码运行入口保留开发用途，不要求授权。**不要把源码或发码工具交给客户**；如果源码仓库公开，对方仍可自行运行或修改源码。此机制保护的是你发布的安装版，并不能阻止拥有源码的人自行构建。
-
-## 你给客户发码
-
-1. 只把 `dist\PowerBIAssistant-Setup-2.0.8.exe` 发给客户；操作说明可另附 [详细使用说明](USER_GUIDE.md)。
-2. 客户运行安装包，在“软件授权”页复制机器码发给你。机器码输入框只读，但可以选中后按 Ctrl+C。
-3. 你在项目根目录打开 PowerShell，根据需要运行下面的一条命令。**请复制整行，不要漏掉前面的 Python 路径。**
-
-   永久授权：
-
-   ```powershell
-   .\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin issue --type permanent --machine-code "客户发来的完整 PBI2M-机器码"
-   ```
-
-   7 天试用：
-
-   ```powershell
-   .\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin issue --type trial --machine-code "客户发来的完整 PBI2M-机器码"
-   ```
-
-4. 把输出的完整 `PBI2K-...` 或 `PBI2T-...` 发给客户，客户粘贴到 CD-KEY 输入框，继续安装即可。试用发码时另行显示到期时间；不要把这段说明一起粘贴进 CD-KEY。
-
-旧命令未指定 `--type` 时仍默认生成永久授权。每次新签发的试用密钥都从本次发码时间起算；没有“每台电脑只能试用一次”的限制，是否再次发码由你决定。不要提前批量生成试用密钥后长期存放，否则客户收到时可能只剩几天或已经过期。
-
-也可以另存为文件，工具不会覆盖已存在的文件：
+1. 让客户在**目标电脑**上运行 `PowerBIAssistant-Setup-2.0.8.exe`，在“软件授权”页复制以 `PBI2M-` 开头的完整机器码。它来自 Windows `MachineGuid` 的产品专用哈希。
+2. 在发布电脑的项目根目录打开 PowerShell。按授权用途选择下面一条命令，用客户的实际机器码替换引号中的示例文字。
+3. 将输出的完整 CD-KEY 发给客户。客户粘贴到同一授权页，核对授权类型和试用到期时间，继续安装。发码工具另行打印的授权说明留在文本框外。
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin issue `
-  --type trial `
-  --machine-code "客户发来的完整 PBI2M-机器码" `
-  --out "$env:USERPROFILE\Desktop\customer-cdkey.txt"
+# 永久授权，输出以 PBI2K- 开头
+.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin issue --type permanent --machine-code "客户的完整机器码"
+
+# 七天试用，输出以 PBI2T- 开头
+.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin issue --type trial --machine-code "客户的完整机器码"
 ```
 
-机器码不同必须重新签发。不要把自己的机器码当作客户机器码使用。
+省略 `--type` 时默认签发永久授权。试用从**签发时刻**起持续 604800 秒。安装确认页与试用版窗口标题使用 UTC，北京时间为 UTC+8。同一枚试用码重装后沿用原到期日。再次签发会按新的签发时间计算，发布者可自行决定是否续发。
 
-## 试用转永久
+需要给部署工具提供 UTF-8 文件时，追加 `--out` 并指定尚未存在的文件名。例如使用 `--out "$env:USERPROFILE\Desktop\customer-cdkey.txt"`。完整参数见[签发工具](../scripts/license_admin.py)。
 
-为客户原机器码签发 `--type permanent` 的 CD-KEY，让客户先关闭助手，再重新运行新版安装包，选择原安装位置并输入永久密钥。安装程序会更新授权文件，原有模型配置、会话和业务字典不删除。过期试用无需先启动助手即可转永久。
+## 客户安装、升级和转永久
 
-普通版本升级也应关闭助手、备份用户数据，再运行 2.0.8 安装包覆盖原位置并输入本机有效的原 CD-KEY。无需重新初始化发布密钥，也不需要删除用户数据库。新版本包含同步模型后保留原对话的修复；仅更新源码或刷新旧窗口不能更新已安装的 EXE。详见[覆盖升级步骤](USER_GUIDE.md#从旧安装版升级到-208)。
+| 场景 | 操作 |
+| --- | --- |
+| 首次安装 | 在 Windows 10/11 x64 上运行安装器，输入本机有效 CD-KEY。安装程序按当前 Windows 用户安装，默认位置为 `%LOCALAPPDATA%\Programs\PowerBIAssistant`。运行界面依赖 Edge WebView2 Runtime，读取真实报表还需要本机 Power BI Desktop。 |
+| 从旧版本升级 | 关闭助手，备份实际用户数据目录，再用 2.0.8 安装包覆盖原安装位置，输入有效 CD-KEY。2.0.8 沿用 2.0.1 的签发公钥，原永久码继续有效，未到期的试用码沿用原到期时间。2.0.0 安装器仅支持永久码。 |
+| 试用转永久 | 为原机器码签发永久码，客户关闭助手并重新运行安装器，在原位置输入新码。已过期的试用也可以从安装器直接升级。 |
+| Windows 重装或换机 | 在目标系统重新取得机器码。若机器码已变更，为新码签发授权。 |
 
-## 签发私钥：务必备份
+安装器将有效授权保存到程序旁的 `license.key`。会话、词典和模型服务配置等保存在单独的数据目录，安装版默认为 `%LOCALAPPDATA%\PowerBIAssistant`。设置过 `PBI_DATA_DIR` 的用户应备份该变量指定的目录。卸载程序时用户数据会保留。
 
-本次实现已为当前 Windows 用户初始化签发密钥，位置为：
+授权通过 Ed25519 公钥在本机验证，源码开发入口可直接运行。安装版在启动及运行期间检查授权，试用到期会拒绝新 API 请求并中止正在执行的生成或梳理。离线校验依赖本机标识和时钟，永久码不支持远程撤销。模型服务请求及首次获取引擎依赖仍可能使用网络。
 
-```text
-%LOCALAPPDATA%\PowerBIAssistantPublisher\licensing
-  publisher-key.dpapi   当前 Windows 用户 DPAPI 加密的签发私钥
-  public-key.pem        用于构建安装包的验证公钥
-```
+### 静默部署
 
-私钥没有放在项目或安装包中。DPAPI 文件依赖当前 Windows 用户的解密能力，**仅复制这个文件不等于可跨电脑恢复的备份**。请现在导出一份密码加密备份，密码至少 12 个字符，输入时不会显示，也不要写进命令行：
+将仅含目标电脑完整 CD-KEY 的 UTF-8 文件交给安装器，带 BOM 的文件也可读取。命令行传文件路径，安装器在写入应用前完成校验。安装规则见[安装脚本](../packaging/installer.iss)。
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin export `
-  --out "$env:USERPROFILE\Desktop\powerbi-publisher.backup.pem"
+.\dist\PowerBIAssistant-Setup-2.0.8.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/LICENSEFILE=C:\Deployment\customer-cdkey.txt"
 ```
 
-将备份保存在安全位置，密码单独保存。不要把备份、密码或 DPAPI 私钥发给客户、上传仓库或放进发行目录。丢失签发私钥后无法继续为已有安装包签发有效 CD-KEY。
+## 发布者密钥与迁移
 
-在新的 Windows 用户或电脑上恢复：
+默认目录为 `%LOCALAPPDATA%\PowerBIAssistantPublisher\licensing`。`publisher-key.dpapi` 由当前 Windows 用户的 DPAPI 保护，用于签发。`public-key.pem` 用于构建程序，安装包只嵌入验证公钥。签发私钥、备份及客户 CD-KEY 应与对外分发文件分开保存。
+
+**延续已有发行版时，请使用原签发密钥。** 跨电脑或用户迁移前，应在原发布账户导出密码加密的备份，妥善保管备份并另存密码。仅复制 `publisher-key.dpapi` 无法保证在新账户中解密。丢失私钥且无可用备份时，现有安装包将无法接受新签发的授权。
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin restore `
-  --backup "D:\安全备份\powerbi-publisher.backup.pem"
+# 在原发布账户导出，目标文件必须是新文件。密码交互输入，至少 12 个字符
+.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin export --out "$env:USERPROFILE\Desktop\powerbi-publisher.backup.pem"
+
+# 在新发布账户恢复，目标密钥目录不能已有发布密钥
+.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin restore --backup "D:\安全备份\powerbi-publisher.backup.pem"
 ```
 
-恢复会提示输入备份密码，只允许写入没有现有密钥的目录。可以在子命令前用 `--key-dir "D:\指定目录"` 指定密钥目录。重新构建发布包时也要用这个目录的公钥。
+使用自定义目录时，将 `--key-dir "D:\发布密钥"` 放在 `issue`、`export` 或 `restore` 子命令前。只有建立全新独立授权体系时，才在新目录中执行 `.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin init`。发布已有产品的升级包时沿用原公钥。
 
-如果是第一次在全新的发布环境建立独立的授权体系，才执行：
+## 构建并核对交付物
 
-```powershell
-.\.venv\Scripts\python.exe -X utf8 -m scripts.license_admin init
-```
-
-已有密钥时该命令拒绝覆盖。**升级版本应继续使用原签发密钥**，这样原来的永久 CD-KEY 才能继续使用；不要在每次发布时重新生成一套密钥。
-
-## 重新构建安装包
-
-构建环境需要 Windows、64 位 Python 3.11+ 和 Inno Setup 6。构建脚本只读取公钥，不解密私钥。客户电脑无需安装 Python、Node.js 或 Inno Setup。
+在 Windows 构建机准备 64 位 Python 3.11+、项目虚拟环境及 Inno Setup 6。构建脚本使用公钥生成 PyInstaller 归档，再由 Inno Setup 生成安装器。`--version` 设置安装器版本，API 对外报告的版本在 `backend/app.py` 中单独维护。详见[构建脚本](../scripts/build_desktop.py)和[打包清单](../packaging/powerbi.spec)。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-.\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop
+.\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop --version 2.0.8 --output-dir ".\build\candidate-2.0.8"
+Get-FileHash -Algorithm SHA256 -LiteralPath ".\build\candidate-2.0.8\PowerBIAssistant-Setup-2.0.8.exe"
 ```
 
-可指定公钥及版本：
+示例将当前源码的试构建输出到独立目录，校验时使用本次新生成的散列。默认输出位置为 `dist`，直接在其中重建相同版本可能覆盖同名交付物。默认输入公钥为发布者目录的 `public-key.pem`。使用自定义公钥时追加 `--public-key "D:\发布密钥\public-key.pem"`，可用 `--iscc` 指定编译器。
+
+客户安装器名称为 `PowerBIAssistant-Setup-<版本>.exe`。如果另做分发 ZIP，放入安装器与对应交付版说明书，同时记录 EXE 和 ZIP 的校验值。输出目录中的 `PowerBIAssistant` 文件夹和 `LicenseVerifier.exe` 用于打包与校验。2.0.8 发行件的大小、散列和实际验证范围见[验证记录](VALIDATION.md)。
+
+## 验证与故障定位
+
+日常开发可以在拥有测试依赖的虚拟环境运行授权单元测试。
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop `
-  --public-key "$env:LOCALAPPDATA\PowerBIAssistantPublisher\licensing\public-key.pem" `
-  --version 2.0.8
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q tests\test_licensing.py tests\test_trial_licensing.py
 ```
 
-输出为 `dist\PowerBIAssistant-Setup-<版本>.exe`。`build` 是中间产物；`dist` 下的应用目录和 `LicenseVerifier.exe` 是打包输入，客户只需要 Setup 安装包。
-
-安装包按当前用户安装到 `%LOCALAPPDATA%\Programs\PowerBIAssistant`，不要求管理员权限。签名授权保存在程序旁的 `license.key` 中，用户数据继续保存在 `%LOCALAPPDATA%\PowerBIAssistant`。卸载安装版不会删除用户数据。
-
-运行环境仍需要 Windows 10/11、Edge WebView2 Runtime；读取真实模型需要本机 Power BI Desktop。授权本身完全离线，大模型调用及原有的首次引擎依赖下载仍需要原先的网络条件。
-
-当前没有对 EXE 做商业代码签名，Windows SmartScreen 可能显示未知发布者。CD-KEY 的数字签名与 Windows 代码签名是不同用途，不能互相替代。
-
-## 静默部署
-
-静默安装也必须提供本机有效的 CD-KEY 文件，省略或伪造都不能跳过验证：
+验证真实安装链时，在有签发权限的 Windows 发布机执行下面的命令。它需要已构建的应用目录、`LicenseVerifier.exe`、相应签发密钥和 Inno Setup，会在本机签发测试码、构建独立标识的测试安装器并执行静默安装、启动、到期和卸载检查。自定义环境可传 `--release-dir`、`--key-dir` 和 `--iscc`。完整覆盖项见[发布验证脚本](../scripts/verify_licensed_release.py)。
 
 ```powershell
-.\dist\PowerBIAssistant-Setup-2.0.8.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART `
-  "/LICENSEFILE=C:\Deployment\customer-cdkey.txt"
+.\.venv\Scripts\python.exe -X utf8 -m scripts.verify_licensed_release --release-dir ".\build\candidate-2.0.8"
 ```
 
-授权文件使用 UTF-8，可带 BOM。密钥内容不通过进程命令行传递。不支持通过命令行禁用正式版校验。启动授权失败时，原生窗口显示错误，错误原因同时写入用户数据目录的 `assistant.log`；`--browser` 模式返回非零退出码并记录错误。
-
-## 验证
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_licensing.py tests\test_trial_licensing.py tests\test_api.py tests\test_cancellation.py tests\test_background_generation.py tests\test_semantics.py tests\test_streaming.py -q
-.\.venv\Scripts\python.exe -X utf8 -m scripts.verify_licensed_release
-```
-
-第二个命令需要已构建的发布目录、对应的签发私钥及 Inno Setup。它会生成仅供测试的独立安装器标识，在临时目录验证真实安装和原生窗口，然后关闭测试进程并卸载；不会替换正式安装，不调用大模型、不连接 Power BI，也不读取原有业务数据。自定义发布目录/密钥目录可传入 `--release-dir` / `--key-dir`。
-
-已验证公钥嵌入及敏感数据排除、真实机器码一致性、两种密钥签发、精确 604800 秒边界、签发时间篡改拒绝、无授权启动拒绝、无效/缺失/跨机器/已过期/尚未生效 CD-KEY 的静默安装拒绝、试用安装与授权持久化、安装后的 API 和前端资源、原生 WebView2 窗口与到期标题、实际程序运行中到期返回 403、试用转永久后正常启动，以及删除/替换授权后的再次启动拒绝。真实到期检查使用即将到期的合法试用签名，不修改 Windows 系统时间。交互式安装向导的手动点击和视觉检查尚未执行。
+| 现象 | 检查点 |
+| --- | --- |
+| 安装器拒绝 CD-KEY | 核对机器码属于当前电脑、复制的是完整授权码、签发公钥与安装包匹配。试用码还要检查目标机时间与到期时间。 |
+| 安装后启动时提示授权失败 | 核对程序目录中的 `license.key`。启动失败原因写入用户数据目录下的 `assistant.log`。需要更换有效授权时重新运行安装器。 |
+| Windows 提示未知发布者 | 2.0.8 发布记录未包含商业代码签名。可向分发方核对安装文件 SHA-256。CD-KEY 用于应用自身的授权校验。 |

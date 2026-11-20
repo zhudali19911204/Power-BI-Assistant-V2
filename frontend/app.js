@@ -102,15 +102,21 @@ function showModal(title,eyebrow,html,{wide=false,modelSettings=false}={}) {
   if(!$('#modal').open) $('#modal').showModal();
 }
 function closeModalLayer(){if(modalReturn)modalReturn();else $('#modal').close();}
-function modelSettingsEditing(){return !!$('#model-manager [data-model-form], [data-template-editor], [data-template-run-form]');}
+function modalHasEditor(){
+  return !!$('#model-manager [data-model-form], [data-template-editor], [data-template-run-form], #semantic-workbench:not([hidden]) form', $('#modal'));
+}
 $('#modal-close').onclick=closeModalLayer;
 $('#modal').addEventListener('close',()=>{if($('#modal').open)return;modalReturn=null;modalCleanup?.();modalCleanup=null;});
 $('#modal').addEventListener('cancel',event=>{
   // Escape can dismiss IME input too. Only an explicit close should discard this editor.
-  if(modelSettingsEditing()){event.preventDefault();return;}
+  if(modalHasEditor()){event.preventDefault();return;}
   if(modalReturn){event.preventDefault();modalReturn();}
 });
-$('#modal').addEventListener('click', e=>{if(e.target===$('#modal')&&!modelSettingsEditing()){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModalLayer();}});
+$('#modal').addEventListener('click', e=>{
+  if(e.target!==$('#modal')||modalHasEditor())return;
+  const r=e.target.getBoundingClientRect();
+  if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModalLayer();
+});
 
 function welcome() {
   const mode=MODES[state.view.mode]||MODES.dax;
@@ -216,7 +222,7 @@ function renderControls() {
   if(state.view.conversation?.query_name)$('#query-select').value=state.view.conversation.query_name;
   else if([...$('#query-select').options].some(o=>o.value===query))$('#query-select').value=query;
   state.view.queryName=$('#query-select').value;
-  $('#calibration-open').hidden=state.view.mode!=='dax';
+  $('#calibration-open').hidden=state.view.mode!=='dax'||!state.view.model;
   $('#calibration-label').textContent=state.view.points.length?(state.view.points[0].filters.length?`校准 · ${state.view.points[0].filters.length} 个条件`:'校准 · 全模型'):'校准';
   const strength=state.settings.reasoning_control?.supported?(state.settings.reasoning_level==='high'?'高强度':'低强度'):
     state.settings.reasoning_control?'强度不可调':'';

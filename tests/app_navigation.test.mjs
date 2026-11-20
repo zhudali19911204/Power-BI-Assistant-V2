@@ -44,6 +44,7 @@ test('first report selection resumes the unsent question and attachments in thei
   }
   try{
     await import('../frontend/app.js?first-connection-test');await tick();await tick();
+    assert.equal($('#calibration-open').hidden,true);
     draft('按月计算销售额');await paste();
     const imageKey=$('.image-draft').dataset.imageKey;
     await $('#composer-form').onsubmit({preventDefault(){}});
@@ -53,11 +54,19 @@ test('first report selection resumes the unsent question and attachments in thei
     assert.equal(input.value,'按月计算销售额');assert.equal($('.image-draft').dataset.imageKey,imageKey);
     assert.equal($('.image-draft img').getAttribute('src'),image.url);
     assert.ok(focusCount);assert.equal(modal.open,false);assert.equal($('#welcome-connect'),null);
+    assert.equal($('#calibration-open').hidden,false);
+    const shortcuts=$('#prompt-actions');
+    assert.equal(shortcuts.nextElementSibling,$('#calibration-open'));
+    assert.equal(shortcuts.parentElement.nextElementSibling,$('#composer-form'));
+    await click('#calibration-open');
+    assert.equal($('#modal-title').textContent,'用已知结果校准');
+    await click('#modal-close');
     assert.equal($('#send-button').disabled,false);
 
     await click('#connect-open');await click('#demo-load');
     assert.equal(input.value,'');assert.equal($('.image-draft'),null);
     await click('[data-mode="analysis"]');draft('比较各地区的销售额');
+    assert.equal($('#calibration-open').hidden,true);
     let finishUpload;pendingUpload=new Promise(resolve=>{finishUpload=resolve;});
     await paste();assert.ok($('.image-draft.uploading'));
     let finishConnect;pendingConnect=new Promise(resolve=>{finishConnect=resolve;});
@@ -76,6 +85,69 @@ test('first report selection resumes the unsent question and attachments in thei
     for(const [key,descriptor] of Object.entries(savedGlobals)){
       if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];
     }
+  }
+});
+
+test('business term and analysis convention drafts survive clipboard editing and accidental dialog dismissal',async t=>{
+  const {window,document}=parseHTML(await readFile(new URL('../frontend/index.html',import.meta.url),'utf8'));
+  const $=selector=>document.querySelector(selector),modal=$('#modal');
+  Object.defineProperty($('#query-select'),'value',{value:'',writable:true});
+  modal.showModal=()=>{modal.open=true;};
+  modal.close=()=>{modal.open=false;modal.dispatchEvent(new window.Event('close'));};
+  modal.getBoundingClientRect=()=>({left:100,right:700,top:100,bottom:700});
+  const model={id:'report',name:'销售报表',source:'desktop',live:true,semantics:{status:'ready'},
+    context:{tables:{},measures:[],relationships:[],table_queries:{},shared_expressions:{}}};
+  const responses={'/api/settings':{ready:true},'/api/models':[model],'/api/conversations':[], '/api/ui/layout':{},
+    '/api/models/report/connection':{model_id:model.id,live:true,connection:{status:'connected'}},
+    '/api/models/report/semantics':{status:'ready',stage:'已同步',coverage:0,entries:[]},
+    '/api/semantic-dictionaries':{dictionaries:[]}};
+  const fetch=async path=>{
+    const route=path.split('?')[0];
+    assert.ok(Object.hasOwn(responses,route),route);
+    return Response.json(responses[route]);
+  };
+  for(const [key,value] of Object.entries({document,window,fetch,innerWidth:1440,setInterval:()=>0,
+    requestAnimationFrame:setImmediate,cancelAnimationFrame:clearImmediate})){
+    const previous=Object.getOwnPropertyDescriptor(globalThis,key);
+    Object.defineProperty(globalThis,key,{value,writable:true,configurable:true});
+    t.after(()=>{if(previous)Object.defineProperty(globalThis,key,previous);else delete globalThis[key];});
+  }
+  async function click(selector){$(selector).click();await tick();await tick();}
+  function dispatch(target,type,properties={}){
+    const event=Object.assign(new window.Event(type,{bubbles:true,cancelable:true}),properties);
+    target.dispatchEvent(event);
+    return event;
+  }
+  await import('../frontend/app.js?business-editor-clipboard');await tick();await tick();
+  for(const kind of ['term','convention']){
+    await click('[data-open-semantics]');await click('[data-semantic-tab="business"]');await click(`[data-business-new="${kind}"]`);
+    const form=$('[data-business-form]'),title=form.querySelector('[name="title"]'),meaning=form.querySelector('[name="meaning"]');
+    title.value='本月含税销售额';
+    title.focus();
+    assert.equal(dispatch(title,'keydown',{key:'c',ctrlKey:true}).defaultPrevented,false);
+    assert.equal(dispatch(title,'copy').defaultPrevented,false);
+    meaning.focus();
+    assert.equal(dispatch(meaning,'keydown',{key:'v',ctrlKey:true}).defaultPrevented,false);
+    const pasted=dispatch(meaning,'paste',{clipboardData:{getData:()=>title.value}});
+    assert.equal(pasted.defaultPrevented,false);
+    // Linkedom has no native clipboard default action. Apply the accepted paste to the textarea.
+    meaning.value=pasted.clipboardData.getData('text/plain');dispatch(meaning,'input');
+    dispatch(modal,'click',{clientX:75,clientY:300});
+    assert.equal(modal.open,true);
+    assert.equal(dispatch(modal,'cancel').defaultPrevented,true);
+    assert.equal($('[data-business-form]'),form);
+    assert.equal(meaning.value,'本月含税销售额');
+
+    await click('[data-manage-dictionaries]');
+    assert.equal($('#semantic-workbench').hidden,true);
+    assert.equal(dispatch(modal,'cancel').defaultPrevented,true);
+    await tick();await tick();
+    assert.equal($('#dictionary-library'),null);
+    assert.equal($('#semantic-workbench').hidden,false);
+    assert.equal(modal.open,true);
+    assert.equal($('[data-business-form] [name="meaning"]'),meaning);
+    assert.equal(meaning.value,'本月含税销售额');
+    await click('#modal-close');assert.equal(modal.open,false);
   }
 });
 
