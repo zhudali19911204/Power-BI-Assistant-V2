@@ -16,7 +16,8 @@ def populate(client, model):
     for item in [
         {'kind': 'term', 'title': '总部', 'meaning': '法人 0257', 'confirmed': True,
          'filters': [{'object_id': key, 'values': ['0257']}]},
-        {'kind': 'convention', 'title': '单位', 'meaning': '默认使用千元'},
+        {'kind': 'convention', 'title': '单位', 'meaning': '默认使用千元',
+         'targets': [{'object_id': object_id('measure', 'Fact', 'Actual Amount')}]},
     ]:
         assert client.post(base+'/business/items', json=item).is_success
     response = client.get(base+'/export')
@@ -40,8 +41,8 @@ def test_portable_roundtrip_merges_into_current_dictionary_and_reimports_without
     assert 'source_snapshot' not in document and all('facts' not in e for e in document['entries'])
     dest = app.state.powerbi.save('另一台电脑上的报表', 'desktop', 50002, ctx)
     base = path(dest)
-    local = {'kind':'convention','title':'本地约定','meaning':'保留本地定义'}
-    client.post(base+'/business/items', json=local)
+    local = {'kind':'term','title':'本地术语','meaning':'保留本地定义','scope':'model'}
+    assert client.post(base+'/business/items', json=local).is_success
     original = client.get(base).json()
     p = preview(client, dest, document)
     assert p['compatible'] and p['objects']==1 and p['items']==2 and p['overview']
@@ -55,7 +56,7 @@ def test_portable_roundtrip_merges_into_current_dictionary_and_reimports_without
         assert (entry['meaning'],entry['state'],entry['aliases'])==('保留前导零的编号','confirmed',['CC'])
         data = profile['business_dictionary']
         assert data['overview']==document['overview']
-        assert [i['title'] for i in data['items']]==['本地约定','总部','单位']
+        assert [i['title'] for i in data['items']]==['本地术语','总部','单位']
         assert data['items'][1:]==document['items']
         assert data['items'][1]['filters'][0]['values']==['0257']
         p = preview(client,dest,document)
@@ -85,6 +86,32 @@ def test_changed_schema_preserves_local_reviews_and_marks_imported_records_stale
     after=apply(client,dest,doc,p).json()['profile']
     assert next(e for e in after['entries'] if e['id']==entry['id'])['meaning']=='本地审核结果'
     assert after['business_dictionary']['overview']['description']=='本地总览'
+
+
+def test_v1_unmapped_convention_can_be_imported_for_review_and_wont_overwrite_a_local_repair(setup):
+    app, client, source, ctx, _ = setup
+    doc = populate(client, source)
+    record = next(item for item in doc['items'] if item['kind'] == 'convention')
+    record.update(targets=[], state='confirmed')
+    dest = app.state.powerbi.save('导入旧词典的报表', 'desktop', 50002, ctx)
+    for _ in range(2):
+        plan = preview(client, dest, doc)
+        response = apply(client, dest, doc, plan)
+        assert response.is_success, response.text
+        items = response.json()['profile']['business_dictionary']['items']
+        pending, = (item for item in items if item['id'] == record['id'])
+        assert pending['state'] == 'unresolved' and pending['meaning'] == record['meaning']
+
+    body = {'kind': 'convention', 'title': record['title'], 'meaning': '实际金额默认按百万元汇总',
+            'targets': [{'object_id': object_id('measure', 'Fact', 'Actual Amount')}], 'confirmed': True}
+    response = client.put(path(dest)+'/business/items/'+record['id'], json=body)
+    assert response.is_success, response.text
+    corrected = next(i for i in response.json()['business_dictionary']['items'] if i['id'] == record['id'])
+    plan = preview(client, dest, doc)
+    assert plan['protected'] == 1
+    response = apply(client, dest, doc, plan)
+    assert response.is_success, response.text
+    assert corrected in response.json()['profile']['business_dictionary']['items']
 
 
 def test_stale_preview_busy_target_and_invalid_file_do_not_overwrite(setup):

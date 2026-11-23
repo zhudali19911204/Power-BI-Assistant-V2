@@ -17,8 +17,10 @@ from .streaming import completion_events
 
 ShortText = Annotated[str, Field(min_length=1, max_length=100)]
 ObjectId = Annotated[str, Field(min_length=1, max_length=64)]
+MAPPING_REQUIRED = '分析约定至少需要一个关联模型对象或一条业务筛选映射'
 RULES = '''\n业务词典使用规则：business_dictionary 是业务补充，原生模型结构、关系和度量值 DAX 是计算依据。
-overview 描述业务全貌；terms 连接业务用语与真实对象；conventions 仅在适用范围内补充用户未指定的默认约定。
+overview 描述业务全貌。terms 解释业务用语，可以只有文字释义。词条明确关联了对象或筛选条件时，才将其作为该术语的映射。
+conventions 通过关联对象或筛选映射，在适用范围内补充用户未指定的默认约定。
 只有 confirmed 且未失效的记录可作为已确认语义；candidate 只帮助检索、提出待核实解释，不可偷偷应用候选筛选或默认值。
 用户本轮明确指定的范围优先于默认约定；业务词典不能覆盖 DAX 的计算定义。冲突影响结果时只澄清关键一项。
 filters 是业务映射，不是实际取值存在性的证据；必要时检查真实值，保留文本编号前导零。
@@ -56,7 +58,11 @@ class Filter(Input):
         return self
 
 
-class BusinessEdit(Input):
+def missing_convention_mapping(record):
+    return record.get('kind') == 'convention' and not (record.get('targets') or record.get('filters'))
+
+
+class BusinessItemFields(Input):
     kind: Literal['term', 'convention']
     title: str = Field(min_length=1, max_length=160)
     meaning: str = Field(min_length=1, max_length=2000)
@@ -76,9 +82,15 @@ class BusinessEdit(Input):
             raise ValueError('请填写适用业务主题')
         if self.scope == 'objects' and not self.scope_object_ids:
             raise ValueError('请选择适用对象')
-        if self.kind == 'term' and not (self.targets or self.filters):
-            raise ValueError('业务术语至少关联一个真实模型对象或筛选映射')
         if self.scope != 'objects':self.scope_object_ids = []
+        return self
+
+
+class BusinessEdit(BusinessItemFields):
+    @model_validator(mode='after')
+    def require_mapping(self):
+        if missing_convention_mapping(self.model_dump()):
+            raise ValueError(MAPPING_REQUIRED)
         return self
 
 
@@ -143,10 +155,24 @@ def empty():
     return {'version': 1, 'revision': 0, 'overview': None, 'items': [], 'deleted_ids': []}
 
 
+def flag_unmapped_convention(record):
+    if record['state'] == 'unresolved' or not missing_convention_mapping(record):
+        return False
+    record.update(state='unresolved', stale_reason=MAPPING_REQUIRED, updated_at=now())
+    return True
+
+
 def migrate(profile):
     changed = 'business_dictionary' not in profile
-    profile.setdefault('business_dictionary', empty())
-    if profile['business_dictionary'].pop('generation',None) is not None:changed=True
+    data = profile.setdefault('business_dictionary', empty())
+    if data.pop('generation',None) is not None:changed=True
+    added_reviews = False
+    for item in data['items']:
+        if flag_unmapped_convention(item):
+            added_reviews = True
+    if added_reviews:
+        data['revision'] += 1
+        changed = True
     for entry in profile['entries']:
         if 'usage_notes' not in entry:
             entry['usage_notes'] = ''

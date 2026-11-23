@@ -311,20 +311,27 @@ test('actual app navigation keeps background streams, drafts and independent sen
   }
   try {
     await import('../frontend/app.js?navigation-test');await tick();await tick();
-    assert.ok($('#messages #welcome-connect'));
+    assert.equal($('#messages #welcome-connect'),null);
+    assert.equal($('#welcome-title').textContent,'需要计算什么指标？');
     await click('[data-mode="mquery"]');
     assert.equal($('#connection-label').textContent,'等待 Desktop');
-    assert.equal($('#messages #welcome-connect').textContent,'连接 Power BI 报表');
-    await click('#welcome-connect');
+    assert.equal($('#messages #welcome-connect'),null);
+    assert.equal($('#welcome-title').textContent,'需要怎样转换数据？');
+    await click('#connect-open');
     assert.equal(modal.open,true);assert.equal($('#modal-title').textContent,'连接 Power BI');
     await click('#modal-close');
     await pollConnection('connected');assert.equal($('#welcome-connect'),null);
     draft('清洗查询的待发送草稿');
     const snapshotFields=$('#model-tree').firstChild;
     await pollConnection('disconnected');
-    assert.ok($('#messages #welcome-connect'));
+    assert.equal($('#messages #welcome-connect'),null);
+    assert.equal($('#welcome-title').textContent,'需要怎样转换数据？');
+    assert.equal($('#connection-label').textContent,'等待 Desktop');
     assert.equal($('#prompt').value,'清洗查询的待发送草稿');
     assert.equal($('#model-tree').firstChild,snapshotFields);
+    await click('#connect-open');
+    assert.equal(modal.open,true);assert.equal($('#modal-title').textContent,'连接 Power BI');
+    await click('#modal-close');
     await pollConnection('connected');
     assert.equal($('#welcome-connect'),null);assert.equal($('#prompt').value,'清洗查询的待发送草稿');
     await click('[data-mode="dax"]');

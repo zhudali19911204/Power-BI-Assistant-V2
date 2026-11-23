@@ -93,7 +93,8 @@ def test_reassociating_history_preserves_business_edits_and_deleted_records(setu
     app,client,state,engine,built=setup
     old=connect(client,engine());built(old)
     business=app.state.semantics.business
-    body=BusinessEdit(kind='convention',title='默认分析范围',meaning='用户未指定时的范围说明',confirmed=True)
+    body=BusinessEdit(kind='convention',title='默认分析范围',meaning='用户未指定时的范围说明',confirmed=True,
+                      targets=[{'object_id':object_id('table','Sales','Sales')}])
     first=business.edit(old['id'],body)['business_dictionary']['items'][0]
     second=business.edit(old['id'],body.model_copy(update={'title':'删除测试'}))['business_dictionary']['items'][1]
     new=connect(client,engine(name='另存报表',path=r'F:\另存报表.pbix',port=61111,pid=77))

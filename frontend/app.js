@@ -71,6 +71,13 @@ async function api(path, options={}) {
   const response = await fetch('/api'+path, {headers:{'Content-Type':'application/json'}, ...options});
   if(!response.ok) {
     const body = await response.json().catch(()=>({detail:'服务暂时不可用'}));
+    if(Array.isArray(body.detail)&&body.detail.every(issue=>typeof issue?.msg==='string')){
+      const messages=body.detail.map(issue=>{
+        const field=issue.loc?.filter(part=>part!=='body').join('.');
+        return [field,issue.msg.replace(/^Value error,\s*/,'')].filter(Boolean).join(' · ');
+      });
+      throw new Error(messages.join('；')||'请检查填写内容');
+    }
     throw new Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail));
   }
   return response.json();

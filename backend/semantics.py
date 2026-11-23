@@ -264,6 +264,7 @@ class SemanticService:
         row=self.db.one('SELECT payload,fingerprint FROM current_model_semantics WHERE model_id=?',(model_id,))
         if not row or (expected and row['fingerprint']!=expected):return {'status':'inventory','total':0,'confirmed':0,'coverage':0,'stage':'等待语义梳理','can_answer':False,'search_names':[]}
         p=json.loads(row['payload'])
+        business.migrate(p)
         confirmed=[entry for entry in p['entries'] if entry['state']=='confirmed']
         return {k:p[k] for k in ('status','stage','coverage')} | {
             'total':len(p['entries']),'confirmed':len(confirmed),

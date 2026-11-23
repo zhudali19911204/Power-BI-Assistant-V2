@@ -61,7 +61,7 @@ class Overview(business.OverviewEdit, RecordState):
     pass
 
 
-class Item(business.BusinessEdit, RecordState):
+class Item(business.BusinessItemFields, RecordState):
     id: str = Field(pattern='^[A-Za-z0-9_-]{1,64}$')
 
 
@@ -179,6 +179,10 @@ def import_file(service, model_id, document, *, expected=None):
             current = data['overview'] if overview else items.get(record.id)
             saved = record.model_dump(exclude={'revision', 'confirmed'}, exclude_none=True)
             saved['reviewed_at'] = record.reviewed_at
+            # Version 1 files can contain conventions written before mappings were required.
+            if business.missing_convention_mapping(saved) and current and not business.missing_convention_mapping(current):
+                result['protected'] += 1
+                continue
             refs = business.refs(saved)
             missing = refs - objects.keys()
             invalid = {f['object_id'] for f in saved.get('filters', [])
@@ -191,6 +195,7 @@ def import_file(service, model_id, document, *, expected=None):
                     continue
                 saved.update(state='unresolved', stale_reason='导入文件与当前模型不一致，请核对后确认',
                              affected_object_ids=sorted(missing), updated_at=now())
+            business.flag_unmapped_convention(saved)
             if overview:
                 data['overview'] = saved
                 profile['overview_pending'] = document.overview_pending or not compatible

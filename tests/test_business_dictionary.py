@@ -41,6 +41,30 @@ def test_existing_dictionary_migrates_without_rewriting_native_facts_or_definiti
     assert [{k: v for k, v in e.items() if k != 'usage_notes'} for e in current['entries']] == p['entries']
 
 
+def test_legacy_unmapped_convention_keeps_its_text_until_reviewed_with_a_mapping(setup):
+    app, client, model, ctx, _ = setup
+    service = app.state.semantics
+    ready(app, model, ctx)
+    body = term(kind='convention', title='默认金额单位', meaning='金额默认按千元展示', confirmed=True)
+    profile = client.post(url(model, '/items'), json=body).json()
+    original, = profile['business_dictionary']['items']
+    original['targets'] = []
+    service._store(model['id'], profile)
+
+    assert service.summary(model['id'])['dictionary_notice']['pending_business'] == 1
+    current = service.get(model['id'])['business_dictionary']
+    pending, = current['items']
+    assert pending['state'] == 'unresolved' and pending['meaning'] == original['meaning']
+    assert service.get(model['id'])['business_dictionary'] == current
+    selected = payload(service, model, '默认金额单位')['business_dictionary']
+    assert not selected['conventions'] and selected['stale'][0]['id'] == original['id']
+    assert original['meaning'] not in encode(selected)
+
+    assert client.put(url(model, '/items/' + original['id']), json=body).is_success
+    restored, = payload(service, model, '默认金额单位')['business_dictionary']['conventions']
+    assert restored['state'] == 'confirmed' and restored['id'] == original['id']
+
+
 def test_crud_preserves_leading_zeros_checks_revisions_and_never_confirms_implicitly(setup):
     app, client, model, ctx, _ = setup
     r = client.put(url(model, '/overview'), json={'description': '用于费用和材料消耗分析', 'topics': ['费用'], 'confirmed': True})
@@ -64,7 +88,7 @@ def test_crud_preserves_leading_zeros_checks_revisions_and_never_confirms_implic
 
 
 @pytest.mark.parametrize('changes', [
-    {'targets': [{'object_id': 'invented'}]}, {'targets': []},
+    {'targets': [{'object_id': 'invented'}]},
     {'scope': 'topic'}, {'scope': 'objects'}, {'scope': 'objects', 'scope_object_ids': ['missing']},
     {'filters': [{'object_id': object_id('measure', 'Fact', 'Actual Amount'), 'values': ['1']}]},
     {'filters': [{'object_id': object_id('column', 'Dim Cost Center', 'CC Number'), 'values': ['1', '2']}]},
@@ -73,6 +97,42 @@ def test_crud_preserves_leading_zeros_checks_revisions_and_never_confirms_implic
 def test_invalid_or_invented_business_mappings_are_rejected(setup, changes):
     _, client, model, _, _ = setup
     assert client.post(url(model, '/items'), json=term(**changes)).status_code == 422
+
+
+def test_model_wide_term_can_be_saved_confirmed_and_retrieved_without_a_mapping(setup):
+    app, client, model, ctx, _ = setup
+    ready(app, model, ctx)
+    body = term(scope='model', targets=[])
+    response = client.post(url(model, '/items'), json=body)
+    assert response.is_success, response.text
+    item, = response.json()['business_dictionary']['items']
+    assert item['state'] == 'candidate'
+    response = client.put(url(model, '/items/' + item['id']), json={**body, 'confirmed': True})
+    assert response.is_success, response.text
+    saved, = payload(app.state.semantics, model, '解释费用实绩')['business_dictionary']['terms']
+    assert saved['state'] == 'confirmed' and saved['meaning'] == body['meaning']
+    assert saved['objects'] == [] and saved['filters'] == []
+
+
+@pytest.mark.parametrize('confirmed', [False, True])
+def test_convention_requires_a_target_or_filter_mapping_even_with_scope_objects(setup, confirmed):
+    _, client, model, _, _ = setup
+    field = object_id('column', 'Dim Cost Center', 'CC Number')
+    body = {'kind': 'convention', 'title': '总部分析口径', 'meaning': '默认分析总部费用', 'confirmed': confirmed}
+    endpoint = url(model, '/items')
+    assert client.post(endpoint, json=body).status_code == 422
+    assert client.post(endpoint, json={**body, 'scope': 'objects', 'scope_object_ids': [field]}).status_code == 422
+    response = client.post(endpoint, json={**body, 'targets': [{'object_id': field}]})
+    assert response.is_success, response.text
+    item, = response.json()['business_dictionary']['items']
+    item_url = endpoint + '/' + item['id']
+    assert client.put(item_url, json=body).status_code == 422
+    filters = [{'object_id': field, 'operator': 'eq', 'values': ['0257']}]
+    response = client.put(item_url, json={**body, 'filters': filters})
+    assert response.is_success, response.text
+    updated, = response.json()['business_dictionary']['items']
+    assert updated['id'] == item['id'] and updated['filters'] == filters and updated['targets'] == []
+    assert updated['state'] == ('confirmed' if confirmed else 'candidate')
 
 
 def test_business_aliases_retrieve_multiple_objects_without_becoming_confirmed_object_aliases(setup):
@@ -94,7 +154,8 @@ def test_overview_and_scoped_conventions_and_budget_are_delivered_separately(set
     ready(app, model, ctx)
     client.put(url(model, '/overview'), json={'description': '业务全貌说明', 'confirmed': True})
     client.post(url(model, '/items'), json=term(topic='费用', confirmed=True))
-    common = {'kind': 'convention', 'meaning': '用户未指定时说明采用的默认条件', 'confirmed': True}
+    common = {'kind': 'convention', 'meaning': '用户未指定时说明采用的默认条件', 'confirmed': True,
+              'targets': [{'object_id': object_id('measure', 'Fact', 'Actual Amount')}]}
     for item in [dict(title='全局说明'), dict(title='费用分析约定', scope='topic', topic='费用'),
                  dict(title='采购分析约定', scope='topic', topic='采购'),
                  dict(title='成本中心约定', scope='objects', scope_object_ids=[object_id('column', 'Dim Cost Center', 'CC Number')])]:

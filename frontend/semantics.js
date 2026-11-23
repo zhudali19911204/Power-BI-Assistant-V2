@@ -96,7 +96,7 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
     const count=p.objects+p.items+Number(p.overview);
     return `<section class="notice semantic-import-preview" aria-label="导入预览"><strong>导入预览 · ${esc(name)}</strong>
       <p>将合并 ${p.objects} 项对象定义、${p.items} 项业务术语或约定${p.overview?'和业务总览':''}。${p.unmatched?`当前模型缺少 ${p.unmatched} 个对象，已跳过。`:''}</p>
-      <p>${p.compatible?'同一对象和同一条业务记录采用文件中的定义，其他已有内容保留。':`模型结构或元数据有差异，导入内容需复核。保留当前词典已有的 ${p.protected} 项人工定义。`}${p.review?`共 ${p.review} 项待复核。`:''}</p>
+      <p>${p.compatible?'文件与当前模型匹配，本次合并的条目采用文件中的定义。':'模型结构或元数据有差异，导入内容需复核。'}${p.protected?`保留当前词典已有的 ${p.protected} 项定义。`:''}${p.review?`共 ${p.review} 项待复核。`:''}</p>
       <button type="button" class="secondary-button" data-cancel-semantic-import>取消</button>
       ${count?'<button type="button" class="primary-button" data-confirm-semantic-import>确认导入</button>':''}</section>`;
   }
@@ -177,9 +177,16 @@ export async function mountSemanticWorkbench(root,{api,modelId,onUpdate=()=>{},o
   }
   async function saveBusiness(confirmed) {
     const form=$('[data-business-form]',root);if(!form.reportValidity())return;
+    const body=businessBody(form,businessEditing,confirmed);
+    if(body.kind==='convention'&&!body.targets.length&&!body.filters.length){
+      const hint=$('[data-required-business-mapping]',form);
+      feedback(hint.textContent,true);
+      hint.focus();
+      return;
+    }
     const path=businessEditing.kind==='overview'?'overview':'items'+(businessEditing.record?.id?'/'+businessEditing.record.id:'');
     const method=businessEditing.kind==='overview'||businessEditing.record?.id?'PUT':'POST';
-    profile=await api(`/models/${modelId}/semantics/business/${path}`,{method,body:JSON.stringify(businessBody(form,businessEditing,confirmed))});
+    profile=await api(`/models/${modelId}/semantics/business/${path}`,{method,body:JSON.stringify(body)});
     businessEditing=null;onUpdate(semanticSummary(profile));render();feedback(confirmed?'业务定义已确认，将用于后续查询和回答':'已保存为候选，尚不作为已确认业务条件');schedule();
   }
   function editBusiness(kind,record=null) {pendingImport=null;businessEditing={kind,record,revision:businessData(profile).revision};render();}

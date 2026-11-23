@@ -1,6 +1,6 @@
 import {escapeHtml as esc} from './markdown.js';
 
-const states={candidate:'候选 · 待确认',confirmed:'用户已确认',unresolved:'模型已变化 · 待复核'};
+const states={candidate:'候选 · 待确认',confirmed:'用户已确认',unresolved:'待复核'};
 const kinds={table:'表',column:'字段',measure:'度量值'};
 const label=e=>`${kinds[e.kind]} · ${e.table}${e.kind==='table'?'':'['+e.name+']'}`;
 const lines=value=>value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
@@ -26,7 +26,7 @@ export function businessMarkup(profile,tab) {
       <button type="button" class="secondary-button" data-business-overview>编辑业务总览</button></article></div>`;
   }
   const ref=id=>{const entry=profile.entries.find(e=>e.id===id);return entry?label(entry):'已删除对象（请重新关联）';};
-  return `<p class="notice">业务术语和分析约定由你填写，AI 不会生成。术语可关联指标、维度或筛选值；分析约定只在适用范围内补充未指定条件。</p>
+  return `<p class="notice">业务术语用于解释名称和业务含义。分析约定通过关联对象或筛选映射，在用户未指定条件时补充默认做法。</p>
     <div class="semantic-tools"><button type="button" class="secondary-button" data-business-new="term">新增业务术语</button><button type="button" class="secondary-button" data-business-new="convention">新增分析约定</button></div>
     <div data-semantic-entries>${data.items.map(item=>`<article class="semantic-entry" data-semantic-entry="${esc(item.id)}">
       <div class="semantic-entry-heading"><strong>${esc(item.title)}</strong>${status(item)}</div>
@@ -57,8 +57,9 @@ export function filterRow(entries,filter={}) {
 
 export function businessEditMarkup(edit,entries) {
   const r=edit.record||{},isOverview=edit.kind==='overview';
+  const help={overview:'描述模型用途、主要业务联系和重要注意事项。',term:'适用范围选「整个模型」时，只需填写术语名称和业务含义。',convention:'说明用户未指定条件时采用的默认做法，并在下方添加映射。'};
   return `<form data-business-form><button type="button" class="text-link" data-business-back>返回词典</button>
-    <p class="notice">${isOverview?'描述模型用途、主要业务联系和重要注意事项。':'说明业务含义与使用方式，引用现有对象。分析约定仅补充用户未指定的条件。'} 保存候选与确认分开处理。</p>
+    <p class="notice">${help[edit.kind]}</p>
     ${isOverview?`<label class="form-field">业务总览<textarea name="description" rows="7" maxlength="4000" required>${esc(r.description||'')}</textarea></label>
       <label class="form-field">业务主题（每行一个）<textarea name="topics" rows="3">${esc((r.topics||[]).join('\n'))}</textarea></label>`:
       `<label class="form-field">${edit.kind==='term'?'业务术语':'分析约定'}名称<input name="title" maxlength="160" required value="${esc(r.title||'')}"></label>
@@ -67,8 +68,9 @@ export function businessEditMarkup(edit,entries) {
       <label class="form-field">适用范围<select name="scope" data-business-scope>${[['model','整个模型'],['topic','指定业务主题'],['objects','指定模型对象']].map(([value,name])=>`<option value="${value}" ${(r.scope||'model')===value?'selected':''}>${name}</option>`).join('')}</select></label>
       <label class="form-field" data-business-topic>业务主题<input name="topic" maxlength="100" value="${esc(r.topic||'')}" placeholder="例如：采购、库存、费用"></label>
       <label class="form-field" data-business-scope-objects ${r.scope!=='objects'?'hidden':''}>适用对象（按住 Ctrl 或 Shift 多选）<select name="scope_object_ids" multiple size="5">${options(entries,r.scope_object_ids||[])}</select></label>
-      <fieldset><legend>关联模型对象</legend><div data-business-targets>${(r.targets||[]).map(t=>targetRow(entries,t)).join('')}</div><button type="button" class="text-link" data-business-add-target>添加关联对象</button></fieldset>
-      <fieldset><legend>业务筛选映射（可选）</legend><p class="notice">仅填写有业务依据的真实值；例如某业务分类对应的代码。候选筛选不会作为已确认条件。</p><div data-business-filters>${(r.filters||[]).map(f=>filterRow(entries,f)).join('')}</div><button type="button" class="text-link" data-business-add-filter>添加筛选映射</button></fieldset>`}
+      ${edit.kind==='convention'?'<p class="notice" tabindex="-1" data-required-business-mapping>保存分析约定前，请至少添加一个关联对象或一条业务筛选映射。</p>':''}
+      <fieldset><legend>关联模型对象${edit.kind==='term'?'（可选）':''}</legend><div data-business-targets>${(r.targets||[]).map(t=>targetRow(entries,t)).join('')}</div><button type="button" class="text-link" data-business-add-target>添加关联对象</button></fieldset>
+      <fieldset><legend>业务筛选映射${edit.kind==='term'?'（可选）':''}</legend><p class="notice">仅填写有业务依据的真实值；例如某业务分类对应的代码。候选筛选不会作为已确认条件。</p><div data-business-filters>${(r.filters||[]).map(f=>filterRow(entries,f)).join('')}</div><button type="button" class="text-link" data-business-add-filter>添加筛选映射</button></fieldset>`}
     <label class="form-field">业务依据 / 来源<textarea name="source_note" maxlength="1000" rows="2" placeholder="例如：业务负责人确认、报表使用说明">${esc(r.source_note||'')}</textarea></label>
     <div class="modal-actions"><button type="submit" class="secondary-button">保存为待确认</button><button type="button" class="primary-button" data-business-confirm>确认业务定义</button></div></form>`;
 }

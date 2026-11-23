@@ -1,8 +1,32 @@
 # 验证记录与复验方法
 
-维护者可以用这里的提交号、测试命令和安装包散列核对所用版本。下面的源码结果来自 **2026-11-20** 的工作区。发行件另有构建基线和测试日志。
+维护者可以用这里的提交号、测试命令和安装包散列核对所用版本。本次 **2026-11-23** 构建的 2.0.10 基于 `fae8fea` 及当前工作区的业务词典修改；下方保留此前回归与历史发行记录，分开说明各次检查的范围。
 
-## 当前源码
+## 2.0.10 安装包（2026-11-23）
+
+- 基于 `fae8fea`（`V-1.0.8.1`）及本次工作区修改，使用已有发布公钥构建 `dist/PowerBIAssistant-Setup-2.0.10.exe`，大小 **38,818,541 字节**。安装器产品版本、后端 OpenAPI／health 版本及构建默认版本统一为 `2.0.10`。保留旧版产物，已核对 2.0.9 安装包的 SHA-256 未变。
+- 本版包含纯文字业务术语、分析约定映射校验及导入兼容处理：术语可只保存名称与释义，分析约定需关联模型对象或筛选映射；旧无映射约定转为待复核，导入时保护本地已补全的同一约定。既有模型树、语义层 JSON 迁移及校准等能力一并保留。
+- Python 完整 **754 项通过**（`.venv\Scripts\python.exe -m pytest -q`），前端完整 **187 项通过**（`npm test`），包括本次术语与约定校验、表单反馈及导入相关回归；保留两个已有依赖弃用警告，差异空白检查通过。回归日志位于 `build/release-2.0.10-backend-tests.log` 和 `build/release-2.0.10-frontend-tests.log`。
+- 直接读取 PyInstaller 归档，将 **57 个后端模块、桌面入口及安装校验器入口**与当前源码编译结果逐一比较，并核对 **43 个前端文件**的完整字节，全部一致。本次核对包含工作区中的 `business_dictionary`、`semantic_transfer`、`semantics` 及其界面修改；已在产物记录中保存对应源码文件散列，用于最终确认构建后没有遗漏的新改动。
+- 两份 EXE 均嵌入原发布公钥，归档不含发码模块，发布目录未发现用户数据库、授权文件、运行密钥或私钥备份。实际 EXE 检查通过：主程序在缺少授权时退出且不创建数据库；安装校验器正确返回本机机器码并拒绝无效授权。
+- 授权启动检查在沙箱外独立临时目录完成，避开已知的 PyInstaller 解压权限限制，完成后清理；未更改正式安装或用户数据，未读取签发私钥或为客户重新发码。
+- 生成 `dist/PowerBIAssistant-Setup-2.0.10.zip`（**38,267,954 字节**），只包含当前安装包和 `USER_GUIDE.md`。ZIP CRC、内含 EXE 的 SHA-256 及说明文件完整字节核对通过；独立 `dist/USER_GUIDE.md` 同步为本次交付指南。
+- 安装包 SHA-256：`7A698C35457095306518CBCDCC3EFB48165D3414277D929C0E999603F2EE8A74`。ZIP SHA-256：`C5C5E5CC3562BDE45278CB34F9FCBDD8EB5D03BBE8B871E1EC2EF5CAD2372C6F`。校验值保留在记录中，未生成独立 `.sha256` 文件。
+- 构建日志位于 `build/release-2.0.10.log`，产物及源码散列记录位于 `build/release-2.0.10-artifacts.json`。本次未进行正式安装位置的覆盖升级、原生窗口视觉检查或真实业务准确率评测，未调用真实模型服务或改动真实 Power BI 报表。
+
+## 2.0.9 安装包（2026-11-20）
+
+- 基于 `fae8fea`（`V-1.0.8.1`）的最新源码，使用已有发布公钥构建 `dist/PowerBIAssistant-Setup-2.0.9.exe`，大小 **38,810,267 字节**。安装器产品版本、后端 OpenAPI／health 版本及构建默认版本统一为 `2.0.9`。保留旧版产物，已核对 2.0.8 安装包的 SHA-256 未变。
+- 已打入语义层 JSON 导入预览与导出、模型树业务名称和别名搜索、窄窗口模型字段入口、首次连接保留问题和图片、DAX 快捷任务与校准入口调整等更新。
+- 修正下方记录的旧导航断言：已有离线模型时继续展示当前助手的任务提示，通过右上角连接按钮重新选择报表。回归同时检查该入口、断连后的草稿和字段节点保留；首次未选择报表时的中央连接入口仍由独立用例覆盖。前端完整 **185 项通过**（`npm test`）。
+- Python 完整 **750 项通过**（`.venv\Scripts\python.exe -m pytest -q`），保留两个已有依赖弃用警告；差异空白检查通过。完整回归日志位于 `build/release-2.0.9-backend-tests.log` 和 `build/release-2.0.9-frontend-tests.log`。
+- 直接读取 PyInstaller 归档，将 **57 个后端模块、桌面入口及安装校验器入口**与当前源码编译结果逐一比较，并核对 **43 个前端文件**的完整字节，全部一致。包含 `backend.semantic_transfer` 与 `frontend/model_tree.js`；两份 EXE 均嵌入原发布公钥，归档不含发码模块，发布目录未发现用户数据库、授权文件、运行密钥或私钥备份。
+- 实际 EXE 检查通过：主程序在缺少授权时退出且不创建数据库；安装校验器正确返回本机机器码并拒绝无效授权。在沙箱外独立临时目录检查，避开已知的 PyInstaller 解压权限限制，完成后清理；未更改正式安装或用户数据，未读取签发私钥或重新发码。
+- 生成 `dist/PowerBIAssistant-Setup-2.0.9.zip`（**38,260,541 字节**），只包含当前安装包和 `USER_GUIDE.md`。ZIP CRC、内含 EXE 的 SHA-256 及说明文件完整字节核对通过；独立 `dist/USER_GUIDE.md` 同步为本次交付指南。
+- 安装包 SHA-256：`56D29F4FF28F4D8E843EF5C7D54EA0E7312611709A10561C7AF9BA96580A9EEA`。ZIP SHA-256：`0BA628699737FFF1E569BEAAA5AD86875E31682BCF80C9E58C18D836B90D4D5C`。校验值保留在记录中，未生成独立 `.sha256` 文件。
+- 构建日志位于 `build/release-2.0.9.log`，产物核对信息位于 `build/release-2.0.9-artifacts.json`。本次未进行正式安装位置的覆盖升级、原生窗口视觉检查或真实业务准确率评测，未调用真实模型服务或改动真实 Power BI 报表。
+
+## 前次源码验证（2026-11-20，导航断言修正前）
 
 | 检查项 | 基线与结果 |
 | --- | --- |
@@ -18,7 +42,7 @@
 
 安装包于 **2026-11-19** 基于 `cf944c1`（`V-1.0.7.8`）构建。源码随后在 `a16f754` 增加语义层 JSON 迁移，在 `e6c530c` 更新模型树和工作区导航。核对这些后续功能时应使用对应源码。构建当日的归档核对覆盖 56 个后端模块、桌面与安装校验器入口，以及 42 个前端文件。发布测试为 Python **745 项通过**、前端 **178 项通过**。
 
-2026-11-20 重新计算本机以下两个分发文件的 SHA-256，并对 ZIP 做了 CRC 检查。包内只有安装器和 `USER_GUIDE.md`，两者逐字节匹配 `dist` 中的发布副本。仓库中更新后的使用指南单独维护。
+以下为 2026-11-20 重新核对 2.0.8 发布件时的记录：两个分发文件的 SHA-256 和 ZIP CRC 均通过核对，包内只有安装器和当时的 `USER_GUIDE.md`。后续独立 `dist/USER_GUIDE.md` 已随 2.0.9 更新；核对旧版说明时应使用旧 ZIP 内的交付副本。
 
 | `dist` 下的文件 | 大小（字节） | SHA-256 |
 | --- | ---: | --- |
@@ -46,7 +70,7 @@ npm test
 | 新对话首次连接、截图和校准按钮 | `node --test --test-isolation=none --test-name-pattern="first report selection" tests/app_navigation.test.mjs` |
 | 全部导航、断线和面板布局 | `node --test --test-isolation=none tests/app_navigation.test.mjs tests/connections.test.mjs tests/layout.test.mjs` |
 | 已在本机打开的 Desktop 报表 | `.\.venv\Scripts\python.exe -m tests.live_smoke` 对实际实例进行只读验证，检查 DAX 标量、校准、表表达式和错误处理。[脚本](../tests/live_smoke.py) |
-| 收到的安装器和 ZIP | `Get-FileHash -Algorithm SHA256 -LiteralPath .\dist\PowerBIAssistant-Setup-2.0.8.exe,.\dist\PowerBIAssistant-Setup-2.0.8.zip`，与上表比较。 |
+| 收到的安装器和 ZIP | `Get-FileHash -Algorithm SHA256 -LiteralPath .\dist\PowerBIAssistant-Setup-2.0.9.exe,.\dist\PowerBIAssistant-Setup-2.0.9.zip`，与本次发行记录比较。 |
 | 授权与真实安装链 | 发布验证需要已构建产物、相应的签发权限和 Inno Setup。见[授权安装与发布](LICENSING.md)。 |
 
 ## 历史验证明细

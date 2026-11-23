@@ -10,7 +10,7 @@ function entry(id,extra={}) {return {id,kind:'column',table:'成本中心',name:
 function profile(extra={}) {return {model_id:'model',status:'ready',stage:'语义梳理完成',error:'',coverage:2,
   entries:[entry('one'),entry('two',{kind:'measure',table:'Fact',name:'Actual Amount',state:'unresolved',meaning:'',facts:{expression:'SUM(Fact[Amount])'}})],...extra};}
 
-async function fixture(initial=profile()) {
+async function fixture(initial=profile(),{compatibleImport=false}={}) {
   const {document,window}=parseHTML('<html><body><dialog><section></section></dialog></body></html>');
   const root=document.querySelector('section'),dialog=document.querySelector('dialog'),calls=[],updates=[],previews=[],managed=[];let current=structuredClone(initial);
   // Model the browser clamping the dialog's scroll offset as its long list is
@@ -22,7 +22,7 @@ async function fixture(initial=profile()) {
   const api=async(path,opts={})=>{
     calls.push({path,...opts});
     if(path==='/settings')return {name:'模型服务',model:'test-model',base_url:'https://service.example/v1',active_profile_id:'selected'};
-    if(path.endsWith('/import-preview'))return {updated_at:'original-revision',compatible:false,objects:1,unmatched:2,protected:1,items:1,overview:true,review:3};
+    if(path.endsWith('/import-preview'))return {updated_at:'original-revision',compatible:compatibleImport,objects:1,unmatched:compatibleImport?0:2,protected:1,items:2,overview:false,review:1};
     if(path.includes('/semantics/import?'))return {profile:{...current,stage:'已导入测试词典'},preview:{objects:1,items:1,overview:true}};
     if(path.startsWith('/semantic-dictionaries'))return {dictionaries:(current.reuse_candidates||[]).map(c=>({...c,group:c.model_id,updated_at:'saved-revision',confirmed:0,business_count:0})),target_busy:false};
     if(path.includes('/reuse-preview?'))return {source_model_id:'saved-dictionary',source_name:'采购费用',source_updated_at:'saved-revision',metadata_status:'read',changes:{preserved:2,added:0,modified:0,removed:0,items:[]},dictionary_notice:{status:'current',message:'可用定义已核对'}};
@@ -57,8 +57,8 @@ function choose(root,name,value) {
   options.find(option=>option.value===value).selected=true;
 }
 
-test('semantic file import previews before writing, supports cancellation, and refreshes the workbench',async()=>{
-  const f=await fixture();
+for(const compatibleImport of [false,true])test(`semantic import previews protected and review counts for a ${compatibleImport?'matching':'changed'} model before writing`,async()=>{
+  const f=await fixture(profile(),{compatibleImport});
   try{
     const link=f.root.querySelector('a[download]');
     assert.equal(link.getAttribute('href'),'/api/models/model/semantics/export');
@@ -69,7 +69,10 @@ test('semantic file import previews before writing, supports cancellation, and r
       input.dispatchEvent(new f.window.Event('change',{bubbles:true}));await tick();
     }
     await pick();
-    assert.ok(f.root.querySelector('.semantic-import-preview').textContent.includes('2 个对象'));
+    const preview=f.root.querySelector('.semantic-import-preview').textContent;
+    assert.match(preview,/将合并 1 项对象定义、2 项业务术语或约定/);
+    assert.match(preview,/保留当前词典已有的 1 项定义/);assert.match(preview,/1 项待复核/);
+    if(!compatibleImport)assert.match(preview,/2 个对象，已跳过/);
     assert.ok(!f.calls.some(c=>c.path.includes('/import?')));
     await f.click('[data-cancel-semantic-import]');
     assert.equal(f.root.querySelector('.semantic-import-preview'),null);
@@ -143,6 +146,25 @@ test('business terms support several object roles, literal filters and preserved
   } finally {f.manager.dispose();}
 });
 
+test('a model-wide business term can be saved and confirmed with just its name and meaning',async()=>{
+  const f=await fixture();
+  try {
+    await f.click('[data-semantic-tab="business"]');await f.click('[data-business-new="term"]');
+    const form=f.root.querySelector('[data-business-form]');
+    form.querySelector('[name="title"]').value='实绩';
+    form.querySelector('[name="meaning"]').value='本报表中的实际发生额';
+    form.reportValidity=()=>true;
+    form.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+    await f.click('[data-business-edit]');await f.click('[data-business-confirm]');
+    const records=f.calls.filter(c=>c.path.includes('/business/items')).map(c=>JSON.parse(c.body));
+    assert.deepEqual(records.map(r=>r.confirmed),[false,true]);
+    for(const record of records){
+      assert.equal(record.scope,'model');assert.equal(record.title,'实绩');assert.equal(record.meaning,'本报表中的实际发生额');
+      assert.deepEqual(record.targets,[]);assert.deepEqual(record.filters,[]);
+    }
+  } finally {f.manager.dispose();}
+});
+
 test('analysis conventions save object scope as candidates and tab navigation keeps object list state',async()=>{
   const f=await fixture();
   try {
@@ -157,8 +179,22 @@ test('analysis conventions save object scope as candidates and tab navigation ke
     choose(f.root,'scope_object_ids','two');
     const form=f.root.querySelector('form');form.reportValidity=()=>true;
     form.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
+    assert.match(f.root.querySelector('[data-semantic-feedback]').textContent,/至少添加一个关联对象或一条业务筛选映射/);
+    await f.click('[data-business-confirm]');
+    assert.ok(!f.calls.some(c=>c.path.includes('/business/items')));
+    assert.equal(f.root.querySelector('[data-business-form]'),form);
+    await f.click('[data-business-add-target]');choose(form.querySelector('[data-business-target]'),'object_id','two');
+    form.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));await tick();
     const call=f.calls.find(c=>c.path.endsWith('/business/items')),body=JSON.parse(call.body);
     assert.equal(body.confirmed,false);assert.equal(body.kind,'convention');assert.deepEqual(body.scope_object_ids,['two']);
+    assert.deepEqual(body.targets,[{object_id:'two',purpose:''}]);assert.deepEqual(body.filters,[]);
+    await f.click('[data-business-edit]');await f.click('[data-business-remove]');await f.click('[data-business-add-filter]');
+    const filter=f.root.querySelector('[data-business-filter]');
+    choose(filter,'object_id','one');filter.querySelector('[name="values"]').value='0257';
+    await f.click('[data-business-confirm]');
+    const confirmed=JSON.parse(f.calls.find(c=>c.method==='PUT').body);
+    assert.equal(confirmed.confirmed,true);assert.deepEqual(confirmed.targets,[]);
+    assert.deepEqual(confirmed.filters,[{object_id:'one',operator:'eq',values:['0257']}]);
     await f.click('[data-semantic-tab="objects"]');
     assert.equal(f.dialog.scrollTop,620);
     assert.equal(f.root.querySelector('[data-semantic-search]').value,'成本中心');
