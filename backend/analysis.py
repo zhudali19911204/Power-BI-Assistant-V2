@@ -739,16 +739,19 @@ class AnalysisService:
             return '后续分析步骤未完成，已保留已有结果，请查看模型服务状态后重试'
 
         try:
-            history=self.db.all("SELECT id,role,content FROM messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,rowid",(conv['id'],))[-16:]
-            while sum(len(m['content']) for m in history)>40000:history.pop(0)
+            window=self.chat.history.window(conv['id'],send=True)
+            history=window.retrieval_history()
             user_id=self.chat.images.save_user(conv['id'],body.content,body.image_ids)
             self.db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)',(message_id,conv['id'],'assistant','','streaming',now()))
             self.db.execute("UPDATE conversations SET title=CASE WHEN title='新对话' THEN ? ELSE title END,updated_at=? WHERE id=?",(body.content[:36],now(),conv['id']))
-            yield encode({'type':'start','message_id':message_id})+'\n'
+            yield encode({'type':'start','message_id':message_id,'context_usage':window.usage})+'\n'
+            if window.usage['compressed_now']:
+                yield status('已自动压缩历史上下文，正在结合摘要和最近对话分析')
             yield encode({'type':'model','model_id':model['id'],'live':True})+'\n'
-            messages=self.chat.images.llm_messages(history,user_id,body.content)
-            user_messages=[m for m in messages if m.role=='user']
+            messages=self.chat.images.llm_messages(window.messages,user_id,body.content)
+            user_messages=window.quoted_users()+[m for m in messages if m.role=='user']
             user_text='\n'.join(m.content for m in user_messages)
+            messages=window.with_summary(messages)
             analysis_messages=messages[:]
             prior_fields,selected_choice=clarification_evidence(self.db,conv['id'],model,ctx,body.clarification_reply)
             values=clarification_value_summary(prior_fields)
@@ -765,8 +768,10 @@ class AnalysisService:
             planner_notes=self.chat.model_sync_notice(conv['id'])
             filter_question=body.content
             if body.clarification_reply and not body.clarification_reply.supplement:
-                filter_question=next((m['content'] for m in reversed(history)
-                    if m['role']=='user' and not m['content'].startswith('口径确认 · ')),body.content)
+                # A confirmed card can refer to an exact list longer than the history summary.
+                question=self.db.one("SELECT content FROM messages WHERE conversation_id=? AND role='user' "
+                    "AND status='complete' AND content NOT LIKE '口径确认 · %' ORDER BY rowid DESC LIMIT 1", (conv['id'],))
+                if question:filter_question=question['content']
             source_lists=identifier_lists(filter_question)
             requested_filters=identifier_lists(filter_question,filters_only=True)
             if source_lists:

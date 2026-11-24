@@ -17,12 +17,16 @@ import {createConnectionMonitor,connectionPresentation,releaseSnapshot} from './
 import {mountAnalysisTemplates,saveTemplateButton} from './analysis_templates.js';
 import {createWorkspaceLayout} from './layout.js';
 import {createTableTools} from './table_reader.js';
+import {mountChatContext} from './chat_context.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const workspace=createWorkspaces();
 const codeTools=createCodeTools($('#code-reader'),{onNotice:toast});
 const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
+const historyContext=mountChatContext($('#history-context'),{getView:()=>state.view,api,
+  onChange:view=>{if(state.view===view)renderBusy();},
+  onError:(message,view)=>{if(state.view===view)toast(message,true);}});
 const contextLayout=createWorkspaceLayout({root:$('.workspace'),panel:$('#context-panel'),handle:$('#context-resizer'),toggle:$('#toggle-context'),
   sidebar:{panel:$('#sidebar'),handle:$('#sidebar-resizer')},
   save:value=>api('/ui/layout',{method:'PUT',body:JSON.stringify(value)}),onNotice:toast});
@@ -60,6 +64,7 @@ const generation=createGenerationManager({
   onCreated:conversation=>{state.conversations=[conversation,...state.conversations.filter(c=>c.id!==conversation.id)];renderHistory();},
   onModel:(view,event)=>{if(view.model?.id===event.model_id){view.model.live=event.live;if(event.live)view.model.connection={status:'connected'};if(state.view===view)renderConnectionStatus();}},
   onComplete:(view,failed)=>{
+    void historyContext.load(view);
     if(state.view===view){renderControls();if(!$('#prompt').value&&view.draft)$('#prompt').value=view.draft;messagePaint.flush();}
     else toast(`“${view.conversation?.title||'后台会话'}”${view.cancelled?'已中止生成':failed?'生成未完成，请查看原因':view.messages.at(-1)?.clarification?'有一项口径待确认':'已生成完成'}`,failed);
     void reloadHistory().catch(error=>toast(error.message,true));
@@ -88,10 +93,11 @@ function toast(text,error=false) {
   $('#toasts').append(el);setTimeout(()=>el.remove(),5500);
 }
 const guard = fn => async (...args) => {try {await fn(...args);} catch(e) {toast(e.message,true);}};
-function available() {if(state.view.busy||state.view.loading||state.view.syncing||state.view.preparing){toast(state.view.syncing?'正在同步当前对话的模型，请稍候':state.view.loading?'正在读取此会话':state.view.preparing?'正在检查语义，请稍候':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
+function available() {if(state.view.changingContext){toast('正在更新当前对话的上下文，请稍候');return false;}if(state.view.busy||state.view.loading||state.view.syncing||state.view.preparing){toast(state.view.syncing?'正在同步当前对话的模型，请稍候':state.view.loading?'正在读取此会话':state.view.preparing?'正在检查语义，请稍候':'此会话正在生成，可切换到其他页面继续使用');return false;}return true;}
 function renderBusy() {
-  $('#send-button').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading||state.view.images.some(img=>img.status==='uploading');
-  $('#refresh-model').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading;
+  historyContext.render();
+  $('#send-button').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading||!!state.view.changingContext||state.view.images.some(img=>img.status==='uploading');
+  $('#refresh-model').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading||!!state.view.changingContext;
   $('#refresh-model').title=state.view.syncing?'正在同步模型':state.view.busy?'当前对话结束或中止后可同步模型':'同步模型，继续当前对话';
   $('#stop-button').disabled=!state.view.busy||state.view.stopping;
   $('#stop-button').setAttribute('aria-label',state.view.stopping?'正在中止本次生成':'中止本次生成');
@@ -272,6 +278,7 @@ async function openAnalysisTemplates(messageId=null) {
     onStarted:async(result,model,visible)=>{
       state.conversations=[result.conversation,...state.conversations.filter(c=>c.id!==result.conversation.id)];
       const view=workspace.register(result.conversation,model);
+      void historyContext.load(view);
       if(visible&&root.isConnected){
         saveDraft();
         if(!state.view.conversation&&(state.view.draft||state.view.images.length))view.templateReturn=state.view;
@@ -324,6 +331,7 @@ async function syncCurrentModel() {
     keepLatestSnapshot(result.model);
     if(result.conversation){
       workspace.bind(view,result.conversation);
+      view.contextUsage=null;void historyContext.load(view);
       state.conversations=state.conversations.map(c=>c.id===result.conversation.id?result.conversation:c);
       for(const message of view.messages)if(message.role==='assistant')message.model_stale=true;
     }
@@ -347,6 +355,7 @@ async function reloadHistory() {
 async function loadConversation(view) {
   if(view.loading||view.preparing||view.syncing||generation.isRunning(view))return;
   view.loading=true;if(state.view===view)renderBusy();
+  void historyContext.load(view);
   try {
     const [model,messages,status]=await Promise.all([api(`/models/${view.conversation.model_id}`),
       api(`/conversations/${view.conversation.id}/messages`),api(`/conversations/${view.conversation.id}/generation`)]);

@@ -259,6 +259,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
       return json(result);
     }
     const id=path.split('/')[3];
+    if(path.endsWith('/context')){
+      const analysis=conversations.find(c=>c.id===id)?.mode==='analysis';
+      const rows=messages.get(id)||[],limit=analysis?16:20;
+      return json({automatic:true,auto_percent:80,percent:Math.floor(100*rows.length/limit),
+        messages:rows.length,message_limit:limit,chars:rows.reduce((sum,row)=>sum+row.content.length,0),
+        char_limit:analysis?40000:60000,can_compress:rows.length>4,summary:[]});
+    }
     if(path.endsWith('/refresh-model')){
       syncRequests.push({conversationId:id});
       if(pendingSync){const waiting=pendingSync;pendingSync=null;await waiting;}
@@ -539,6 +546,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
         validation:{ok:true,run_verified:true,verification_scope:'row_sample',sample:'50 行',errors:[],warnings:['仅抽样检查']}}]});
     dax.emit({type:'done'});dax.controller.close();await tick();await tick();await tick();
     assert.equal($('#send-button').disabled,false);assert.ok($('#messages').textContent.includes('DAX 回复。'));
+    assert.equal($('#history-context progress').getAttribute('value'),'10');
     await click('[data-apply="measure-test"]');
     assert.equal($('#write-measure-name').value,'候选金额');assert.equal($('#write-home-table').value,'事实表');
     $('#write-measure-name').value='   ';await click('#confirm-write');assert.equal(writes.length,0);
@@ -576,6 +584,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.ok($('[data-apply="column-test"]').textContent.includes('已写入模型'));
     await click('[data-conversation="c1"]');
     assert.equal($('#page-title').textContent,'数据分析助手');
+    assert.equal($('#history-context [data-percent]').textContent,'12%');
     assert.ok($('#messages').textContent.includes('第一段分析。后台续写。'));
     assert.equal(analysis.body.llm_profile_id,'profile');
     assert.ok(!$('#toasts').textContent.includes('请等待本次响应完成'));

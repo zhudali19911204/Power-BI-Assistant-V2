@@ -14,6 +14,23 @@
 .conversation-tools,.context-header-actions{display:flex;align-items:center;gap:4px}
 .conversation-toolbar .workspace-caption{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px}
 .conversation-tools{margin-left:auto;flex-shrink:0}
+.history-context{position:relative;font-size:var(--font-caption);color:var(--text-secondary)}
+.history-context>summary{display:flex;align-items:center;gap:6px;list-style:none;cursor:pointer;padding:6px 8px;border-radius:6px;font-variant-numeric:tabular-nums}
+.history-context>summary::-webkit-details-marker{display:none}
+.history-context>summary:hover,.history-context[open]>summary{background:#f3f4f6}
+.history-context summary:focus-visible{outline:2px solid #bd9126;outline-offset:2px}
+.history-context progress{width:42px;height:5px;appearance:none;border:0;border-radius:5px;overflow:hidden;background:#e6e9ed;color:var(--green)}
+.history-context progress::-webkit-progress-bar{background:#e6e9ed}
+.history-context progress::-webkit-progress-value{background:var(--green)}
+.history-context progress::-moz-progress-bar{background:var(--green)}
+.history-context[data-full] progress::-webkit-progress-value{background:#ac801a}
+.history-context[data-full] progress::-moz-progress-bar{background:#ac801a}
+.history-context-panel{position:absolute;z-index:7;top:calc(100% + 5px);right:0;width:min(310px,65vw);max-height:65vh;overflow:auto;padding:16px;background:white;color:var(--ink);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 28px #28344320;font-size:var(--font-ui)}
+.history-context-panel p{margin:6px 0 12px;white-space:normal}.history-context-panel p:empty{display:none}
+.history-context-panel label{display:flex;align-items:center;gap:8px}.history-context-panel input{accent-color:var(--green)}
+.history-context-panel [data-notes]{margin-top:10px}.history-context-panel [data-notes] summary{cursor:pointer}
+.history-context-panel [data-notes-body]{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
+@media(max-width:700px){.history-context-panel{right:-52px}.history-context progress{width:28px}}
 .context-toggle-label,.icon-button.context-close{display:none}
 .context-panel:not(.has-model) :is(#model-summary,.context-tabs,.field-search,.context-bottom,#refresh-model){display:none}
 @media(max-width:1050px){

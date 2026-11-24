@@ -171,6 +171,31 @@ def test_old_clarification_cannot_submit_after_sync(setup):
     assert not app.state.chat.generation_status(conv['id'])['running']
 
 
+def test_sync_keeps_compression_and_user_goal_but_refreshes_model_specific_notes(setup):
+    app,client,state,engine,built=setup
+    old=connect(client,engine());built(old)
+    cid=conversation(client,old)['id']
+    goal='按月比较收入'
+    message(app,cid,'user',goal)
+    message(app,cid)
+    confirmation='口径确认 · 旧字段\n采用口径：原编号字段'
+    message(app,cid,'user',confirmation)
+    message(app,cid)
+    for _ in range(2):
+        message(app,cid,'user','继续')
+        message(app,cid)
+    path=f'/api/conversations/{cid}/context'
+    client.put(path,json={'automatic':False})
+    before=client.post(path+'/compress',json={}).json()
+    assert any(n['内容']==confirmation for n in before['summary'])
+    sync(client,cid)
+    after=client.get(path).json()
+    assert after['folded_messages']==before['folded_messages']==4 and after['automatic'] is False
+    assert any(n['内容']==goal and '同步前' in n['类别'] for n in after['summary'])
+    assert all(n['内容']!=confirmation for n in after['summary'])
+    assert len(app.state.chat.messages(cid))==8
+
+
 def test_repeated_sync_preserves_ids_and_moves_history_cutoff(setup):
     app,client,state,engine,built=setup
     old=connect(client,engine());built(old);conv=conversation(client,old);first=message(app,conv['id'])

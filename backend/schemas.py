@@ -53,6 +53,11 @@ class ConversationInput(BaseModel):
     mode: Literal["dax", "mquery", "analysis"] = "dax"
     query_name: str = Field(default="", max_length=300)
     title: str = Field(default="新对话", min_length=1, max_length=120)
+    auto_compress: bool = True
+
+
+class ContextPreference(BaseModel):
+    automatic: bool = Field(strict=True)
 
 
 class FilterInput(BaseModel):

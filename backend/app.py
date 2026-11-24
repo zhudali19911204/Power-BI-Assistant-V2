@@ -23,7 +23,7 @@ from .engine.context.live_writer import LiveDesktopWriter
 from .engine.dax.live_eval import LiveDesktopEvaluator
 from .engine.llm.base import user
 from .powerbi import PowerBIService, context_from_dict
-from .schemas import ApplyInput, CancelGenerationInput, ConnectInput, ConversationInput, LayoutInput, LLMProfileInput, MessageInput, ReasoningInput, SettingsInput
+from .schemas import ApplyInput, CancelGenerationInput, ConnectInput, ContextPreference, ConversationInput, LayoutInput, LLMProfileInput, MessageInput, ReasoningInput, SettingsInput
 from .settings import SettingsService
 from .fields import FieldPreviewInput
 from .reports import reports_for_instances
@@ -61,6 +61,7 @@ def create_app(directory=None):
     templates = AnalysisTemplates(db, powerbi, chat, settings)
     def dictionary_in_use(model_id,*,include_sync=True):
         for conversation_id,lock in list(chat.locks.items()):
+            if conversation_id in chat.updating_context:continue
             if lock.locked() and (include_sync or conversation_id not in chat.syncing):
                 row=db.one('SELECT model_id FROM conversations WHERE id=?',(conversation_id,))
                 if row and row['model_id']==model_id:return True
@@ -384,9 +385,24 @@ def create_app(directory=None):
         if body.mode == "mquery" and not context_from_dict(model["context"]).has_query(body.query_name):
             raise HTTPException(422, "请选择模型中存在的 Power Query 查询")
         conv_id, stamp = uid(), now()
-        db.execute("INSERT INTO conversations VALUES (?,?,?,?,?,?,?)", (
-            conv_id, body.title, body.mode, body.model_id, body.query_name, stamp, stamp))
+        with db.connection() as conn:
+            conn.execute("INSERT INTO conversations VALUES (?,?,?,?,?,?,?)", (
+                conv_id, body.title, body.mode, body.model_id, body.query_name, stamp, stamp))
+            if not body.auto_compress:
+                conn.execute('INSERT INTO conversation_contexts (conversation_id,automatic) VALUES (?,0)', (conv_id,))
         return chat.conversation(conv_id)
+
+    @app.get('/api/conversations/{conversation_id}/context')
+    def conversation_context(conversation_id: str):
+        return chat.history.window(conversation_id).usage
+
+    @app.put('/api/conversations/{conversation_id}/context')
+    def context_preference(conversation_id: str, body: ContextPreference):
+        return chat.update_context(conversation_id, automatic=body.automatic)
+
+    @app.post('/api/conversations/{conversation_id}/context/compress')
+    def compress_context(conversation_id: str):
+        return chat.update_context(conversation_id, compress=True)
 
     @app.get("/api/conversations/{conversation_id}/messages")
     def messages(conversation_id: str):

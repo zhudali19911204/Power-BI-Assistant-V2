@@ -50,6 +50,19 @@
           <div class="conversation-toolbar">
             <span class="workspace-caption" id="conversation-caption">新对话</span>
             <div class="conversation-tools">
+              <details id="history-context" class="history-context">
+                <summary title="查看历史上下文占用和压缩设置"><span>上下文</span><progress max="100" value="0" aria-label="历史上下文占用"></progress><span data-percent>0%</span></summary>
+                <div class="history-context-panel">
+                  <strong>对话历史占用</strong>
+                  <p data-usage></p>
+                  <p class="field-help">按历史消息条数和字符数中较高的一项计算。当前输入、图片、模型结构和本轮查询结果另计。</p>
+                  <label><input type="checkbox" data-automatic checked> 自动压缩本会话</label>
+                  <p class="field-help">达到 <span data-threshold>80%</span> 时，在下次发送前压缩。优先保留最近两轮原文。</p>
+                  <button type="button" class="secondary-button" data-compress>立即压缩</button>
+                  <p data-feedback role="status"></p>
+                  <details data-notes hidden><summary>查看历史摘要</summary><div data-notes-body></div></details>
+                </div>
+              </details>
               <button class="icon-button" id="export-chat" aria-label="导出当前对话" title="导出对话"><span data-icon="download"></span></button>
               <button class="icon-button" id="toggle-context" aria-controls="context-panel" aria-expanded="true" aria-label="收起模型字段面板" title="收起模型字段面板"><span data-icon="panel"></span><span class="context-toggle-label">模型字段</span></button>
             </div>

@@ -7,6 +7,7 @@ import time
 from fastapi import HTTPException
 
 from .database import encode, now, uid
+from .conversation_context import ConversationContext
 from .model_prompt import ModelPrompt
 from .engine.dax.prompts import build_chat_system_prompt
 from .engine.dax.live_eval import LiveDesktopEvaluator
@@ -36,6 +37,8 @@ class ChatService:
         self.active_messages = {}
         self.cancellations = {}
         self.syncing = set()
+        self.updating_context = set()
+        self.history = ConversationContext(db)
         self.analysis=AnalysisService(self)
         self.semantics=getattr(powerbi,'semantics',None)
         self.images=ImageStore(db)
@@ -81,6 +84,7 @@ class ChatService:
                                (model['id'],stamp,conversation_id))
                     db.execute('INSERT INTO conversation_model_syncs VALUES (?,?,?,?,?,?)',
                                (uid(),conversation_id,conv['model_id'],model['id'],cutoff,stamp))
+                    self.history.refresh_after_sync(db, conversation_id)
                     bindings=db.execute('SELECT * FROM conversation_bindings WHERE conversation_id=?',(conversation_id,)).fetchall()
                     for binding in bindings:
                         table,column=binding['table_name'],binding['column_name']
@@ -97,9 +101,24 @@ class ChatService:
         lock = self.locks.get(conversation_id)
         message_id = self.active_messages.get(conversation_id)
         token = self.cancellations.get(conversation_id)
-        return {'running': bool(lock and lock.locked() and conversation_id not in self.syncing), 'message_id': message_id,
+        running = bool(lock and lock.locked() and conversation_id not in self.syncing and conversation_id not in self.updating_context)
+        return {'running': running, 'message_id': message_id,
                 'generation_id': token.id if token else None, 'stopping': bool(token and token.event.is_set()),
                 'syncing':conversation_id in self.syncing,'progress': self.progress.get(message_id, {})}
+
+    def update_context(self, conversation_id, *, automatic=None, compress=False):
+        self.conversation(conversation_id)
+        with self.mutex:
+            lock = self.locks.setdefault(conversation_id, threading.Lock())
+            if not lock.acquire(blocking=False):
+                raise HTTPException(409, '当前对话正在处理，请完成后再调整上下文')
+            self.updating_context.add(conversation_id)
+        try:
+            return self.history.window(conversation_id, automatic=automatic, compress=compress).usage
+        finally:
+            with self.mutex:
+                self.updating_context.discard(conversation_id)
+                lock.release()
 
     def cancel(self, conversation_id, generation_id):
         self.conversation(conversation_id)
@@ -269,11 +288,7 @@ class ChatService:
             self.progress[assistant_id] = {'stage': text, 'elapsed': int(time.monotonic()-started)}
             return encode({'type': 'status', 'text': text}) + '\n'
         try:
-            history = self.db.all("SELECT id,role,content FROM messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,rowid",
-                                  (conv["id"],))[-20:]
-            # Bound prior context independently of the current request.
-            while sum(len(m["content"]) for m in history) > 60000:
-                history.pop(0)
+            window = self.history.window(conv['id'], send=True)
             user_text = body.content
             if body.points:
                 user_text += ('\n校准要求：以下 filters 中的所有条件必须同时满足（且），共同对应唯一的 expected 结果；'
@@ -282,11 +297,11 @@ class ChatService:
             self.db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (assistant_id, conv["id"], "assistant", "", "streaming", now()))
             self.db.execute("UPDATE conversations SET title=CASE WHEN title='新对话' THEN ? ELSE title END,updated_at=? WHERE id=?",
                              (body.content[:36], now(), conv["id"]))
-            messages = self.images.llm_messages(history,user_id,user_text)
+            messages = window.with_summary(self.images.llm_messages(window.messages,user_id,user_text))
             selection=None
             if self.semantics:
                 bindings=self.semantics.bindings(conv['id'])
-                selection=self.semantics.context(model['id'],user_text,history=history,bindings=bindings)
+                selection=self.semantics.context(model['id'],user_text,history=window.retrieval_history(),bindings=bindings)
             is_dax=conv["mode"] == "dax"
             facts=ModelPrompt(ctx,selection,include_expressions=is_dax,focus_conventions=is_dax)
             definitions=self.semantics.format_prompt(facts.semantic,merged=True) if facts.semantic is not None else ''
@@ -312,7 +327,9 @@ class ChatService:
                 system += '\n用户确认的本会话编号映射（不沿用助手自己的猜测）：'+encode(bindings)
             if is_dax:
                 system += facts.convention_prompt('生成与修订 DAX 时将适用口径落实到表达式，说明实际采用的约定及用户指定的例外。')
-            yield encode({"type": "start", "message_id": assistant_id}) + "\n"
+            yield encode({"type": "start", "message_id": assistant_id, "context_usage": window.usage}) + "\n"
+            if window.usage['compressed_now']:
+                yield status('已自动压缩历史上下文，正在结合摘要和最近对话生成回复')
             yield encode({'type':'model','model_id':model['id'],'live':model['live']})+'\n'
             logger.info('Chat %s stream started', assistant_id)
             for attempt in range(3):

@@ -47,6 +47,11 @@ class Database:
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
                     role TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'complete', created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS conversation_contexts (
+                    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                    automatic INTEGER NOT NULL DEFAULT 1, through_rowid INTEGER NOT NULL DEFAULT 0,
+                    folded_count INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '[]');
+                CREATE INDEX IF NOT EXISTS messages_by_conversation ON messages(conversation_id);
                 CREATE TABLE IF NOT EXISTS message_clarifications (
                     message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL, created_at TEXT NOT NULL);

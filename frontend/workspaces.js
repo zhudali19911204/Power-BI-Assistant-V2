@@ -154,6 +154,7 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
           if(!view.conversation) {
             const conversation=await api('/conversations',{method:'POST',body:JSON.stringify({
               model_id:view.model.id,mode:view.mode,query_name:body.query_name||'',title:body.content.slice(0,36),
+              ...(view.autoCompress===false?{auto_compress:false}:{}),
             })});
             workspace.bind(view,conversation);onCreated(conversation,view);changed(view);
           }
@@ -171,7 +172,14 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
           view.requestReady=true;
           if(view.stopRequested)await cancelRemote(view);
           await readEvents(response,event=>{
-            if(event.type==='start')answer.id=event.message_id;
+            if(event.type==='start'){
+              answer.id=event.message_id;
+              if(event.context_usage){
+                view.contextRequest=(view.contextRequest||0)+1;
+                view.contextUsage=event.context_usage;
+                view.contextError='';
+              }
+            }
             if(event.type==='model')onModel(view,event);
             if(event.type==='delta'){answer.content+=event.text;view.status='模型正在生成回复';}
             if(event.type==='reset')answer.content+='\n\n---\n\n### 验证修订\n\n';
