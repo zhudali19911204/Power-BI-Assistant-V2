@@ -70,7 +70,7 @@ def create_app(directory=None):
     def snapshot_in_use(model_id):
         return model_id in semantics.jobs or dictionary_in_use(model_id,include_sync=False)
     powerbi.snapshot_in_use=snapshot_in_use
-    app = FastAPI(title="Power BI Assistant", version="2.0.10", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="Power BI Assistant", version="2.0.11", docs_url="/api/docs", redoc_url=None)
     app.state.license_info = license_info
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
@@ -121,7 +121,7 @@ def create_app(directory=None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "2.0.10", "storage": "sqlite", "platform": "desktop",
+        return {"status": "ok", "version": "2.0.11", "storage": "sqlite", "platform": "desktop",
                 "license": {"type": "trial" if license_info.issued_at is not None else "permanent",
                             "issued_at": license_info.issued_at, "expires_at": license_info.expires_at,
                             "summary": license_info.summary} if license_info else {"type": "development"}}

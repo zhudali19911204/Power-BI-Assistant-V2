@@ -1,6 +1,6 @@
 # Power BI Assistant V2 技术架构
 
-Power BI Assistant 在本机连接 Power BI Desktop，并通过用户配置的 AI 服务处理 DAX、M 和业务分析请求。本文与 `2.0.10` 安装包基于 Git 标签 `V-1.0.8.1`（`fae8fea`）及当前工作区的业务词典修改，包含纯文字术语、分析约定映射校验及导入兼容处理。`2.0.9` 以 `fae8fea` 为基线，`2.0.8` 以 `cf944c1`（`V-1.0.7.8`）为基线。判断已安装程序的功能范围时，使用对应构建记录。[验证记录](VALIDATION.md)
+Power BI Assistant 在本机连接 Power BI Desktop，并通过用户配置的 AI 服务处理 DAX、M 和业务分析请求。本文与 `2.0.11` 安装包基于 Git 标签 `V-1.0.8.4`（`4a9f99c`），包含会话上下文控制与分析约定核对等改进。历史发行件按各自构建记录核对；本版的具体检查范围见[验证记录](VALIDATION.md)。
 
 ## 运行与数据流
 

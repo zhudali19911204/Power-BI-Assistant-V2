@@ -4,7 +4,7 @@
 
 ## 为客户签发 CD-KEY
 
-1. 让客户在**目标电脑**上运行 `PowerBIAssistant-Setup-2.0.10.exe`，在“软件授权”页复制以 `PBI2M-` 开头的完整机器码。它来自 Windows `MachineGuid` 的产品专用哈希。
+1. 让客户在**目标电脑**上运行 `PowerBIAssistant-Setup-2.0.11.exe`，在“软件授权”页复制以 `PBI2M-` 开头的完整机器码。它来自 Windows `MachineGuid` 的产品专用哈希。
 2. 在发布电脑的项目根目录打开 PowerShell。按授权用途选择下面一条命令，用客户的实际机器码替换引号中的示例文字。
 3. 将输出的完整 CD-KEY 发给客户。客户粘贴到同一授权页，核对授权类型和试用到期时间，继续安装。发码工具另行打印的授权说明留在文本框外。
 
@@ -25,7 +25,7 @@
 | 场景 | 操作 |
 | --- | --- |
 | 首次安装 | 在 Windows 10/11 x64 上运行安装器，输入本机有效 CD-KEY。安装程序按当前 Windows 用户安装，默认位置为 `%LOCALAPPDATA%\Programs\PowerBIAssistant`。运行界面依赖 Edge WebView2 Runtime，读取真实报表还需要本机 Power BI Desktop。 |
-| 从旧版本升级 | 关闭助手，备份实际用户数据目录，再用 2.0.10 安装包覆盖原安装位置，输入有效 CD-KEY。2.0.10 沿用 2.0.1 的签发公钥，原永久码继续有效，未到期的试用码沿用原到期时间。2.0.0 安装器仅支持永久码。 |
+| 从旧版本升级 | 关闭助手，备份实际用户数据目录，再用 2.0.11 安装包覆盖原安装位置，输入有效 CD-KEY。2.0.11 沿用 2.0.1 的签发公钥，原永久码继续有效，未到期的试用码沿用原到期时间。2.0.0 安装器仅支持永久码。 |
 | 试用转永久 | 为原机器码签发永久码，客户关闭助手并重新运行安装器，在原位置输入新码。已过期的试用也可以从安装器直接升级。 |
 | Windows 重装或换机 | 在目标系统重新取得机器码。若机器码已变更，为新码签发授权。 |
 
@@ -38,7 +38,7 @@
 将仅含目标电脑完整 CD-KEY 的 UTF-8 文件交给安装器，带 BOM 的文件也可读取。命令行传文件路径，安装器在写入应用前完成校验。安装规则见[安装脚本](../packaging/installer.iss)。
 
 ```powershell
-.\dist\PowerBIAssistant-Setup-2.0.10.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/LICENSEFILE=C:\Deployment\customer-cdkey.txt"
+.\dist\PowerBIAssistant-Setup-2.0.11.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/LICENSEFILE=C:\Deployment\customer-cdkey.txt"
 ```
 
 ## 发布者密钥与迁移
@@ -63,13 +63,13 @@
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-.\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop --version 2.0.10 --output-dir ".\build\candidate-2.0.10"
-Get-FileHash -Algorithm SHA256 -LiteralPath ".\build\candidate-2.0.10\PowerBIAssistant-Setup-2.0.10.exe"
+.\.venv\Scripts\python.exe -X utf8 -m scripts.build_desktop --version 2.0.11 --output-dir ".\build\candidate-2.0.11"
+Get-FileHash -Algorithm SHA256 -LiteralPath ".\build\candidate-2.0.11\PowerBIAssistant-Setup-2.0.11.exe"
 ```
 
 示例将当前源码的试构建输出到独立目录，校验时使用本次新生成的散列。默认输出位置为 `dist`，直接在其中重建相同版本可能覆盖同名交付物。默认输入公钥为发布者目录的 `public-key.pem`。使用自定义公钥时追加 `--public-key "D:\发布密钥\public-key.pem"`，可用 `--iscc` 指定编译器。
 
-客户安装器名称为 `PowerBIAssistant-Setup-<版本>.exe`。如果另做分发 ZIP，放入安装器与对应交付版说明书，同时记录 EXE 和 ZIP 的校验值。输出目录中的 `PowerBIAssistant` 文件夹和 `LicenseVerifier.exe` 用于打包与校验。2.0.10 发行件的大小、散列和实际验证范围见[验证记录](VALIDATION.md)。
+客户安装器名称为 `PowerBIAssistant-Setup-<版本>.exe`。如果另做分发 ZIP，放入安装器与对应交付版说明书，同时记录 EXE 和 ZIP 的校验值。输出目录中的 `PowerBIAssistant` 文件夹和 `LicenseVerifier.exe` 用于打包与校验。2.0.11 发行件的大小、散列和实际验证范围见[验证记录](VALIDATION.md)。
 
 ## 验证与故障定位
 
@@ -83,11 +83,11 @@ Get-FileHash -Algorithm SHA256 -LiteralPath ".\build\candidate-2.0.10\PowerBIAss
 验证真实安装链时，在有签发权限的 Windows 发布机执行下面的命令。它需要已构建的应用目录、`LicenseVerifier.exe`、相应签发密钥和 Inno Setup，会在本机签发测试码、构建独立标识的测试安装器并执行静默安装、启动、到期和卸载检查。自定义环境可传 `--release-dir`、`--key-dir` 和 `--iscc`。完整覆盖项见[发布验证脚本](../scripts/verify_licensed_release.py)。
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m scripts.verify_licensed_release --release-dir ".\build\candidate-2.0.10"
+.\.venv\Scripts\python.exe -X utf8 -m scripts.verify_licensed_release --release-dir ".\build\candidate-2.0.11"
 ```
 
 | 现象 | 检查点 |
 | --- | --- |
 | 安装器拒绝 CD-KEY | 核对机器码属于当前电脑、复制的是完整授权码、签发公钥与安装包匹配。试用码还要检查目标机时间与到期时间。 |
 | 安装后启动时提示授权失败 | 核对程序目录中的 `license.key`。启动失败原因写入用户数据目录下的 `assistant.log`。需要更换有效授权时重新运行安装器。 |
-| Windows 提示未知发布者 | 2.0.10 发布记录未包含商业代码签名。可向分发方核对安装文件 SHA-256。CD-KEY 用于应用自身的授权校验。 |
+| Windows 提示未知发布者 | 2.0.11 发布记录未包含商业代码签名。可向分发方核对安装文件 SHA-256。CD-KEY 用于应用自身的授权校验。 |
