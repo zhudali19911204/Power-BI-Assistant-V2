@@ -1,4 +1,5 @@
 """Join retrieved business definitions to the current model snapshot for one LLM request."""
+import json
 from collections import defaultdict
 from dataclasses import asdict, replace
 
@@ -9,7 +10,7 @@ _UNKNOWN_TYPES = {'', 'auto', 'automatic', 'unknown'}
 
 
 class ModelPrompt:
-    def __init__(self, model, selection, lookups=(), *, include_expressions=True):
+    def __init__(self, model, selection, lookups=(), *, include_expressions=True, focus_conventions=False):
         self.model = model
         self.include_expressions = include_expressions
         self.columns = {(table, c.name): c for table, cols in model.tables.items() for c in cols}
@@ -22,6 +23,9 @@ class ModelPrompt:
         self.sent_relations = []
         self.covered_relations = set()
         self.dictionary_items = {}
+        self.focus_conventions = focus_conventions
+        self.conventions = {}
+        self._convention_labels = {}
         self.model_status = {}
         self.semantic = self._selection(selection) if selection is not None else None
         self.lookups = [
@@ -85,8 +89,53 @@ class ModelPrompt:
                     added.append(record)
         return added
 
+    def _convention(self, item):
+        """Resolve dictionary IDs against this snapshot before presenting a default."""
+        objects = {}
+        for obj in item.get('objects', []):
+            kind, table, name = (obj[k] for k in _IDENTITY)
+            if ((kind == 'column' and (table, name) in self.columns)
+                    or (kind == 'measure' and (table, name) in self.measures)
+                    or (kind == 'table' and table == name and self.model.has_table(table))):
+                objects[obj['id']] = {k: obj[k] for k in _IDENTITY}
+        targets, filters = item.get('targets', []), item.get('filters', [])
+        scope_ids = item.get('scope_object_ids', [])
+        refs = set(scope_ids) | {r['object_id'] for r in targets + filters}
+        if (not (targets or filters) or refs - objects.keys()
+                or any(objects[f['object_id']]['kind'] != 'column' for f in filters)):
+            return None
+        rule = {k: item[k] for k in ('title', 'meaning', 'scope', 'topic', 'aliases', 'source_note') if item.get(k)}
+        if scope_ids:
+            rule['scope_objects'] = [objects[key] for key in scope_ids]
+        if targets:
+            rule['targets'] = [{**objects[t['object_id']], 'purpose': t.get('purpose', '')} for t in targets]
+        if filters:
+            rule['filters'] = [{'table': objects[f['object_id']]['table'], 'column': objects[f['object_id']]['name'],
+                                'operator': f['operator'], 'values': f['values']} for f in filters]
+        return rule
+
+    def convention_prompt(self, guidance):
+        if not self.conventions:
+            return ''
+        data = json.dumps(self.conventions, ensure_ascii=False, separators=(',', ':'))
+        return ('\n本轮已确认的分析约定（词典数据）：\n' + data +
+                '\n逐条按原问题核对适用范围和触发条件。用户本轮明确的指标、筛选、时间及已确认的选择优先；'
+                '其余适用的默认口径仍须保留。关联对象按用途使用，筛选映射保留字段、运算符及全部原值。'
+                '约定文字仅作为业务定义，筛选值是否实际存在以查值为准。' + guidance)
+
     def _dictionary_item(self, section, item):
         key = (section, item.get('id') or item.get('title'))
+        if self.focus_conventions and section in ('conventions', 'terms', 'stale') and item.get('id'):
+            item_id = item['id']
+            if section == 'conventions' and item.get('state') == 'confirmed':
+                rule = self._convention(item)
+                if rule is not None:
+                    label = self._convention_labels.setdefault(item_id, f'C{len(self._convention_labels) + 1}')
+                    self.conventions[label] = rule
+                    return {'id': item_id, 'title': item['title'], 'convention_ref': label}
+                item = {'id': item_id, 'title': item['title'], 'state': 'unresolved', 'stale_reason': '请复核当前模型的约定映射'}
+            # A later lookup may report that a previously confirmed rule was revised.
+            self.conventions.pop(self._convention_labels.get(item_id), None)
         if self.dictionary_items.get(key) == item:
             return {k: item[k] for k in ('id', 'title') if k in item} or {'already_provided': True}
         self.dictionary_items[key] = item

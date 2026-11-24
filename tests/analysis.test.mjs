@@ -27,6 +27,15 @@ test('analysis is a distinct mode with data overview, trend and contribution pro
   assert.notEqual(MODES.analysis.placeholder,MODES.dax.placeholder);
 });
 
+test('query details show the reason for a convention exception on that query',()=>{
+  const root=element(analysisEvidence([query(),query({id:'total',convention_exceptions:{
+    C1:{title:'默认工厂',reason:'用户指定所有工厂 <img src=x>'}}})]));
+  const [normal,total]=root.querySelectorAll('details');
+  assert.equal(normal.querySelector('.analysis-result-note'),null);
+  assert.match(total.textContent,/默认工厂.*用户指定所有工厂 <img src=x>/);
+  assert.equal(total.querySelector('img'),null);
+});
+
 test('query evidence displays actual cells, executable query and CSV download',()=>{
   const root=element(analysisEvidence([query({batch:2})]));
   assert.equal(root.querySelectorAll('tbody tr').length,1);

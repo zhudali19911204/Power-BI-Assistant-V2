@@ -288,7 +288,7 @@ class ChatService:
                 bindings=self.semantics.bindings(conv['id'])
                 selection=self.semantics.context(model['id'],user_text,history=history,bindings=bindings)
             is_dax=conv["mode"] == "dax"
-            facts=ModelPrompt(ctx,selection,include_expressions=is_dax)
+            facts=ModelPrompt(ctx,selection,include_expressions=is_dax,focus_conventions=is_dax)
             definitions=self.semantics.format_prompt(facts.semantic,merged=True) if facts.semantic is not None else ''
             if is_dax:
                 system=build_chat_system_prompt('\n'.join(filter(None,(definitions,facts.schema()))))
@@ -310,6 +310,8 @@ class ChatService:
             if self.semantics:
                 system += self.semantics.value_context(conv,body.content)
                 system += '\n用户确认的本会话编号映射（不沿用助手自己的猜测）：'+encode(bindings)
+            if is_dax:
+                system += facts.convention_prompt('生成与修订 DAX 时将适用口径落实到表达式，说明实际采用的约定及用户指定的例外。')
             yield encode({"type": "start", "message_id": assistant_id}) + "\n"
             yield encode({'type':'model','model_id':model['id'],'live':model['live']})+'\n'
             logger.info('Chat %s stream started', assistant_id)

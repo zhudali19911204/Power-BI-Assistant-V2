@@ -2,6 +2,7 @@
 import copy
 import re
 from collections import deque
+from itertools import zip_longest
 from typing import Annotated, Literal
 
 from fastapi import HTTPException
@@ -252,7 +253,13 @@ def select(profile, selection, question, budget=16000):
         if data['overview']['state'] == 'unresolved':result['stale'].append({'title': '业务总览', 'reason': data['overview'].get('stale_reason', '待复核')})
         else:result['overview'] = public(data['overview'])
     used = len(encode(result))
-    for item in sorted(relevant, key=lambda r: (not match(r), r['state'] != 'confirmed')):
+    ranked = sorted(relevant, key=lambda r: (not match(r), r['state'] != 'confirmed'))
+    # Defaults are usually implicit in the question. Give them a turn in the same
+    # budget as direct term matches, with narrower matching scopes first.
+    defaults = [r for r in ranked if r['kind'] == 'convention' and r['state'] == 'confirmed']
+    defaults.sort(key=lambda r: (not match(r), r['scope'] == 'model'))
+    other = [r for r in ranked if r['kind'] != 'convention' or r['state'] != 'confirmed']
+    for item in (r for pair in zip_longest(defaults, other) for r in pair if r is not None):
         if item['state'] == 'unresolved':
             payload = {'id': item['id'], 'title': item['title'], 'reason': item.get('stale_reason', '待复核')}
             key = 'stale'

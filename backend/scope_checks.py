@@ -13,6 +13,7 @@ from .cancellation import check_cancelled
 from .clarifications import ClarificationOption, ClarificationQuestion
 from .database import now
 from .engine.context.live_source import _LiveSession, find_adomd_dll, find_instances
+from .engine.dax.artifact import _code_only
 from .fields import CandidateField, field_ref
 from .values import exact_values
 
@@ -396,19 +397,27 @@ def _field_pattern(table, column):
     return '(?:' + re.escape(quoted.casefold()) + r'|(?<![\w\x27])' + re.escape(plain.casefold()) + ')'
 
 
-def _filter_literals(code, table, column, *, keep_quotes=False, exclusions=False, variables=False):
+def _filter_literals(code, table, column, *, keep_quotes=False, exclusions=False, variables=False, positive_only=False):
     """Read equality, IN and TREATAS filters, including literal tables bound by VAR."""
     ref = _field_pattern(table, column)
     atom = r'(?:"(?:[^"]|"")*"|-?\d+(?:\.\d+)?)'
     many = '(' + atom + '(?:,' + atom + ')*)'
     comparison = r'(?:={1,2}|<>)' if exclusions else r'={1,2}'
-    values = re.findall(ref + comparison + '(' + atom + r')(?=[),]|&&|\|\||$)', code)
-    lists = re.findall(r'treatas\(\{' + many + r'\},' + ref + r'\)', code)
-    lists += re.findall(ref + r'in\{' + many + r'\}', code)
+    visible = _code_only(code) if positive_only else ''
+    negated = {m.end() for m in re.finditer(r'not\(*', visible)}
+
+    def matches(pattern):
+        return (m for m in re.finditer(pattern, code) if not positive_only or
+                (visible[m.start()] != ' ' and m.start() not in negated))
+
+    values = [m[1] for m in matches(ref + comparison + '(' + atom + r')(?=[),]|&&|\|\||$)')]
+    lists = [m[1] for m in matches(r'treatas\(\{' + many + r'\},' + ref + r'\)')]
+    lists.extend(m[1] for m in matches(ref + r'in\{' + many + r'\}'))
     if variables:
-        for name, sequence in re.findall(r'var([\w]+)=\{' + many + r'\}', code):
-            if re.search(r'treatas\(' + re.escape(name) + ',' + ref + r'\)|' +
-                         ref + 'in' + re.escape(name) + r'(?=[,)&|]|$)', code):
+        for definition in matches(r'var([\w]+)=\{' + many + r'\}'):
+            name, sequence = definition.groups()
+            if any(matches(r'treatas\(' + re.escape(name) + ',' + ref + r'\)|' +
+                           ref + 'in' + re.escape(name) + r'(?=[,)&|]|$)')):
                 lists.append(sequence)
     for sequence in lists:
         values.extend(re.findall(atom, sequence))

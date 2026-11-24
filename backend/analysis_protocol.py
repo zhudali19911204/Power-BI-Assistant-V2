@@ -1,9 +1,10 @@
 """Validate analysis replies without guessing business values or rewriting DAX."""
 import json
 import re
+from typing import Annotated
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 
 from .analysis_budget import MAX_BATCH_QUERIES
 from .clarifications import ClarificationQuestion
@@ -20,6 +21,8 @@ class QueryPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=160)
     dax: str = Field(min_length=1, max_length=16000)
+    convention_exceptions: dict[str, Annotated[str, StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=400)]] = Field(default_factory=dict)
 
     @field_validator('title', 'dax')
     @classmethod
@@ -89,7 +92,7 @@ def _invalid_constant(value):
 
 def _validation_issues(error):
     # Never include rejected values, query text, or model-generated unknown key names.
-    fields = {'scope', 'clarification', 'semantic_queries', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
+    fields = {'scope', 'convention_exceptions', 'clarification', 'semantic_queries', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
               'assessment', 'title', 'dax', 'table', 'column', 'search_terms', 'reason',
               'topic', 'question', 'context', 'options', 'label', 'value', 'detail',
               'scope_checks', 'scope_resolutions', 'term', 'members', 'related_term', 'aliases', 'candidates', 'field', 'basis',
@@ -159,6 +162,12 @@ def validate_action(plan, stage):
 
 
 def correction_prompt(error, stage):
+    if any(item['type'] == 'unchecked_convention' for item in error.issues):
+        return (str(error) + '。复核相应编号的适用条件、映射字段和全部原值，返回完整计划。'
+                '适用的默认筛选要写入对应查询，保留其他口径及文本前导零。'
+                '仅关联对象的约定按用途使用，展示约定可在 scope 中点名说明。'
+                '若用户已明确覆盖、该约定不适用或由等价表达实现，保留正确口径，在对应查询的 convention_exceptions 中用编号说明具体依据。'
+                '业务含义确实有歧义时返回 clarification。')
     if any(item['type'] == 'missing_group_filter' for item in error.issues):
         return str(error) + '。保持字段、包含或排除方向和其他口径，返回使用完整清单的查询计划。'
     if any(item['type'] == 'unknown_match' for item in error.issues):
