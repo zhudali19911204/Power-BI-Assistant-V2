@@ -1,5 +1,6 @@
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -75,6 +76,15 @@ def test_local_only_and_csrf(client):
     assert client.get('/api/health', headers={'Host': 'attacker.example'}).status_code == 400
     assert client.post('/api/models/demo', json={}, headers={'Origin': 'https://attacker.example'}).status_code == 403
     assert client.post('/api/models/demo', data='{}', headers={'Content-Type': 'text/plain'}).status_code == 415
+
+
+def test_in_app_guide_serves_the_canonical_utf8_document(client):
+    guide = client.get('/help/user-guide.md')
+    assert guide.status_code == 200
+    assert guide.headers['content-type'].startswith('text/markdown')
+    assert guide.content == (Path(__file__).resolve().parents[1] / 'docs' / 'USER_GUIDE.md').read_bytes()
+    assert '## 完成第一次提问' in guide.text
+    assert client.get('/help/LICENSING.md').status_code == 404
 
 
 def test_settings_secret_encryption_and_restart(client, app, tmp_path):

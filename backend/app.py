@@ -586,6 +586,10 @@ def create_app(directory=None):
 
     app.mount("/assets", StaticFiles(directory=ROOT / "frontend"), name="assets")
 
+    @app.get("/help/user-guide.md", include_in_schema=False)
+    def user_guide():
+        return FileResponse(ROOT / "docs" / "USER_GUIDE.md", media_type="text/markdown; charset=utf-8")
+
     @app.get("/")
     def index():
         return FileResponse(ROOT / "frontend" / "index.html")

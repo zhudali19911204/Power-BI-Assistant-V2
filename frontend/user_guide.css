@@ -1,0 +1,41 @@
+.guide-entry { width: 100%; padding: 8px 7px; font-size: var(--font-ui); }
+.welcome-actions { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 16px; margin-top: 22px; }
+.welcome-actions .welcome-connect { margin: 0; }
+.welcome-actions .text-link { min-height: 36px; font-size: var(--font-ui); }
+
+dialog.wide-modal:has(#user-guide) { width: 960px; }
+dialog:has(#user-guide) #modal-eyebrow:empty { display: none; }
+#user-guide:has(.guide-sidebar) {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 24px;
+  height: min(570px, 67dvh);
+}
+.guide-sidebar { min-height: 0; display: flex; flex-direction: column; gap: 10px; border-right: 1px solid var(--border); padding-right: 14px; }
+.guide-search { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; color: var(--text-muted); }
+.guide-search:focus-within { outline: 2px solid #bd9126; outline-offset: 1px; }
+.guide-search .icon { width: 15px; height: 15px; }
+.guide-search input { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: var(--font-ui); color: var(--ink); }
+.guide-chapters { overflow: auto; scrollbar-width: thin; }
+.guide-chapters button { display: block; width: 100%; padding: 8px 10px; text-align: left; border-radius: 6px; color: var(--text-secondary); background: transparent; font-size: var(--font-ui); }
+.guide-chapters button:hover { background: #f2f4f6; }
+.guide-chapters button[aria-current] { background: #fff3cf; color: #695017; font-weight: 600; }
+.guide-chapters button:focus-visible { outline: 2px solid #aa8224; outline-offset: -2px; }
+.guide-reading { overflow: auto; min-width: 0; padding-right: 8px; scrollbar-width: thin; }
+.guide-reading .message-content { margin: 0; padding: 0; font-size: var(--font-body); line-height: 1.8; color: var(--text-secondary); overflow-wrap: anywhere; }
+.guide-reading .message-content > h2:first-child { margin-top: 0; }
+.guide-reading a { color: var(--text-warning); text-decoration: underline; text-underline-offset: 2px; }
+.guide-reading [data-guide-match] { background: #fff4d5; }
+.guide-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; }
+.guide-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.guide-actions .icon { width: 15px; height: 15px; }
+.guide-empty { color: var(--text-muted); font-size: var(--font-body); }
+
+@media (max-width: 700px) {
+  .guide-entry { font-size: 0; padding: 12px; }
+  #user-guide:has(.guide-sidebar) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 12px; }
+  .guide-sidebar { padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .guide-chapters { display: flex; gap: 4px; }
+  .guide-chapters button { flex: none; width: auto; white-space: nowrap; }
+  .guide-reading { padding-right: 2px; }
+}

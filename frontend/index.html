@@ -20,6 +20,7 @@
   <link rel="stylesheet" href="/assets/analysis_templates.css">
   <link rel="stylesheet" href="/assets/code_blocks.css">
   <link rel="stylesheet" href="/assets/layout.css">
+  <link rel="stylesheet" href="/assets/user_guide.css">
   <script type="module" src="/assets/app.js"></script>
 </head>
 <body>
@@ -39,6 +40,7 @@
       <input id="history-search" class="history-search" placeholder="搜索对话…" aria-label="搜索会话" hidden>
       <div class="history-list" id="history-list"><p class="muted history-empty">还没有对话<br>从一个数据问题开始吧</p></div>
       <div class="sidebar-bottom">
+        <button type="button" class="nav-item guide-entry" data-open-guide aria-label="使用说明" aria-haspopup="dialog" title="使用说明"><span data-icon="help"></span>使用说明</button>
         <div class="local-note"><span data-icon="shield"></span><span>本地工作区<small>会话与模型记录保存在本机</small></span></div>
         <button class="settings-entry" id="settings-open"><span class="user-avatar">P</span><span>模型服务设置<small id="sidebar-model">连接你的大模型服务器</small></span><span data-icon="settings"></span></button>
       </div>
@@ -108,7 +110,7 @@
       </div>
     </main>
   </div>
-  <dialog id="modal"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow"></span><h2 id="modal-title"></h2></div><button class="icon-button" id="modal-close" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div id="modal-body"></div></dialog>
+  <dialog id="modal" aria-labelledby="modal-title"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow"></span><h2 id="modal-title"></h2></div><button class="icon-button" id="modal-close" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div id="modal-body"></div></dialog>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <dialog id="table-reader" class="table-reader" aria-labelledby="table-reader-title">
     <div class="modal-heading"><h2 id="table-reader-title">分析结果表格</h2><button type="button" class="icon-button" data-table-reader-close aria-label="关闭表格阅读" autofocus><span data-icon="close"></span></button></div>

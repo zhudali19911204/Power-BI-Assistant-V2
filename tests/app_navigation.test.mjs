@@ -7,6 +7,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
 test('first report selection resumes the unsent question and attachments in their own workspace',async()=>{
   const {window,document}=parseHTML(await readFile(new URL('../frontend/index.html',import.meta.url),'utf8'));
+  const guide=await readFile(new URL('../docs/USER_GUIDE.md',import.meta.url),'utf8');
   const $=s=>document.querySelector(s),modal=$('#modal'),input=$('#prompt');
   Object.defineProperty($('#query-select'),'value',{value:'',writable:true});
   modal.showModal=()=>{modal.open=true;};
@@ -22,9 +23,10 @@ test('first report selection resumes the unsent question and attachments in thei
   const responses={'/api/settings':{ready:true},'/api/models':[], '/api/conversations':[], '/api/ui/layout':{},
     '/api/desktop/instances':[{port:51001,report:{name:model.name}}],'/api/models/connect':model,
     '/api/models/demo':demo,'/api/models/real/connection':{model_id:model.id,live:true,connection:{status:'connected'}},
-    '/api/images':image};
+    '/api/images':image,'/api/llm/profiles':[]};
   async function fetchMock(path){
     requests.push(path);
+    if(path==='/help/user-guide.md')return new Response(guide);
     if(!Object.hasOwn(responses,path))throw new Error('Unexpected '+path);
     if(path==='/api/models/connect')await pendingConnect;
     if(path==='/api/images')await pendingUpload;
@@ -47,6 +49,14 @@ test('first report selection resumes the unsent question and attachments in thei
     assert.equal($('#calibration-open').hidden,true);
     draft('按月计算销售额');await paste();
     const imageKey=$('.image-draft').dataset.imageKey;
+    await click('.welcome [data-open-guide]');
+    assert.equal($('#user-guide article h2').textContent,'完成第一次提问');
+    await click('[data-guide-action="settings"]');
+    assert.equal($('#modal-title').textContent,'模型服务设置');await click('#modal-close');
+    await click('.sidebar [data-open-guide]');
+    await click('[data-guide-action="connect"]');
+    assert.equal($('#modal-title').textContent,'连接 Power BI');await click('#modal-close');
+    assert.equal(input.value,'按月计算销售额');assert.equal($('.image-draft').dataset.imageKey,imageKey);
     await $('#composer-form').onsubmit({preventDefault(){}});
     assert.equal($('#modal-title').textContent,'连接 Power BI');
     await click('#modal-close');assert.equal(input.value,'按月计算销售额');

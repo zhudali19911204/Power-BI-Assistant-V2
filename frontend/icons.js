@@ -23,6 +23,7 @@ const paths = {
   layers:'<path d="m12 3 10 5-10 5L2 8l10-5ZM2 12l10 5 10-5M2 16l10 5 10-5"/>',
   refresh:'<path d="M20 8a8 8 0 0 0-14-3L3 8m0-5v5h5m-4 8a8 8 0 0 0 14 3l3-3m0 5v-5h-5"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',
+  help:'<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4.4 1.6c-.9.8-1.9 1.2-1.9 2.9m0 3h.01"/>',
   close:'<path d="m6 6 12 12M6 18 18 6"/>',
   table:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/>',
   'table-transform':'<path d="M20 10V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6M3 9h17M9 9v11"/><path d="M13 16h8m-4-4 4 4-4 4"/>',

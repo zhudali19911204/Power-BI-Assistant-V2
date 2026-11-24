@@ -18,6 +18,7 @@ import {mountAnalysisTemplates,saveTemplateButton} from './analysis_templates.js
 import {createWorkspaceLayout} from './layout.js';
 import {createTableTools} from './table_reader.js';
 import {mountChatContext} from './chat_context.js';
+import {mountUserGuide} from './user_guide.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
@@ -115,6 +116,12 @@ function showModal(title,eyebrow,html,{wide=false,modelSettings=false}={}) {
   if(!$('#modal').open) $('#modal').showModal();
 }
 function closeModalLayer(){if(modalReturn)modalReturn();else $('#modal').close();}
+function openUserGuide() {
+  showModal('使用说明','','<div id="user-guide"><p class="guide-empty" role="status">正在读取使用说明…</p></div>',{wide:true});
+  const controller=new AbortController();
+  modalCleanup=()=>controller.abort();
+  return mountUserGuide($('#user-guide'),controller.signal);
+}
 function modalHasEditor(){
   return !!$('#model-manager [data-model-form], [data-template-editor], [data-template-run-form], #semantic-workbench:not([hidden]) form', $('#modal'));
 }
@@ -139,7 +146,8 @@ function welcome() {
     <div class="welcome-emblem">${icon(needsReport?'database':mode.icon)}</div>
     <h1 id="welcome-title">${needsReport?'从哪份报表开始？':mode.headline}</h1>
     <p class="welcome-subtitle">${needsReport?'先在 Power BI Desktop 中打开报表，连接后即可使用其中的字段和度量值。':mode.subtitle}</p>
-    ${needsReport?`<button type="button" class="primary-button welcome-connect" id="welcome-connect">${icon('monitor')}连接 Power BI 报表</button>`:''}
+    ${needsReport?`<div class="welcome-actions"><button type="button" class="primary-button welcome-connect" id="welcome-connect">${icon('monitor')}连接 Power BI 报表</button>
+      <button type="button" class="text-link" data-open-guide aria-haspopup="dialog">快速上手${icon('arrow-right')}</button></div>`:''}
   </section>`;
 }
 function renderMessages(forceFollow=false) {
@@ -594,6 +602,9 @@ $('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.v
 $('#export-chat').onclick=()=>{if(!state.view.conversation){toast('先开始一段对话再导出');return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
 document.addEventListener('click',guard(async e=>{
   const el=e.target.closest('button');if(!el)return;
+  if(el.hasAttribute('data-open-guide')){await openUserGuide();return;}
+  if(el.dataset.guideAction==='settings'){await openSettings();return;}
+  if(el.dataset.guideAction==='connect'){await openConnections();return;}
   if(await codeTools.handleClick(el))return;
   if(tableTools.handleClick(el))return;
   if(el.dataset.saveAnalysisTemplate){await openAnalysisTemplates(el.dataset.saveAnalysisTemplate);return;}
