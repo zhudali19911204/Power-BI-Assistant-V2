@@ -1,10 +1,12 @@
 # Power BI Assistant V2 技术架构
 
-Power BI Assistant 在本机连接 Power BI Desktop，并通过用户配置的 AI 服务处理 DAX、M 和业务分析请求。本文与 `2.0.11` 安装包基于 Git 标签 `V-1.0.8.4`（`4a9f99c`），包含会话上下文控制与分析约定核对等改进。历史发行件按各自构建记录核对；本版的具体检查范围见[验证记录](VALIDATION.md)。
+Power BI Assistant 在本机连接 Power BI Desktop，并通过用户配置的 AI 服务处理 DAX、M 和业务分析请求。2.0.12 的构建基线为 Git 标签 `V-1.0.8.7`（`fdbb953`），包含离线使用说明、侧栏布局和会话上下文控制。2.0.13 增加 Windows 桌面在线更新。[验证记录](VALIDATION.md)
 
 ## 运行与数据流
 
 `desktop.py` 先创建后端，再绑定 `127.0.0.1` 上的端口。原生模式在主线程运行 pywebview / Edge WebView2，在后台线程运行 Uvicorn。浏览器预览也访问这个本机服务。FastAPI 提供首页、`/assets` 下的 ES Modules 和 JSON API，生产运行直接加载 `frontend/` 中的文件。会话锁、活动任务、取消令牌和 Desktop 连接状态都属于这一后端进程。增加 Uvicorn worker 会分割这些状态。[桌面入口](../desktop.py) · [服务装配](../backend/app.py)
+
+已安装的原生窗口通过本地 `/api/updates` 检查构建时指定的 HTTPS 清单。后端用内置发布公钥验证签名，只暂存高于当前版本的安装包。用户确认重启且工作区空闲时，后端再次校验安装包并启动 Inno Setup。安装器等待旧进程退出，在原安装位置验证和沿用本机授权，成功后启动新版。[更新服务](../backend/updates.py) · [签名协议](../backend/releases.py) · [发布流程](LICENSING.md#发布在线更新)
 
 ```mermaid
 flowchart LR

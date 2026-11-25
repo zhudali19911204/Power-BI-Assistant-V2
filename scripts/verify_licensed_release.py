@@ -1,11 +1,14 @@
 """Opt-in real EXE/installer checks. No Power BI or model service is contacted."""
 import argparse
+from contextlib import closing
 import ctypes
 from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -72,7 +75,7 @@ def native_window(process_id: int) -> int | None:
 
 
 def check_service(executable: Path, env: dict[str, str], *, native: bool = False,
-                  license_type: str = "permanent", wait_expiry: bool = False) -> None:
+                  license_type: str = "permanent", wait_expiry: bool = False) -> dict:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -142,11 +145,13 @@ def check_service(executable: Path, env: dict[str, str], *, native: bool = False
         if process.poll() is None:
             process.terminate()
         process.wait(timeout=15)
+    return health
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument("--previous-release-dir", type=Path, help="Seed the isolated upgrade with an older packaged application")
     parser.add_argument("--key-dir", type=Path)
     parser.add_argument("--iscc", type=Path)
     args = parser.parse_args()
@@ -214,21 +219,43 @@ def main() -> None:
                     stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180,
                 )
             common = [str(test_setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                      "/SP-", "/NOICONS", f"/DIR={install}"]
+                      "/SP-", "/NOICONS", f"/GROUP={name}", f"/DIR={install}"]
             for path in (None, malformed, wrong_machine, expired, future, wrong_trial):
                 command = common + ([f"/LICENSEFILE={path}"] if path else [])
                 run(command, success=False)
                 if install.exists():
                     raise RuntimeError("Installer wrote application files before authorization")
             print("PASS: missing, invalid, expired, future and other-machine keys cannot bypass silent installation")
-            run(common + [f"/LICENSEFILE={trial}"], success=True)
+            if args.previous_release_dir:
+                previous = args.previous_release_dir.resolve() / "PowerBIAssistant"
+                check_archive(previous / "PowerBIAssistant.exe", public)
+                shutil.copytree(previous, install)
+                (install / "license.key").write_bytes(trial.read_bytes())
+            else:
+                run(common + [f"/LICENSEFILE={trial}"], success=True)
             installed_exe = install / "PowerBIAssistant.exe"
             if not installed_exe.is_file() or not (install / "license.key").is_file():
                 raise RuntimeError("Authorized installer did not persist app and license")
             env = dict(os.environ, PBI_DATA_DIR=str(temporary / "authorized-data"))
-            check_service(installed_exe, env, license_type="trial")
+            before = check_service(installed_exe, env, license_type="trial")
             check_service(installed_exe, env, native=True, license_type="trial")
             print("PASS: trial installs, serves health/UI and displays its deadline in the native window")
+            profile = Path(env["PBI_DATA_DIR"])
+            saved_key = (profile / "secret.key").read_bytes()
+            saved_license = (install / "license.key").read_bytes()
+            with closing(sqlite3.connect(profile / "assistant.sqlite3")) as db:
+                db.execute("INSERT OR REPLACE INTO ui_layout (id,context_width,sidebar_width) VALUES (1,333,234)")
+                db.commit()
+            run(common, success=True)  # Bootstrap over an existing installation, without re-entering a key.
+            after = check_service(installed_exe, env, license_type="trial")
+            with closing(sqlite3.connect(profile / "assistant.sqlite3")) as db:
+                if db.execute("SELECT context_width,sidebar_width FROM ui_layout WHERE id=1").fetchone() != (333, 234):
+                    raise RuntimeError("The in-place upgrade lost a stored setting")
+            if (profile / "secret.key").read_bytes() != saved_key or (install / "license.key").read_bytes() != saved_license:
+                raise RuntimeError("The in-place upgrade changed credentials or trial authorization")
+            if after["license"] != before["license"]:
+                raise RuntimeError("The in-place upgrade changed the trial deadline")
+            print(f"PASS: {before['version']} -> {after['version']} retains trial, credentials and stored settings")
             for path in (expired, future):
                 (install / "license.key").write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
                 run([str(installed_exe), "--browser", "--no-open"], success=False, env=env)

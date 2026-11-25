@@ -2,7 +2,7 @@
   #error ReleaseDir must point to the PyInstaller output directory.
 #endif
 #ifndef AppVersion
-  #define AppVersion "2.0.11"
+  #define AppVersion "2.0.13"
 #endif
 #ifndef InstallerAppId
   #define InstallerAppId "{{34648710-F74C-44F7-BB72-73CD0B346D4C}"
@@ -15,6 +15,7 @@
 AppId={#InstallerAppId}
 AppName=Power BI Assistant
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
 DefaultDirName={localappdata}\Programs\PowerBIAssistant
 DefaultGroupName=Power BI Assistant
 PrivilegesRequired=lowest
@@ -41,6 +42,7 @@ Name: "{group}\Power BI Assistant"; Filename: "{app}\PowerBIAssistant.exe"
 
 [Run]
 Filename: "{app}\PowerBIAssistant.exe"; Description: "启动 Power BI Assistant"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\PowerBIAssistant.exe"; Flags: nowait skipifnotsilent; Check: IsAppUpdate
 
 [Code]
 var
@@ -49,6 +51,44 @@ var
   VerifierPath: String;
   ResultPath: String;
   LicenseSummary: String;
+
+function OpenUpdateProcess(Access: LongWord; InheritHandle: Integer; PID: LongWord): THandle;
+  external 'OpenProcess@kernel32.dll stdcall';
+function WaitForSingleObject(Handle: THandle; Milliseconds: LongWord): LongWord;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function CloseUpdateHandle(Handle: THandle): Integer;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function IsAppUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:PBIUPDATEPID|}') <> '';
+end;
+
+function WaitForPreviousProcess(): String;
+var
+  PID: Integer;
+  Handle: THandle;
+begin
+  Result := '';
+  if not IsAppUpdate() then Exit;
+  PID := StrToIntDef(ExpandConstant('{param:PBIUPDATEPID|}'), 0);
+  if PID <= 0 then begin
+    Result := '更新进程标识无效，请重新启动助手后重试。';
+    Exit;
+  end;
+  Handle := OpenUpdateProcess($00100000, 0, PID);  { SYNCHRONIZE }
+  if Handle = 0 then begin
+    { ERROR_INVALID_PARAMETER indicates that the previous process already exited. }
+    if DLLGetLastError <> 87 then Result := '无法确认助手是否已关闭，请关闭助手后重试。';
+    Exit;
+  end;
+  try
+    if WaitForSingleObject(Handle, 60000) <> 0 then
+      Result := '助手仍在运行，请关闭助手后重新安装更新。';
+  finally
+    CloseUpdateHandle(Handle);
+  end;
+end;
 
 function ReadUTF8File(const Path: String; var Value: String): Boolean;
 var
@@ -119,7 +159,7 @@ begin
   ResultPath := ExpandConstant('{tmp}\pbi-license-result.txt');
   ExtractTemporaryFile('LicenseVerifier.exe');
   VerifierPath := ExpandConstant('{tmp}\LicenseVerifier.exe');
-  LicensePage := CreateInputQueryPage(wpWelcome, '软件授权', '请输入本机专用的永久或 7 天试用 CD-KEY',
+  LicensePage := CreateInputQueryPage(wpSelectDir, '软件授权', '请输入本机专用的永久或 7 天试用 CD-KEY',
     '将机器码复制给软件提供者，收到 CD-KEY 后粘贴到下方。试用期从发码时起算 7×24 小时，重装不会重置；无需联网激活。');
   LicensePage.Add('本机机器码（可选中后按 Ctrl+C 复制）：', False);
   LicensePage.Edits[0].ReadOnly := True;
@@ -137,12 +177,26 @@ begin
   end;
 end;
 
+procedure PrefillInstalledLicense();
+var
+  Existing: String;
+begin
+  if (ExpandConstant('{param:LICENSEFILE|}') = '') and (Trim(LicensePage.Values[1]) = '') then
+    if ReadUTF8File(AddBackslash(WizardDirValue()) + 'license.key', Existing) then
+      LicensePage.Values[1] := Existing;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = LicensePage.ID then PrefillInstalledLicense();
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Message: String;
 begin
   Result := True;
-  if CurPageID = LicensePage.ID then
+  if (CurPageID = LicensePage.ID) and (not WizardSilent) then
   begin
     Message := ValidateLicense();
     Result := Message = '';
@@ -154,7 +208,9 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   { Also runs for /SILENT and /VERYSILENT: skipping wizard pages is not authorization. }
+  PrefillInstalledLicense();
   Result := ValidateLicense();
+  if Result = '' then Result := WaitForPreviousProcess();
 end;
 
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,

@@ -19,6 +19,7 @@ import {createWorkspaceLayout} from './layout.js';
 import {createTableTools} from './table_reader.js';
 import {mountChatContext} from './chat_context.js';
 import {mountUserGuide} from './user_guide.js';
+import {mountDesktopUpdates} from './updates.js';
 
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
@@ -587,7 +588,7 @@ $('#prompt').addEventListener('keydown',e=>{
   $('#composer-form').requestSubmit();
 });
 document.addEventListener('keydown',e=>{
-  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open||$('#code-reader').open||$('#table-reader').open)return;
+  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open||$('#code-reader').open||$('#table-reader').open||$('#updates-dialog').open)return;
   if(e.key.toLowerCase()==='k'&&(e.ctrlKey||e.metaKey)){e.preventDefault();newChat();}
 });
 $('#new-chat').onclick=()=>newChat();
@@ -671,6 +672,14 @@ document.addEventListener('click',guard(async e=>{
 }));
 
 async function init() {
+  void mountDesktopUpdates({
+    button: $('#updates-open'), dialog: $('#updates-dialog'), api, post, notice: toast,
+    hasWork: () => workspace.all().some(view => view.busy || view.preparing || view.syncing || view.changingContext ||
+      view.images.some(image => image.status === 'uploading')),
+    hasDraft: () => Boolean($('#prompt').value.trim()) || workspace.all().some(view => view.draft.trim() || view.images.length),
+  }).then(checkWhenIdle => {
+    if (checkWhenIdle) setInterval(checkWhenIdle, 6 * 60 * 60 * 1000);
+  });
   // A layout read failure must not block conversations or model connection.
   void api('/ui/layout').then(value=>contextLayout.restore(value)).catch(()=>{});
   try {

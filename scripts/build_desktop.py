@@ -3,7 +3,6 @@ import argparse
 import importlib.util
 import os
 from pathlib import Path
-import re
 import shutil
 import struct
 import subprocess
@@ -12,6 +11,7 @@ import sys
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from backend.releases import DEFAULT_FEED, DEFAULT_VERSION, require_https, version_number
 from scripts.license_admin import default_key_directory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,14 +40,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--public-key", type=Path)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument("--work-dir", type=Path, help="Directory for this build's intermediate files")
     parser.add_argument("--iscc", type=Path)
-    parser.add_argument("--version", default="2.0.11")
+    parser.add_argument("--version", default=DEFAULT_VERSION)
+    parser.add_argument("--update-feed", default=DEFAULT_FEED, help="HTTPS URL of the signed latest.json")
     args = parser.parse_args(argv)
     try:
         if sys.platform != "win32" or struct.calcsize("P") != 8:
             raise ValueError("Use 64-bit Python on Windows to build this installer.")
-        if not re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", args.version):
-            raise ValueError("Version must have three or four numeric components.")
+        version_number(args.version)
+        require_https(args.update_feed)
         iscc = find_iscc(args.iscc)
         if importlib.util.find_spec("PyInstaller") is None:
             raise ValueError("Install build dependencies: python -m pip install -r requirements-build.txt")
@@ -56,11 +58,12 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(public_key, Ed25519PublicKey):
             raise ValueError("The license public key must be an Ed25519 PEM public key.")
         output = args.output_dir.resolve()
-        work = ROOT / "build"
+        work = (args.work_dir or ROOT / "build" / f"desktop-{args.version}").resolve()
         trust = work / "license-trust"
         trust.mkdir(parents=True, exist_ok=True)
         (trust / "_license_trust.py").write_text(
-            f"PUBLIC_KEY = {public_key.public_bytes_raw()!r}\n", encoding="ascii")
+            f"PUBLIC_KEY = {public_key.public_bytes_raw()!r}\n"
+            f"APP_VERSION = {args.version!r}\nUPDATE_FEED = {ascii(args.update_feed)}\n", encoding="ascii")
         environment = dict(os.environ, PBI_BUILD_TRUST_DIR=str(trust))
         subprocess.run(
             [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
@@ -74,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
             cwd=ROOT, check=True,
         )
         print(f"Installer: {output / f'PowerBIAssistant-Setup-{args.version}.exe'}")
-        print("Distribute only the installer. Never distribute publisher keys or source code.")
+        print(f"Update feed: {args.update_feed}")
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"Build failed: {exc}", file=sys.stderr)

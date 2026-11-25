@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .chat import ChatService
@@ -35,6 +36,7 @@ from .streaming import BackgroundStream
 from .validation import validate
 from .images import MAX_UPLOAD_BYTES
 from .licensing import LicenseError, LicenseGuard, require_runtime_license
+from .releases import APP_VERSION, UpdateError
 from .cancellation import authorization_scope
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
@@ -70,8 +72,11 @@ def create_app(directory=None):
     def snapshot_in_use(model_id):
         return model_id in semantics.jobs or dictionary_in_use(model_id,include_sync=False)
     powerbi.snapshot_in_use=snapshot_in_use
-    app = FastAPI(title="Power BI Assistant", version="2.0.11", docs_url="/api/docs", redoc_url=None)
+    app = FastAPI(title="Power BI Assistant", version=APP_VERSION, docs_url="/api/docs", redoc_url=None)
     app.state.license_info = license_info
+    app.state.updates = None  # Enabled by the installed native window once it is ready.
+    pending_writes = 0
+    restarting = False
     app.state.db, app.state.settings, app.state.powerbi, app.state.chat = db, settings, powerbi, chat
     app.state.semantics=semantics
     app.state.images=chat.images
@@ -88,6 +93,7 @@ def create_app(directory=None):
 
     @app.middleware("http")
     async def local_security(request: Request, call_next):
+        nonlocal pending_writes
         # No CORS: websites on other origins cannot read local model data or issue JSON writes.
         origin = request.headers.get("origin")
         if origin and urlsplit(origin).netloc != request.headers.get("host"):
@@ -108,8 +114,18 @@ def create_app(directory=None):
         except HTTPException as exc:
             response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         else:
-            with authorization_scope(check_authorization if license_guard else None):
-                response = await call_next(request)
+            writing = (request.method in ("POST", "PUT", "PATCH", "DELETE")
+                       and not request.url.path.startswith("/api/updates/"))
+            if writing and restarting:
+                return JSONResponse({"detail": "助手正在重启更新，请稍候。"}, status_code=503)
+            if writing:
+                pending_writes += 1
+            try:
+                with authorization_scope(check_authorization if license_guard else None):
+                    response = await call_next(request)
+            finally:
+                if writing:
+                    pending_writes -= 1
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
@@ -121,10 +137,58 @@ def create_app(directory=None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "2.0.11", "storage": "sqlite", "platform": "desktop",
+        return {"status": "ok", "version": APP_VERSION, "storage": "sqlite", "platform": "desktop",
                 "license": {"type": "trial" if license_info.issued_at is not None else "permanent",
                             "issued_at": license_info.issued_at, "expires_at": license_info.expires_at,
                             "summary": license_info.summary} if license_info else {"type": "development"}}
+
+    def desktop_updates():
+        if app.state.updates is None:
+            raise HTTPException(409, "在线更新仅适用于已安装的桌面窗口。")
+        return app.state.updates
+
+    @app.get("/api/updates")
+    def update_status():
+        return {"enabled": app.state.updates is not None, "version": APP_VERSION}
+
+    @app.post("/api/updates/check")
+    def update_check():
+        try:
+            return {"release": desktop_updates().check()}
+        except UpdateError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    @app.post("/api/updates/{digest}/download")
+    def update_download(digest: str):
+        try:
+            desktop_updates().download(digest)
+        except UpdateError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(503, "无法保存安装包，请检查临时目录的空间和权限。") from exc
+        return {"ready": True}
+
+    @app.post("/api/updates/{digest}/install")
+    async def update_install(digest: str):
+        nonlocal restarting
+        updater = desktop_updates()
+        # Admission and the handoff flag run on the same event loop as local_security.
+        if (restarting or pending_writes or semantics.jobs
+                or any(lock.locked() for lock in list(chat.locks.values()))):
+            raise HTTPException(409, "助手正在处理任务，请在任务结束后更新。")
+        restarting = True
+        started = False
+        try:
+            await run_in_threadpool(updater.launch, digest)
+            started = True
+        except UpdateError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(503, "无法启动已下载的安装包，请重新下载后再试。") from exc
+        finally:
+            if not started:
+                restarting = False
+        return JSONResponse({"restarting": True}, background=BackgroundTask(updater.close_window))
 
     @app.post('/api/images',status_code=201)
     async def upload_image(request:Request):

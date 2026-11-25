@@ -2,15 +2,19 @@
 import argparse
 import logging
 import os
+from pathlib import Path
 import socket
 import sys
 import threading
+import tempfile
 import time
 
 import uvicorn
 
 from backend.app import create_app, data_directory
-from backend.licensing import LicenseError
+from backend.licensing import LicenseError, trusted_public_key
+from backend.releases import APP_VERSION, UPDATE_FEED
+from backend.updates import DesktopUpdates
 
 
 def main():
@@ -62,8 +66,14 @@ def main():
         title = "Power BI Assistant"
         if license_info and license_info.expires_at is not None:
             title += " - " + license_info.summary
-        webview.create_window(title, address, width=1440, height=940,
-                              min_size=(1000, 700), background_color="#F8F9FA")
+        window = webview.create_window(title, address, width=1440, height=940,
+                                       min_size=(1000, 700), background_color="#F8F9FA")
+        if getattr(sys, "frozen", False):
+            app.state.updates = DesktopUpdates(
+                APP_VERSION, UPDATE_FEED, trusted_public_key(),
+                Path(tempfile.gettempdir()) / "PowerBIAssistant-updates",
+                Path(sys.executable).resolve(), window.destroy)
+            app.state.updates.clear_installed_packages()
         webview.start(gui="edgechromium", private_mode=True)
     except Exception:
         logging.exception("Desktop startup failed")
