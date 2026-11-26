@@ -8,6 +8,7 @@ from contextvars import copy_context
 from fastapi import HTTPException
 from .engine.llm.diagnostics import DEFAULT_MAX_TOKENS, GenerationReport
 from .cancellation import current_cancellation, check_cancelled, close_on_cancel
+from .language import wording
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def task_events(work,*,timeout=100,heartbeat=HEARTBEAT_INTERVAL):
     while True:
         check_cancelled()
         remaining=timeout-(time.monotonic()-started)
-        if remaining<=0:raise HTTPException(504,'等待本机模型查询超时，请缩小数据范围')
+        if remaining<=0:raise HTTPException(504,wording('等待本机模型查询超时，请缩小数据范围', 'The local model query timed out. Narrow the data range.'))
         try:kind,value=output.get(timeout=min(0.1 if token else heartbeat,remaining))
         except queue.Empty:
             if time.monotonic()-last_heartbeat>=heartbeat:
@@ -152,14 +153,16 @@ def completion_events(provider, system, messages, *, timeout=None, idle_timeout=
             check_cancelled()
             elapsed = time.monotonic() - started
             if elapsed >= timeout:
-                raise HTTPException(504, f'已达到本次生成总时限（{int(timeout)} 秒），已保留收到的内容；可在模型服务设置中延长总时限后重试')
+                raise HTTPException(504, wording(f'已达到本次生成总时限（{int(timeout)} 秒），已保留收到的内容；可在模型服务设置中延长总时限后重试',
+                    f'Generation reached its {int(timeout)}-second time limit. The partial reply is saved. Increase the timeout in Model services and try again.'))
             if time.monotonic() - last_heartbeat >= heartbeat:
                 last_heartbeat = time.monotonic()
                 yield {'type': 'heartbeat', 'elapsed': int(last_heartbeat-started)}
                 continue
             idle = time.monotonic() - last_activity
             if idle >= idle_timeout:
-                raise HTTPException(504, f'模型连续 {int(idle_timeout)} 秒未返回新数据，已保留收到的内容；请检查模型服务或在模型服务设置中调整等待时间后重试')
+                raise HTTPException(504, wording(f'模型连续 {int(idle_timeout)} 秒未返回新数据，已保留收到的内容；请检查模型服务或在模型服务设置中调整等待时间后重试',
+                    f'No new data arrived for {int(idle_timeout)} seconds. The partial reply is saved. Check the model service or increase its idle timeout.'))
             if not warned and idle >= stall_after:
                 warned = True
                 yield {'type': 'status', 'text': f'模型暂未返回新数据，继续等待（连续 {int(idle)} 秒）'}

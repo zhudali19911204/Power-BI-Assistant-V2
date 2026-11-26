@@ -90,3 +90,21 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1
   .prompt-actions .icon { display: none; }
   .prompt-actions button { padding-inline: 6px; }
 }
+
+.language-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text-secondary);
+  font-size: var(--font-ui);
+  white-space: nowrap;
+}
+.language-toggle:hover { background: #f5f6f8; }
+@media (max-width: 700px) {
+  .topbar { gap: 8px; }
+  .topbar-actions { gap: 6px; }
+  .breadcrumb, .breadcrumb strong { min-width: 0; }
+  .breadcrumb strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .language-toggle { font-size: var(--font-caption); padding: 7px; }
+}

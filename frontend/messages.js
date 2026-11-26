@@ -82,7 +82,7 @@ export function createMessageRenderer({root, scroll, label, content, artifacts, 
   }
 
   return {
-    render(messages,{conversation, welcome='', forceFollow=false}={}) {
+    render(messages,{conversation, language, welcome='', forceFollow=false}={}) {
       const shouldFollow=forceFollow||scope!==conversation||atBottom();
       if(scope!==conversation || messages.length<records.length || records.some((r,i)=>r.role!==messages[i]?.role))clear(conversation);
       if(!messages.length) {
@@ -98,11 +98,11 @@ export function createMessageRenderer({root, scroll, label, content, artifacts, 
         record.article.classList.toggle('streaming',message.status==='streaming');
         if(message.id)record.article.dataset.messageId=message.id;
         // Completed messages are untouched when a later message streams.
-        const bodySource=JSON.stringify([message.content,message.images,!!message.clarification,message.status==='error',message.status==='cancelled']);
+        const bodySource=JSON.stringify([language,message.content,message.images,!!message.clarification,message.status==='error',message.status==='cancelled']);
         if(record.bodySource!==bodySource) {
           patchHtml(record.body,content(message));record.bodySource=bodySource;
         }
-        const artifactSource=JSON.stringify({id:message.id,status:message.status,artifacts:message.artifacts||[],analysis:message.analysis||[],
+        const artifactSource=JSON.stringify({language,id:message.id,status:message.status,artifacts:message.artifacts||[],analysis:message.analysis||[],
           field_previews:message.field_previews||[],
           clarification:message.clarification,clarificationDraft:message.clarificationDraft,clarificationLocked:message.clarificationLocked});
         if(record.artifactSource!==artifactSource) {

@@ -1,3 +1,4 @@
+import {language, serviceText, tr} from './i18n.js';
 import {readEvents} from './stream.js';
 
 export function createWorkspaces() {
@@ -60,7 +61,7 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
     const deadline=now()+(view.mode==='analysis'?1200000:600000);
     let failures=0;
     while(true) {
-      if(now()>deadline)throw new Error('后台任务长时间未完成，请检查服务后重新打开此会话');
+      if(now()>deadline)throw new Error(tr('后台任务长时间未完成，请检查服务后重新打开此会话'));
       try {
         const status=await snapshot(view);failures=0;
         if(!status.running)return;
@@ -100,7 +101,7 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
           generationId=status.generation_id;
           if(view.runId!==runId||!view.busy)return;
           if(!status.running)return;
-          if(!generationId)throw new Error('未取得本次生成标识，请刷新会话状态后重试中止');
+          if(!generationId)throw new Error(tr('未取得本次生成标识，请刷新会话状态后重试中止'));
         }
         await api(`/conversations/${view.conversation.id}/cancel`,{
           method:'POST',body:JSON.stringify({generation_id:generationId}),
@@ -162,12 +163,12 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
           if(view.stopRequested){restoreUnsent();return;}
           delete body.query_name;
           const response=await fetchResponse(`/api/conversations/${id}/messages`,{
-            method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),
+            method:'POST',headers:{'Content-Type':'application/json','X-UI-Language':body.language||language},body:JSON.stringify(body),
           });
           if(!response.ok) {
             rejected=true;
             const result=await response.json();
-            throw new Error(typeof result.detail==='string'?result.detail:JSON.stringify(result.detail));
+            throw new Error(typeof result.detail==='string'?serviceText(result.detail):JSON.stringify(result.detail));
           }
           view.requestReady=true;
           if(view.stopRequested)await cancelRemote(view);
@@ -182,7 +183,7 @@ export function createGenerationManager({workspace,api,fetchResponse=fetch,onCha
             }
             if(event.type==='model')onModel(view,event);
             if(event.type==='delta'){answer.content+=event.text;view.status='模型正在生成回复';}
-            if(event.type==='reset')answer.content+='\n\n---\n\n### 验证修订\n\n';
+            if(event.type==='reset')answer.content+='\n\n'+tr('---\n\n### 验证修订')+'\n\n';
             if(event.type==='status')view.status=event.text;
             if(event.type==='artifacts')answer.artifacts=event.artifacts;
             if(event.type==='analysis')answer.analysis=event.queries;

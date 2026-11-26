@@ -1,7 +1,8 @@
+import {language, tr} from './i18n.js';
 import {icon} from './icons.js';
 import {markdown} from './markdown.js';
 
-const firstQuestion = '完成第一次提问';
+const firstQuestion = () => tr('完成第一次提问');
 
 function readChapters(doc, source) {
   const parsed = doc.createElement('div');
@@ -22,18 +23,18 @@ function readChapters(doc, source) {
     }
     if (chapter) chapter.body.append(node);
   }
-  const start = chapters.find(item => item.title === firstQuestion);
+  const start = chapters.find(item => item.title === firstQuestion());
   return start ? [start, ...chapters.filter(item => item !== start)] : chapters;
 }
 
 function addActions(chapter) {
-  const start = chapter.title === firstQuestion;
+  const start = chapter.title === firstQuestion();
   const actions = [];
-  if (start || chapter.title === '配置大模型服务') {
-    actions.push('<button type="button" class="secondary-button" data-guide-action="settings">' + icon('settings') + '模型服务设置</button>');
+  if (start || chapter.title === tr('配置大模型服务')) {
+    actions.push('<button type="button" class="secondary-button" data-guide-action="settings">' + icon('settings') + `${tr('模型服务设置')}</button>`);
   }
-  if (start || chapter.title === '连接和同步报表') {
-    actions.push('<button type="button" class="secondary-button" data-guide-action="connect">' + icon('monitor') + '连接 Power BI 报表</button>');
+  if (start || chapter.title === tr('连接和同步报表')) {
+    actions.push('<button type="button" class="secondary-button" data-guide-action="connect">' + icon('monitor') + `${tr('连接 Power BI 报表')}</button>`);
   }
   if (actions.length) {
     const steps = start && chapter.body.querySelector('ol');
@@ -44,9 +45,9 @@ function addActions(chapter) {
 
 function showReader(root, chapters) {
   root.innerHTML = `<div class="guide-sidebar">
-    <label class="guide-search">${icon('search')}<input type="search" placeholder="搜索主题或关键词" aria-label="搜索使用说明"></label>
-    <nav class="guide-chapters" aria-label="使用说明目录"></nav>
-  </div><article class="guide-reading" tabindex="0" aria-label="章节内容"></article>`;
+    <label class="guide-search">${icon('search')}<input type="search" placeholder="${tr('搜索主题或关键词')}" aria-label="${tr('搜索使用说明')}"></label>
+    <nav class="guide-chapters" aria-label="${tr('使用说明目录')}"></nav>
+  </div><article class="guide-reading" tabindex="0" aria-label="${tr('章节内容')}"></article>`;
   const search = root.querySelector('input');
   const nav = root.querySelector('nav');
   const reader = root.querySelector('article');
@@ -65,7 +66,7 @@ function showReader(root, chapters) {
       reader.setAttribute('aria-labelledby', chapter.body.firstElementChild.id);
     } else {
       reader.removeAttribute('aria-labelledby');
-      reader.innerHTML = '<p class="guide-empty" role="status">没有找到相关章节，可以试试其他关键词。</p>';
+      reader.innerHTML = `<p class="guide-empty" role="status">${tr('没有找到相关章节，可以试试其他关键词。')}</p>`;
     }
     reader.scrollTop = 0;
     if (chapter && words.length) {
@@ -126,7 +127,7 @@ function showReader(root, chapters) {
 
 export async function mountUserGuide(root, signal) {
   try {
-    const response = await fetch('/help/user-guide.md', {signal});
+    const response = await fetch(language === 'en' ? '/help/user-guide.en.md' : '/help/user-guide.md', {signal});
     if (!response.ok) throw new Error('Guide unavailable');
     const source = await response.text();
     if (signal.aborted) return;
@@ -135,6 +136,6 @@ export async function mountUserGuide(root, signal) {
     showReader(root, chapters);
   } catch {
     if (signal.aborted) return;
-    root.innerHTML = '<div class="guide-empty"><p role="status">无法读取本机使用说明。</p><button type="button" class="secondary-button" data-open-guide>重新加载</button></div>';
+    root.innerHTML = `<div class="guide-empty"><p role="status">${tr('无法读取本机使用说明。')}</p><button type="button" class="secondary-button" data-open-guide>${tr('重新加载')}</button></div>`;
   }
 }

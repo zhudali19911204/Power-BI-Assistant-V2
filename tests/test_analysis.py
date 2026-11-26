@@ -45,8 +45,8 @@ def setup(tmp_path,monkeypatch):
         yield app,client,conv
 
 
-def send(client,conv,content='分析实际总额'):
-    response=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':content})
+def send(client,conv,content='分析实际总额',**options):
+    response=client.post(f"/api/conversations/{conv['id']}/messages",json={'content':content,**options})
     assert response.status_code==200,response.text
     return [json.loads(line) for line in response.text.splitlines()]
 
@@ -116,6 +116,22 @@ def test_real_data_precedes_summary_and_is_saved_exportable_and_cascades_on_dele
     assert not app.state.db.all('SELECT * FROM audit')
     client.delete(f"/api/conversations/{conv['id']}")
     assert not app.state.db.all('SELECT * FROM analysis_queries')
+
+
+def test_english_analysis_localizes_scope_evidence_and_export_without_changing_data(setup,monkeypatch):
+    app,client,conv=setup
+    dax='EVALUATE ROW("销售额",125)'
+    provider=Provider([plan(dax,scope='All sales'), 'Total sales were 125. [Q1]'])
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda model,query:result([{'销售额':125}]))
+    assert send(client,conv,'Analyze 销售额',language='en')[-1]['type']=='done'
+    assert len(provider.calls)==2 and all('in English.' in call[0] for call in provider.calls)
+    saved=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert '### Analysis scope' in saved['content'] and '**Data sources**' in saved['content']
+    assert saved['analysis'][0]['rows']==[{'销售额':125}]
+    exported=client.get(f"/api/conversations/{conv['id']}/export?language=en").text
+    assert '## You' in exported and '## Assistant' in exported and 'Query results:' in exported
+    assert 'Analyze 销售额' in exported and dax in exported
 
 
 def test_query_repair_preserves_each_attempt_and_does_not_reset_reply(setup,monkeypatch):

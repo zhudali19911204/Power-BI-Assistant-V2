@@ -28,6 +28,7 @@ from .semantic_diff import reconcile, source_snapshot
 from .semantic_retrieval import retrieve
 from . import business_dictionary as business
 from .dictionary_library import DictionaryLibrary, display_name, notice as dictionary_notice
+from .language import reply_instruction
 
 
 SEMANTIC_RULES = '''语义依据规则：表列名、数据类型、关系、公式和取值是模型事实；字段业务含义、单位和业务别名可能尚未确认。
@@ -519,9 +520,10 @@ class SemanticService:
                     '无法合理推测含义时 meaning 留空。不要虚构单位、币种、主键唯一性、粒度或值映射。'
                     '字段角色填入 role，别名最多三项。每个对象必须返回，id 原样保留。'
                     '未知的 unit、role 和 business_name 用空字符串，aliases 用空数组，不使用 null。'
-                    '返回 JSON {"entries":[{"id":"...","business_name":"中文业务名",'
+                    '返回 JSON {"entries":[{"id":"...","business_name":"业务名",'
                     '"meaning":"简述业务含义或计算口径","role":"编号/分类/日期/数值/指标/表等",'
                     '"unit":"只填写有明确依据的单位，否则留空","aliases":["合理业务别名"]}]}。')
+                system += '\n' + reply_instruction()
                 batch_tables={e['table'] for e in batch}
                 prompt=encode({'objects':[{k:e[k] for k in ('id','kind','table','name','facts')} for e in batch],
                                'relationships':[asdict(r) for r in ctx.relationships

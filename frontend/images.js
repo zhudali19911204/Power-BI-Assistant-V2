@@ -1,3 +1,4 @@
+import {language, serviceText, tr} from './i18n.js';
 import {escapeHtml as esc} from './markdown.js';
 import {icon} from './icons.js';
 
@@ -6,7 +7,7 @@ const MAX_BYTES=8*1024*1024;
 const TYPES=new Set(['image/png','image/jpeg','image/webp']);
 
 export function imageGallery(images=[]) {
-  return images.length?`<div class="message-images">${images.map(img=>`<button type="button" class="message-image" data-open-image="${esc(img.id)}" aria-label="查看图片 ${esc(img.name)}"><img src="${esc('/api/images/'+img.id)}" alt="${esc(img.name)}" loading="lazy"><span>${esc(img.name)}</span></button>`).join('')}</div>`:'';
+  return images.length?`<div class="message-images">${images.map(img=>`<button type="button" class="message-image" data-open-image="${esc(img.id)}" aria-label="${tr('查看图片 {0}', esc(img.name))}"><img src="${esc('/api/images/'+img.id)}" alt="${esc(img.name)}" loading="lazy"><span>${esc(img.name)}</span></button>`).join('')}</div>`:'';
 }
 
 export function transferImages(transfer) {
@@ -16,9 +17,9 @@ export function transferImages(transfer) {
 }
 
 export async function uploadImage(file) {
-  const response=await fetch('/api/images',{method:'POST',headers:{'Content-Type':file.type,
-    'X-Image-Name':encodeURIComponent(file.name||'截图.png')},body:file});
-  if(!response.ok){const error=await response.json();throw new Error(typeof error.detail==='string'?error.detail:'图片上传失败');}
+  const response=await fetch('/api/images',{method:'POST',headers:{'Content-Type':file.type,'X-UI-Language':language,
+    'X-Image-Name':encodeURIComponent(file.name||tr('截图.png'))},body:file});
+  if(!response.ok){const error=await response.json();throw new Error(typeof error.detail==='string'?serviceText(error.detail):tr('图片上传失败'));}
   return response.json();
 }
 
@@ -26,24 +27,24 @@ export async function uploadImage(file) {
 export function mountComposerImages(root,{getView,onChange=()=>{},onNotice=()=>{},upload=uploadImage,
   remove=id=>fetch('/api/images/'+id,{method:'DELETE'}),
   screenshot=async()=>{
-    const response=await fetch('/api/desktop/screenshot',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-    const result=await response.json();if(!response.ok)throw new Error(result.detail);return result;
+    const response=await fetch('/api/desktop/screenshot',{method:'POST',headers:{'Content-Type':'application/json','X-UI-Language':language},body:'{}'});
+    const result=await response.json();if(!response.ok)throw new Error(serviceText(result.detail));return result;
   },createURL=file=>URL.createObjectURL(file),revokeURL=url=>URL.revokeObjectURL(url)}={}) {
   const tray=root.querySelector('[data-image-drafts]'),input=root.querySelector('[data-image-input]');
   let next=0;
   const changed=owner=>{if(getView()===owner)render();onChange(owner);};
   function render() {
     const images=getView().images||[];tray.hidden=!images.length;
-    tray.innerHTML=images.map(img=>`<div class="image-draft ${img.status==='uploading'?'uploading':''}" data-image-key="${esc(img.key)}"><button type="button" class="image-draft-preview" ${img.id?`data-open-image="${esc(img.id)}"`:'disabled'}><img src="${esc(img.url)}" alt="${esc(img.name)}"><span>${esc(img.status==='uploading'?'正在添加…':img.name)}</span></button><button type="button" class="image-remove" data-remove-image="${esc(img.key)}" aria-label="移除图片 ${esc(img.name)}">${icon('close')}</button></div>`).join('');
+    tray.innerHTML=images.map(img=>`<div class="image-draft ${img.status==='uploading'?'uploading':''}" data-image-key="${esc(img.key)}"><button type="button" class="image-draft-preview" ${img.id?`data-open-image="${esc(img.id)}"`:'disabled'}><img src="${esc(img.url)}" alt="${esc(img.name)}"><span>${esc(img.status==='uploading'?tr('正在添加…'):img.name)}</span></button><button type="button" class="image-remove" data-remove-image="${esc(img.key)}" aria-label="${tr('移除图片 {0}', esc(img.name))}">${icon('close')}</button></div>`).join('');
   }
   async function add(files) {
     const owner=getView();owner.images??=[];
     const tasks=[];
     for(const file of files) {
-      if(!TYPES.has(file.type)){onNotice('请选择 PNG、JPEG 或 WebP 图片',true);continue;}
-      if(file.size>MAX_BYTES){onNotice('单张图片不能超过 8 MB，请缩小截图范围',true);continue;}
-      if(owner.images.length>=MAX_IMAGES){onNotice('每条消息最多添加 4 张图片',true);break;}
-      const draft={key:'image-'+(++next),name:file.name||'截图.png',url:createURL(file),status:'uploading'};
+      if(!TYPES.has(file.type)){onNotice(tr('请选择 PNG、JPEG 或 WebP 图片'),true);continue;}
+      if(file.size>MAX_BYTES){onNotice(tr('单张图片不能超过 8 MB，请缩小截图范围'),true);continue;}
+      if(owner.images.length>=MAX_IMAGES){onNotice(tr('每条消息最多添加 4 张图片'),true);break;}
+      const draft={key:'image-'+(++next),name:file.name||tr('截图.png'),url:createURL(file),status:'uploading'};
       owner.images.push(draft);changed(owner);
       tasks.push((async()=>{
         try {
@@ -59,7 +60,7 @@ export function mountComposerImages(root,{getView,onChange=()=>{},onNotice=()=>{
   }
   root.querySelector('[data-add-images]').onclick=()=>{input.value='';input.click();};
   root.querySelector('[data-screenshot]').onclick=async()=>{
-    try {const result=await screenshot();onNotice(result.detail);}
+    try {const result=await screenshot();onNotice(serviceText(result.detail));}
     catch(error){onNotice(error.message,true);}
   };
   input.onchange=()=>{void add([...input.files]);input.value='';};

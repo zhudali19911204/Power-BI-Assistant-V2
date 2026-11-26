@@ -2,6 +2,8 @@
 from dataclasses import dataclass, field, asdict
 import re
 
+from ...language import wording
+
 DEFAULT_MAX_TOKENS = 16000
 
 
@@ -69,27 +71,28 @@ class GenerationReport:
 
     def interruption(self):
         if self.finish_reason == 'length':
-            return f'模型因长度限制停止（本次输出额度 {self.max_tokens} token），请在模型服务设置中调整输出额度或缩小任务范围'
+            return wording(f'模型因长度限制停止（本次输出额度 {self.max_tokens} token），请在模型服务设置中调整输出额度或缩小任务范围',
+                           f'The model reached the {self.max_tokens}-token output limit. Increase the limit in Model services or narrow the task.')
         reasons = {
-            'content_filter': '模型服务过滤了本次回复，请调整问题后重试',
-            'tool_calls': '模型返回了工具调用，未按当前流程返回完整正文',
-            'insufficient_system_resource': '模型服务因推理资源不足中断了回复',
-            'aborted': '模型服务中止了本次生成',
-            'pause_turn': '模型暂停了本次生成，尚未完成回复',
-            'unknown': '模型返回了未识别的结束状态，无法确认回复完整',
+            'content_filter': ('模型服务过滤了本次回复，请调整问题后重试', 'The model service filtered this reply. Adjust the question and try again.'),
+            'tool_calls': ('模型返回了工具调用，未按当前流程返回完整正文', 'The model returned tool calls without a complete answer.'),
+            'insufficient_system_resource': ('模型服务因推理资源不足中断了回复', 'The model service ran out of resources during generation.'),
+            'aborted': ('模型服务中止了本次生成', 'The model service stopped generation.'),
+            'pause_turn': ('模型暂停了本次生成，尚未完成回复', 'The model paused before completing its answer.'),
+            'unknown': ('模型返回了未识别的结束状态，无法确认回复完整', 'The model returned an unknown completion status. The reply may be incomplete.'),
         }
         if self.finish_reason in reasons:
-            return reasons[self.finish_reason]
+            return wording(*reasons[self.finish_reason])
         if self.stream_ended and self.finish_reason_supported and not self.finish_reason:
-            return '模型响应流结束但未收到结束标记，可能被上游提前中断'
+            return wording('模型响应流结束但未收到结束标记，可能被上游提前中断', 'The response stream closed without a completion marker.')
         return None
 
     def empty_message(self):
         problem = self.interruption()
         if problem:
             if self.finish_reason == 'length' and self.reasoning_received:
-                return problem + '；本次收到思考数据，但未收到结论正文'
+                return problem + wording('；本次收到思考数据，但未收到结论正文', ' The model returned reasoning without a final answer.')
             return problem
         if self.reasoning_received:
-            return '模型仅返回思考数据，没有返回结论正文'
-        return '模型结束响应但未返回有效正文'
+            return wording('模型仅返回思考数据，没有返回结论正文', 'The model returned reasoning without a final answer.')
+        return wording('模型结束响应但未返回有效正文', 'The model finished without returning an answer.')

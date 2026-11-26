@@ -16,8 +16,12 @@ Design notes:
 
 from __future__ import annotations
 
-M_COMMENT_GUIDANCE = """代码可读性与注释：
-- 默认生成带简洁中文注释的 M 代码；用户明确要求其他注释语言或不带注释时遵循用户要求。
+from ...language import wording
+
+
+def comment_guidance() -> str:
+    return f"""代码可读性与注释：
+- 默认生成带简洁{wording('中文', '英文')}注释的 M 代码；用户明确要求其他注释语言或不带注释时遵循用户要求。
 - 每份新生成或改写的完整查询及新增步骤片段，都应包含有意义的原生注释，不能只在代码块外解释。
 - 优先在新增或改动的关键步骤之前单独写 // 注释，说明输入来自哪个步骤、转换目的，以及相关的类型、区域格式、空值、错误值或合并键处理。按逻辑分组说明，简单转换一条即可，不逐行复述函数名称。
 - 完整查询保留原有数据源、步骤名称、连接和有效注释；只同步更新受本次改动影响的说明，不为了添加注释重写已有逻辑。in 返回的结果可用一条简短注释说明。
@@ -30,7 +34,7 @@ M_COMMENT_GUIDANCE = """代码可读性与注释：
 # from rationale than from bare prohibitions.
 # --------------------------------------------------------------------------------------------------
 
-M_SYSTEM_PROMPT = """\
+_M_RULES = """\
 You are a senior Power BI data engineer writing Power Query (M). M is a functional, lazily-evaluated
 language built around a `let ... in` expression whose steps are immutable bindings — each step is a value
 (usually a table) computed from the previous one. Most cleaning bugs come from referencing a column that
@@ -73,7 +77,10 @@ VALIDATE before declaring done: every referenced column exists at that step, exa
 `let ... in` with balanced ()[]{} and quotes; every #"..." is a step defined above or a real query; types
 ascribed after shaping with a culture where locale matters; errors handled where a conversion could produce
 them; output shape matches the request.
-""" + "\n" + M_COMMENT_GUIDANCE
+"""
+
+M_COMMENT_GUIDANCE = comment_guidance()
+M_SYSTEM_PROMPT = _M_RULES + "\n" + M_COMMENT_GUIDANCE
 
 
 # --------------------------------------------------------------------------------------------------
@@ -150,23 +157,23 @@ def build_chat_system_prompt(query_grounding: str, query_name: str) -> str:
     stuck on. The grounding is the query's CURRENT APPLIED M (the user re-syncs it after applying their own
     manual steps in Desktop), so the assistant always appends onto the user's real latest state."""
     return f"""\
-{M_SYSTEM_PROMPT}
+{_M_RULES}
+{comment_guidance()}
 
 CONVERSATION MODE — incremental "fill the hard step" (用户为主，你补难点)
 - You assist a user who builds the query '{query_name}' THEMSELVES in Power BI's Power Query editor (point &
   click), and only asks YOU for the specific next step(s) they're stuck on (the M they can't write / a
   function they can't recall). The grounding below is the query's CURRENT APPLIED M — the user re-syncs it
   after applying their own steps in Desktop. Do NOT rebuild from scratch or redo steps they already have.
-- Reply in the user's language (Chinese unless they switch).
-- Give a short implementation summary under `## 转换说明`: describe the added transformation, affected
+- Give a short implementation summary under `## {wording('转换说明', 'Transformation notes')}`: describe the added transformation, affected
   columns and any type/locale/query-folding caveats. Do not include private step-by-step deliberation.
   Put explanatory prose above the code block.
-- Then, under a line `**新增步骤：**`, show ONLY the new step(s) you're adding (the one or few `#"Step" = …`
+- Then, under a line `**{wording('新增步骤：', 'New steps:')}**`, show ONLY the new step(s) you're adding (the one or few `#"Step" = …`
   lines), so the user can paste just those at the right place if they prefer.
 - Then output ONE ```powerquery code block = the FULL updated `let ... in` (the current applied query with
   your new step(s) appended, ending at the new result). This full block receives STATIC lint only. The
   user pastes it into Desktop and applies it to verify refresh. Do NOT put prose/`##`/`=====` inside the
-  block; include meaningful Chinese M comments (prefer // on their own lines) for the added or changed
+  block; include meaningful M comments (prefer // on their own lines) for the added or changed
   steps, following the comment guidelines. Keep the comments in both the step excerpt and the full query.
 - Append onto the current query's LAST step; reference only columns present at that step and only queries in
   the grounding. Keep the user's existing steps and names unchanged.

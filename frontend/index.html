@@ -46,7 +46,14 @@
       </div>
     </aside>
     <main class="main">
-      <header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="slash">/</span><strong id="page-title">DAX 助手</strong></div><div class="topbar-actions"><span class="desktop-tag"><span data-icon="monitor"></span>桌面工作台</span><button class="connection-button" id="connect-open"><span class="status-dot"></span><span id="connection-label">连接 Power BI</span><span data-icon="chevron-down"></span></button></div></header>
+      <header class="topbar">
+        <div class="breadcrumb"><span>工作空间</span><span class="slash">/</span><strong id="page-title">DAX 助手</strong></div>
+        <div class="topbar-actions">
+          <span class="desktop-tag"><span data-icon="monitor"></span>桌面工作台</span>
+          <button type="button" class="language-toggle" id="language-toggle" title="切换到英文" aria-label="切换到英文"><span lang="en">English</span></button>
+          <button class="connection-button" id="connect-open"><span class="status-dot"></span><span id="connection-label">连接 Power BI</span><span data-icon="chevron-down"></span></button>
+        </div>
+      </header>
       <div class="workspace">
         <section class="conversation-panel">
           <div class="conversation-toolbar">
@@ -79,7 +86,7 @@
               <button type="button" id="calibration-open" title="用已知结果校准最后一个度量值" hidden><span data-icon="target"></span><span id="calibration-label">校准</span></button>
             </div>
             <form class="composer" id="composer-form">
-              <div class="composer-image-tools"><button type="button" data-add-images title="选择图片">&#xFF0B; 图片</button><button type="button" data-screenshot title="打开 Windows 截图工具"><span data-icon="image"></span>截图</button><small>支持粘贴截图 · Ctrl+V</small><input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-input hidden></div>
+              <div class="composer-image-tools"><button type="button" data-add-images title="选择图片"><span aria-hidden="true">＋</span> 图片</button><button type="button" data-screenshot title="打开 Windows 截图工具"><span data-icon="image"></span>截图</button><small>支持粘贴截图 · Ctrl+V</small><input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-input hidden></div>
               <div class="image-drafts" data-image-drafts hidden aria-label="待发送图片"></div>
               <label for="prompt" class="sr-only">描述你的数据问题</label>
               <textarea id="prompt" rows="3" aria-describedby="composer-shortcuts" placeholder="描述你想计算的业务指标，或粘贴一段 DAX…"></textarea>

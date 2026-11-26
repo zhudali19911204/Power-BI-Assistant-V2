@@ -5,9 +5,28 @@ import {parseHTML} from 'linkedom';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
+test('a saved English preference mounts immediately and rapid toggles persist in click order',async()=>{
+  const {mountLanguage}=await import('../frontend/i18n.js');
+  const {document}=parseHTML('<html lang="en"><body><button id="language-toggle"><span>English</span></button><p>新建对话</p></body></html>');
+  const button=document.querySelector('button'),saved=[],pending=[];
+  mountLanguage(document,{
+    save:locale=>{saved.push(locale);return new Promise(resolve=>pending.push(resolve));},
+    onChange(){},onError:assert.fail,
+  });
+  assert.equal(button.textContent,'中文');assert.equal(document.querySelector('p').textContent,'New chat');
+  const field=document.createElement('p');field.textContent='新建对话';document.body.append(field);
+  const first=button.onclick(),second=button.onclick();
+  assert.equal(document.documentElement.lang,'en');assert.equal(field.textContent,'新建对话');
+  await tick();assert.deepEqual(saved,['zh-CN']);
+  pending.shift()();await first;await tick();assert.deepEqual(saved,['zh-CN','en']);
+  pending.shift()();await second;
+  const reset=button.onclick();await tick();pending.shift()();await reset;
+});
+
 test('first report selection resumes the unsent question and attachments in their own workspace',async()=>{
   const {window,document}=parseHTML(await readFile(new URL('../frontend/index.html',import.meta.url),'utf8'));
   const guide=await readFile(new URL('../docs/USER_GUIDE.md',import.meta.url),'utf8');
+  const englishGuide=await readFile(new URL('../docs/USER_GUIDE.en.md',import.meta.url),'utf8');
   const $=s=>document.querySelector(s),modal=$('#modal'),input=$('#prompt');
   Object.defineProperty($('#query-select'),'value',{value:'',writable:true});
   modal.showModal=()=>{modal.open=true;};
@@ -19,14 +38,18 @@ test('first report selection resumes the unsent question and attachments in thei
   const image={id:'b'.repeat(32),name:file.name,url:'/api/images/'+'b'.repeat(32)};
   let pendingConnect,pendingUpload,focusCount=0;
   input.focus=()=>{focusCount++;};
-  const requests=[],savedGlobals={};
+  const requests=[],languageWrites=[],savedGlobals={};
   const responses={'/api/settings':{ready:true},'/api/models':[], '/api/conversations':[], '/api/ui/layout':{},
     '/api/desktop/instances':[{port:51001,report:{name:model.name}}],'/api/models/connect':model,
     '/api/models/demo':demo,'/api/models/real/connection':{model_id:model.id,live:true,connection:{status:'connected'}},
     '/api/images':image,'/api/llm/profiles':[]};
-  async function fetchMock(path){
+  async function fetchMock(path,options={}){
     requests.push(path);
+    if(path==='/api/ui/language'&&options.method==='PUT'){
+      const preference=JSON.parse(options.body);languageWrites.push(preference.language);return Response.json(preference);
+    }
     if(path==='/help/user-guide.md')return new Response(guide);
+    if(path==='/help/user-guide.en.md')return new Response(englishGuide);
     if(!Object.hasOwn(responses,path))throw new Error('Unexpected '+path);
     if(path==='/api/models/connect')await pendingConnect;
     if(path==='/api/images')await pendingUpload;
@@ -49,6 +72,22 @@ test('first report selection resumes the unsent question and attachments in thei
     assert.equal($('#calibration-open').hidden,true);
     draft('按月计算销售额');await paste();
     const imageKey=$('.image-draft').dataset.imageKey;
+    await click('#language-toggle');
+    assert.equal(document.documentElement.lang,'en');
+    assert.equal($('#language-toggle').textContent,'中文');
+    assert.equal($('#page-title').textContent,'DAX Assistant');
+    assert.equal($('[data-mode="analysis"]').textContent,'Data Analysis');
+    assert.equal($('#send-button').getAttribute('aria-label'),'Send message');
+    assert.match($('#welcome-title').textContent,/report/i);
+    assert.match($('#history-context [data-usage]').textContent,/New chat/);
+    assert.equal(input.value,'按月计算销售额');assert.equal($('.image-draft').dataset.imageKey,imageKey);
+    await click('.welcome [data-open-guide]');
+    assert.equal($('#user-guide article h2').textContent,'Ask your first question');
+    await click('[data-guide-action="settings"]');
+    assert.equal($('#modal-title').textContent,'Model services');await click('#modal-close');
+    await click('#language-toggle');
+    assert.deepEqual(languageWrites,['en','zh-CN']);
+    assert.equal($('#language-toggle').textContent,'English');
     await click('.welcome [data-open-guide]');
     assert.equal($('#user-guide article h2').textContent,'完成第一次提问');
     await click('[data-guide-action="settings"]');
@@ -66,6 +105,14 @@ test('first report selection resumes the unsent question and attachments in thei
     assert.ok(focusCount);assert.equal(modal.open,false);assert.equal($('#welcome-connect'),null);
     assert.equal($('#calibration-open').hidden,false);
     const shortcuts=$('#prompt-actions');
+    await click('[data-prompt="0"]');
+    const chineseDraft=input.value;
+    await click('#language-toggle');assert.equal(input.value,chineseDraft);
+    assert.equal($('.model-name').textContent,model.name);
+    await click('[data-prompt="1"]');
+    assert.match(input.value,/Explain.*DAX/i);assert.ok(input.value.endsWith('按月计算销售额'));
+    assert.ok(!input.value.includes('请基于当前模型'));
+    await click('#language-toggle');draft('按月计算销售额');
     assert.equal(shortcuts.nextElementSibling,$('#calibration-open'));
     assert.equal(shortcuts.parentElement.nextElementSibling,$('#composer-form'));
     await click('#calibration-open');
@@ -206,6 +253,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
   const savedTemplate={id:'saved-analysis',name:'月度分析模板',model_id:'model',model_name:'测试模型',
     prompt:'分析 {{月份}} 的金额',parameters:['月份'],defaults:{月份:'2026-10'},revision:1};
   async function fetchMock(path,opts={}) {
+    if(path==='/api/ui/language')return json(JSON.parse(opts.body));
     if(path==='/api/analysis-templates')return json([savedTemplate]);
     if(path==='/api/analysis-templates/saved-analysis')return json(savedTemplate);
     if(path==='/api/analysis-templates/parameters/recognize')return json({candidates:[{name:'月份',value:'2026-11',spans:[[3,10]]}]});
@@ -527,6 +575,13 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await click('[data-open-image]');assert.ok($('#modal-body').querySelector('.image-full-preview'));await click('#modal-close');
     analysis.emit({type:'start',message_id:'answer-c1'});analysis.emit({type:'delta',text:'第一段分析。'});await tick();await tick();
     const streamingReply=$('#messages article.message.assistant');
+    await click('#language-toggle');
+    assert.equal(analysis.body.language,'zh-CN');
+    assert.equal($('#page-title').textContent,'Data Analysis');
+    assert.equal($('#messages article.message.assistant'),streamingReply);
+    assert.ok(streamingReply.textContent.includes('第一段分析。'));
+    assert.match($('#messages article.message.user').textContent,/分析请求/);
+    await click('#language-toggle');
     await pollConnection('disconnected');
     assert.equal($('#messages article.message.assistant'),streamingReply);
     assert.ok(streamingReply.textContent.includes('第一段分析。'));assert.equal($('#welcome-connect'),null);
@@ -543,7 +598,10 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.ok($('#messages').textContent.includes('第一段分析。后台续写。'));
     assert.equal($('#send-button').disabled,true);
     await click('[data-mode="dax"]');assert.equal($('#prompt').value,'DAX 页面草稿');
+    await click('#language-toggle');
     await send('DAX 请求');const dax=streams.get('c2');assert.ok(dax);assert.equal($('#send-button').disabled,true);
+    assert.equal(dax.body.language,'en');assert.equal(dax.body.content,'DAX 请求');
+    await click('#language-toggle');
     assert.equal($('#refresh-model').disabled,true);
     analysis.emit({type:'done'});analysis.controller.close();await tick();await tick();await tick();
     assert.equal($('#page-title').textContent,'DAX 助手');assert.equal($('#send-button').disabled,true);

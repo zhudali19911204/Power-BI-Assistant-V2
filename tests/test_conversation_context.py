@@ -55,14 +55,15 @@ def test_preferences_persist_per_conversation_and_default_for_legacy_rows(app, c
     assert not app.state.chat.history.window(other).usage['automatic']
 
 
-def test_manual_compaction_preserves_originals_and_scopes_each_exception_to_its_query(setup, tmp_path):
+@pytest.mark.parametrize('follow_up_label', ['尚未完成：', 'Still open: '])
+def test_manual_compaction_preserves_originals_and_scopes_each_exception_to_its_query(setup, tmp_path, follow_up_label):
     app, client, conv = setup
     cid = conv['id']
     path = f'/api/conversations/{cid}'
     goal = "比较 '成本中心'[编号] 的 0257 和 0810，排除冲销。"
     old_image = upload(client)
     app.state.images.save_user(cid, goal, [old_image['id']])
-    first = add(app, cid, 'assistant', '旧回复中的数字 987654321。\n尚未完成：按月复查。')
+    first = add(app, cid, 'assistant', '旧回复中的数字 987654321。\n' + follow_up_label + '按月复查。')
     query(app, conv, first, 'Q1', '第一次尝试', exception='修复前的无效例外', ok=False)
     q1 = query(app, conv, first, 'Q1', '本次比较', exception='仅本查询的分母取全部成本中心')
     confirmation = '口径确认 · 归属字段\n选择：成本中心\n采用口径：以实际编号为准\n用户补充：保留前导零'

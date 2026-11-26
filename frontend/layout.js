@@ -1,3 +1,4 @@
+import {tr} from './i18n.js';
 const CHAT_MIN_WIDTH=480,MOBILE_BREAKPOINT=1050;
 
 /** Coordinate both sidebars while preserving their requested widths across smaller windows. */
@@ -33,18 +34,18 @@ export function createWorkspaceLayout({root,panel,handle,toggle,sidebar=null,win
       item.handle.setAttribute('aria-valuemin',String(item.min));
       item.handle.setAttribute('aria-valuemax',String(item.maximum()));
       item.handle.setAttribute('aria-valuenow',String(value));
-      item.handle.setAttribute('aria-valuetext',`${value} 像素`);
+      item.handle.setAttribute('aria-valuetext',tr('{0} 像素', value));
       item.handle.hidden=!item.enabled();
     }
     toggle.setAttribute('aria-expanded',String(visible()));
-    toggle.title=visible()?'收起模型字段面板':'展开模型字段面板';
+    toggle.title=visible()?tr('收起模型字段面板'):tr('展开模型字段面板');
     toggle.setAttribute('aria-label',toggle.title);
   }
   function persist(item) {
     item.touched=true;
     const value={[item.key]:item.preferred};
     // Serialize partial updates so the two panels never overwrite each other's preference.
-    saves=saves.then(()=>save(value)).catch(()=>onNotice('面板宽度暂未保存，重启后可能恢复默认宽度',true));
+    saves=saves.then(()=>save(value)).catch(()=>onNotice(tr('面板宽度暂未保存，重启后可能恢复默认宽度'),true));
   }
   function finish(commit) {
     if(!drag)return;
@@ -108,7 +109,7 @@ export function createWorkspaceLayout({root,panel,handle,toggle,sidebar=null,win
   win.addEventListener('blur',()=>finish(false));
   render();
   return {
-    dismissOverlay,
+    dismissOverlay,render,
     restore(value) {
       for(const item of panels) {
         if(item.touched)continue;

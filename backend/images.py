@@ -10,6 +10,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .database import now, uid
 from .engine.llm.base import ChatImage, ChatMessage
+from .language import wording
 
 MAX_UPLOAD_BYTES=8*1024*1024
 MAX_IMAGE_BYTES=2*1024*1024
@@ -111,5 +112,7 @@ class ImageStore:
 
 def multimodal_error(exc,has_images):
     if has_images and type(exc).__name__ in ('BadRequestError','UnprocessableEntityError','UnsupportedMediaTypeError'):
-        return '模型服务未接受本次含图片的请求，请确认所选模型和接口支持图片输入；已保留消息和图片，可更换模型后重试'
+        return wording('模型服务未接受本次含图片的请求，请确认所选模型和接口支持图片输入；已保留消息和图片，可更换模型后重试',
+                       'The model service rejected the image request. Your message and images are saved. '
+                       'Select a model and endpoint that support images and try again.')
     return None

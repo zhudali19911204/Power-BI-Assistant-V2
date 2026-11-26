@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .database import encode, now, uid
 from .reports import same_report
+from .language import Language, wording
 from .schemas import MessageInput
 from .streaming import BackgroundStream
 from .template_parameters import PARAMETER, PARAMETER_LIMIT, parameter_names, recognize_parameters
@@ -57,6 +58,7 @@ class TemplateRun(BaseModel):
     values: dict[str, Value] = Field(default_factory=dict, max_length=PARAMETER_LIMIT)
     request_id: str = Field(pattern=r'^[a-f0-9]{32}$')
     llm_profile_id: str | None = None
+    language: Language = 'zh-CN'
 
 
 def expand(template, supplied):
@@ -141,7 +143,7 @@ class AnalysisTemplates:
         scopes = list(dict.fromkeys(q['scope'] for q in queries if q.get('scope') and q['ok']))
         prompt = '\n\n'.join(row['content'] for row in reversed(users))
         if scopes:
-            prompt += '\n\n分析口径（保存前请核对）：\n' + '\n'.join(scopes)
+            prompt += wording('\n\n分析口径（保存前请核对）：\n', '\n\nAnalysis scope (review before saving):\n') + '\n'.join(scopes)
         return {'name': conv['title'][:120], 'prompt': prompt[:12000], 'defaults': {},
                 'model_id': self.db.one('SELECT model_id FROM analysis_queries WHERE message_id=? ORDER BY rowid LIMIT 1', (message_id,))['model_id'],
                 'source_message_id': message_id}
@@ -178,7 +180,9 @@ class AnalysisTemplates:
             request = {'template_id': template_id, **body.model_dump()}
             existing = self.db.one('SELECT * FROM analysis_template_runs WHERE id=?', (body.request_id,))
             if existing:
-                if json.loads(existing['snapshot'])['request'] != request:
+                previous = json.loads(existing['snapshot'])['request']
+                previous.setdefault('language', 'zh-CN')
+                if previous != request:
                     raise HTTPException(409, '运行标识已用于另一次请求')
                 return self.run_response(existing)
             template = self.get(template_id)
@@ -198,7 +202,7 @@ class AnalysisTemplates:
                            (body.request_id, template_id, conversation_id, encode(snapshot), 'running', '', stamp))
             row = self.db.one('SELECT * FROM analysis_template_runs WHERE id=?', (body.request_id,))
             try:
-                source_stream = self.chat.begin(conversation_id, MessageInput(content=prompt,
+                source_stream = self.chat.begin(conversation_id, MessageInput(content=prompt, language=body.language,
                     generation_id=body.request_id, llm_profile_id=body.llm_profile_id), self.settings)
             except Exception as exc:
                 self.failed(row, exc)

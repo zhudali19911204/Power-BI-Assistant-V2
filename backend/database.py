@@ -27,6 +27,8 @@ class Database:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS ui_language (
+                    id INTEGER PRIMARY KEY CHECK(id=1), language TEXT NOT NULL CHECK(language IN ('zh-CN','en')));
                 CREATE TABLE IF NOT EXISTS ui_layout (
                     id INTEGER PRIMARY KEY CHECK(id=1),
                     context_width INTEGER CHECK(context_width BETWEEN 240 AND 520),

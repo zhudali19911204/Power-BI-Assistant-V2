@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from .clarifications import ClarificationOption, ClarificationQuestion
 from .fields import field_ref
+from .language import wording
 from .semantic_retrieval import _contains, _normalize
 
 
@@ -165,11 +166,12 @@ def cached_check(check, records):
 
 def field_stop_reason(check, records, budget):
     if len(records) >= MAX_FIELD_CHECKS:
-        return f'已达到本轮 {MAX_FIELD_CHECKS} 项字段检查上限'
+        return wording(f'已达到本轮 {MAX_FIELD_CHECKS} 项字段检查上限', f'Reached the limit of {MAX_FIELD_CHECKS} field checks for this turn')
     if sum((r['table'], r['column']) == (check.table, check.column) for r in records) >= MAX_FIELD_SEARCHES:
-        return f'同一字段已完成 {MAX_FIELD_SEARCHES} 组搜索，已停止继续换词检查'
+        return wording(f'同一字段已完成 {MAX_FIELD_SEARCHES} 组搜索，已停止继续换词检查',
+                       f'This field has reached its limit of {MAX_FIELD_SEARCHES} searches')
     if not budget.can_check_field():
-        return '剩余时间不足以继续查值并评估结果，已保留结论生成时间'
+        return wording('剩余时间不足以继续查值并评估结果，已保留结论生成时间', 'The remaining time is reserved for the summary')
     return ''
 
 
@@ -193,18 +195,28 @@ def discovery_question(records, ctx, reason, checks=()):
             value = entry.get('value')
             if value is None or value == '' or entry.get('value_truncated') or entry.get('nonfinite'):continue
             literal = json.dumps(value, ensure_ascii=False, allow_nan=False)
-            option_value = f'使用 {ref} 的实际取值 {literal} 作为本次筛选，保留此前已确认的其他条件'
+            option_value = wording(f'使用 {ref} 的实际取值 {literal} 作为本次筛选，保留此前已确认的其他条件',
+                                   f'Filter {ref} by the observed value {literal} and keep the other confirmed conditions')
             if literal in seen or len(option_value) > 1000:continue
             seen.add(literal)
             options.append(ClarificationOption(label=(str(value)[:97] + '…') if len(str(value)) > 100 else str(value),
-                value=option_value, detail=f"来自字段检查 {record['label']} · {ref}"[:240]))
+                value=option_value, detail=(wording('来自字段检查', 'From field check') + f" {record['label']} · {ref}")[:240]))
             if len(options) == 3:break
         if not options:continue
-        options.append(ClarificationOption(label='补充其他取值或范围', value=f'由我补充 {ref} 对应的筛选取值或范围'[:1000]))
-        caveat = '取值样例已截断，未列出的值也可能存在。' if profile.get('truncated') else ''
-        return ClarificationQuestion(topic='筛选口径', question='本次分析希望采用下面哪个筛选范围？',
-            context=(reason + '。下列候选来自已成功读取的同一字段，业务含义仍待确认。' + caveat)[:400], options=options)
-    return ClarificationQuestion(topic='筛选口径', question='本次分析应采用哪个分类定义？',
-        context=(reason + '。本轮未取得可安全列出的候选取值，已有检查结果和错误已保留。')[:400], options=[
-            ClarificationOption(label='补充字段与取值', value='由我补充本次业务分类对应的真实字段和取值'),
-            ClarificationOption(label='先确认词典定义', value='先在业务词典确认本次业务分类对应的字段与取值，再继续分析')])
+        options.append(ClarificationOption(label=wording('补充其他取值或范围', 'Enter another value or range'),
+            value=wording(f'由我补充 {ref} 对应的筛选取值或范围', f'I will specify a filter value or range for {ref}')[:1000]))
+        caveat = wording('取值样例已截断，未列出的值也可能存在。', ' The sample is truncated and may omit other values.') if profile.get('truncated') else ''
+        context = reason + wording('。下列候选来自已成功读取的同一字段，业务含义仍待确认。',
+                                   '. These values come from the same field. Confirm which one matches your definition.')
+        return ClarificationQuestion(topic=wording('筛选口径', 'Filter scope'),
+            question=wording('本次分析希望采用下面哪个筛选范围？', 'Which filter should this analysis use?'),
+            context=(context + caveat)[:400], options=options)
+    return ClarificationQuestion(topic=wording('筛选口径', 'Filter scope'),
+        question=wording('本次分析应采用哪个分类定义？', 'Which category definition should this analysis use?'),
+        context=(reason + wording('。本轮未取得可安全列出的候选取值，已有检查结果和错误已保留。',
+                                  '. No candidate values are available. Previous checks and errors are saved.'))[:400], options=[
+            ClarificationOption(label=wording('补充字段与取值', 'Specify a field and value'),
+                value=wording('由我补充本次业务分类对应的真实字段和取值', 'I will specify the field and value for this category')),
+            ClarificationOption(label=wording('先确认词典定义', 'Check the dictionary'),
+                value=wording('先在业务词典确认本次业务分类对应的字段与取值，再继续分析',
+                              'I will confirm the field and value in the business dictionary before continuing'))])

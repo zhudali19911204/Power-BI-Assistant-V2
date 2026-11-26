@@ -6,14 +6,20 @@ from collections.abc import Callable
 
 from fastapi import HTTPException
 
+from .language import wording
+
 CANCELLED_TEXT = '已中止本次生成，已保留收到的文字和查询结果'
 _current = ContextVar('generation_cancellation', default=None)
 _authorization: ContextVar[Callable[[], None] | None] = ContextVar('execution_authorization', default=None)
 
 
+def cancelled_text():
+    return wording(CANCELLED_TEXT, 'Generation stopped. Received text and query results have been saved.')
+
+
 class GenerationCancelled(HTTPException):
     def __init__(self):
-        super().__init__(499, CANCELLED_TEXT)
+        super().__init__(499, cancelled_text())
 
 
 def _close_async(callback):

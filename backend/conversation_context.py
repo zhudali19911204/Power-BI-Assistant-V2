@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 
 from .engine.llm.base import ChatMessage
+from .language import OPEN_QUESTION_LABELS
 
 
 AUTO_PERCENT = 80
@@ -71,10 +72,11 @@ def _summary(db, cid, through):
             kind = '口径确认节选（采用前需核对完整原文）'
         note(row, kind, _excerpt(row['content'], limit), priority, 'user', partial=partial)
 
-    request = "AND m.content NOT LIKE '口径确认 · %'"
+    clarification = "(m.content LIKE '口径确认 · %' OR m.content LIKE 'Clarification · %')"
+    request = "AND NOT " + clarification
     for row in user_rows(request, order='ASC', limit=1):
         user_note(row, '起始需求', 650, 0)
-    for i, row in enumerate(user_rows("AND m.content LIKE '口径确认 · %'", since=sync, limit=4)):
+    for i, row in enumerate(user_rows("AND " + clarification, since=sync, limit=4)):
         user_note(row, '用户当时确认', 950, 1 + i)
 
     queries = db.execute(f"""WITH attempts AS (SELECT m.rowid AS seq,m.id,q.rowid AS query_seq,q.id AS query_id,q.title,
@@ -97,7 +99,9 @@ def _summary(db, cid, through):
 
     scope = (" AND (m.content LIKE '%筛选%' OR m.content LIKE '%口径%' OR m.content LIKE '%仅%' "
              "OR m.content LIKE '%默认%' OR m.content LIKE '%排除%' OR m.content LIKE '%[%' "
-             "OR m.content LIKE '%只看%' OR m.content LIKE '%分母%' OR m.content GLOB '*[0-9][0-9][0-9]*')")
+             "OR m.content LIKE '%只看%' OR m.content LIKE '%分母%' OR m.content LIKE '%filter%' "
+             "OR m.content LIKE '%exclude%' OR m.content LIKE '%default%' OR m.content LIKE '%denominator%' "
+             "OR m.content LIKE '%only%' OR m.content GLOB '*[0-9][0-9][0-9]*')")
     for i, row in enumerate(user_rows(request + scope)):
         user_note(row, '用户当时要求', 650, 1 + i)
     for row in db.execute(f"""SELECT m.rowid AS seq,m.id,c.payload FROM messages m
@@ -107,10 +111,12 @@ def _summary(db, cid, through):
         choices = '\n'.join(f"{o['id']}. {o['label']}：{o['value']}" for o in card['options'])
         note(row, '该轮口径提问（候选项）', card['question'] + '\n' + _excerpt(choices, 600), 0)
     for row in db.execute(f"""SELECT m.rowid AS seq,m.id,substr(m.content,-3000) AS tail FROM messages m
-            WHERE {where} AND m.role='assistant' AND instr(substr(m.content,-3000),'尚未完成：')>0
+            WHERE {where} AND m.role='assistant'
+            AND (instr(substr(m.content,-3000),?)>0 OR instr(substr(m.content,-3000),?)>0)
             AND EXISTS (SELECT 1 FROM analysis_queries q WHERE q.message_id=m.id)
-            ORDER BY m.rowid DESC LIMIT 2""", params):
-        note(row, '该轮待跟进', _excerpt(row['tail'].rsplit('尚未完成：', 1)[1].split('\n', 1)[0], 450), 2)
+            ORDER BY m.rowid DESC LIMIT 2""", (*params, *OPEN_QUESTION_LABELS)):
+        tail = re.split('|'.join(map(re.escape, OPEN_QUESTION_LABELS)), row['tail'])[-1]
+        note(row, '该轮待跟进', _excerpt(tail.split('\n', 1)[0], 450), 2)
     for i, row in enumerate(user_rows(request, limit=6)):
         user_note(row, '用户当时要求', 600, 4 + i)
     for row in db.execute(f"""SELECT m.rowid AS seq,m.id,a.id AS artifact_id,a.kind,a.name,a.home_table,

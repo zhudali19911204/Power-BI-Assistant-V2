@@ -84,7 +84,28 @@ def test_in_app_guide_serves_the_canonical_utf8_document(client):
     assert guide.headers['content-type'].startswith('text/markdown')
     assert guide.content == (Path(__file__).resolve().parents[1] / 'docs' / 'USER_GUIDE.md').read_bytes()
     assert '## 完成第一次提问' in guide.text
+    english = client.get('/help/user-guide.en.md')
+    assert english.status_code == 200
+    assert english.content == (Path(__file__).resolve().parents[1] / 'docs' / 'USER_GUIDE.en.md').read_bytes()
+    assert '## Ask your first question' in english.text
     assert client.get('/help/LICENSING.md').status_code == 404
+
+
+@pytest.mark.parametrize('mode', ['dax', 'mquery'])
+def test_reply_language_is_pinned_per_turn_and_preserves_report_names(client, app, monkeypatch, mode):
+    conv, _ = conversation(client, mode)
+    provider = FakeProvider(['The field is numeric.', '该字段为数值。'])
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    question = "Explain '销售明细'[销售额]."
+    assert send(client, conv['id'], question, language='en')[-1]['type'] == 'done'
+    client.put('/api/ui/language', json={'language': 'en'})
+    assert send(client, conv['id'], '继续解释', language='zh-CN')[-1]['type'] == 'done'
+    first, second = provider.calls
+    assert 'in English.' in first[0] and '默认生成带简洁英文注释' in first[0]
+    assert 'in Simplified Chinese.' in second[0] and '默认生成带简洁中文注释' in second[0]
+    assert '销售明细' in first[0] and first[1][-1].content == question
+    history = client.get(f"/api/conversations/{conv['id']}/messages").json()
+    assert [message['content'] for message in history] == [question, 'The field is numeric.', '继续解释', '该字段为数值。']
 
 
 def test_settings_secret_encryption_and_restart(client, app, tmp_path):

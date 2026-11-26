@@ -1,3 +1,4 @@
+import {tr} from './i18n.js';
 import {escapeHtml as esc} from './html.js';
 import {icon} from './icons.js';
 
@@ -42,7 +43,7 @@ export function modelTree(context,query,searchNames=[]) {
       if(needle&&!tableMatch&&!matchesName(column.name,definition,needle))continue;
       const reference=tableRef+'['+column.name.replaceAll(']',']]')+']';
       const type=/int|double|decimal/.test(column.dtype)?'#':column.dtype==='datetime'?'◷':'Aa';
-      rows.push(`<div class="field-row"><button type="button" class="field-button" data-ref="${esc(reference)}" title="${esc(column.dtype)}"><span class="field-type">${type}</span>${resultLabel(column.name,definition,reference,needle)}</button><button type="button" class="icon-button field-preview-button" data-preview-table="${esc(table)}" data-preview-column="${esc(column.name)}" title="查看字段取值" aria-label="查看 ${esc(table)}[${esc(column.name)}] 的取值">${icon('eye')}</button></div>`);
+      rows.push(`<div class="field-row"><button type="button" class="field-button" data-ref="${esc(reference)}" title="${esc(column.dtype)}"><span class="field-type">${type}</span>${resultLabel(column.name,definition,reference,needle)}</button><button type="button" class="icon-button field-preview-button" data-preview-table="${esc(table)}" data-preview-column="${esc(column.name)}" title="${tr('查看字段取值')}" aria-label="${tr('查看 {0}[{1}] 的取值', esc(table), esc(column.name))}">${icon('eye')}</button></div>`);
     }
     for(const measure of measures.get(table)||[]){
       const definition=lookup('measure',measure.name);
@@ -56,5 +57,5 @@ export function modelTree(context,query,searchNames=[]) {
       groups.push(`<details class="table-group"><summary>${icon('chevron-right')}${icon('table')}${esc(table)}<small>${columns.length}</small></summary>${rows.join('')}</details>`);
     }
   }
-  return groups.join('')||'<p class="history-empty muted">没有匹配的字段</p>';
+  return groups.join('')||`<p class="history-empty muted">${tr('没有匹配的字段')}</p>`;
 }

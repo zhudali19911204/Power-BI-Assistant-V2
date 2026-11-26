@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .database import encode, now
+from .language import wording
 
 
 class ClarificationOption(BaseModel):
@@ -17,7 +18,7 @@ class ClarificationOption(BaseModel):
 
 class ClarificationQuestion(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
-    topic: str = Field(default='分析口径', min_length=1, max_length=40)
+    topic: str = Field(default_factory=lambda: wording('分析口径', 'Analysis scope'), min_length=1, max_length=40)
     question: str = Field(min_length=1, max_length=240)
     context: str = Field(default='', max_length=400)
     options: list[ClarificationOption] = Field(min_length=2, max_length=4)
@@ -44,13 +45,16 @@ def make_card(question, ctx):
         # Older servers may still return prose containing several questions. Do not display it
         # as a multi-question form or manufacture business values from that prose.
         options = [ClarificationOption(label=f'[{m.name[:96]}'+('…]' if len(m.name)>96 else ']'),
-                                       value=f'使用模型已有度量值 [{m.name}]'[:1000],
-                                       detail=f'来自 {m.table}'[:240]) for m in ctx.measures[:4]]
+                                       value=wording(f'使用模型已有度量值 [{m.name}]', f'Use the existing measure [{m.name}]')[:1000],
+                                       detail=wording(f'来自 {m.table}', f'From {m.table}')[:240]) for m in ctx.measures[:4]]
         if len(options) < 2:
-            options.append(ClarificationOption(label='由我定义指标', value='使用用户补充的自定义指标口径'))
+            options.append(ClarificationOption(label=wording('由我定义指标', 'Define a metric'),
+                                               value=wording('使用用户补充的自定义指标口径', 'Use the custom metric I describe')))
         if len(options) < 2:
-            options.insert(0, ClarificationOption(label='先查看数据概览', value='先按模型中可查询的指标做数据概览'))
-        question = ClarificationQuestion(topic='分析指标', question='这次分析希望采用哪个指标口径？', options=options)
+            options.insert(0, ClarificationOption(label=wording('先查看数据概览', 'Start with an overview'),
+                value=wording('先按模型中可查询的指标做数据概览', 'Start with an overview of available measures')))
+        question = ClarificationQuestion(topic=wording('分析指标', 'Metric'),
+            question=wording('这次分析希望采用哪个指标口径？', 'Which metric should this analysis use?'), options=options)
     card = question.model_dump()
     for index, option in enumerate(card['options']):
         option['id'] = chr(65 + index) if index < 26 else str(index + 1)
@@ -59,15 +63,16 @@ def make_card(question, ctx):
 
 
 def card_markdown(card):
-    lines = ['### 确认' + card['topic'], '', card['question'], '']
+    lines = [wording('### 确认', '### Confirm ') + card['topic'], '', card['question'], '']
     if card['context']:
         lines += [card['context'], '']
     for option in card['options']:
-        line = f"- **{option['id']}. {option['label']}**：{option['value']}"
+        line = f"- **{option['id']}. {option['label']}**" + wording('：', ': ') + option['value']
         if option['detail']:
-            line += '（' + option['detail'] + '）'
+            line += wording('（', ' (') + option['detail'] + wording('）', ')')
         lines.append(line)
-    return '\n'.join(lines) + '\n\n可选择一项并补充说明，也可以直接填写自定义口径。'
+    return '\n'.join(lines) + wording('\n\n可选择一项并补充说明，也可以直接填写自定义口径。',
+                                     '\n\nChoose an option, add details or enter your own definition.')
 
 
 def save_card(db, message_id, card):
@@ -88,9 +93,9 @@ def resolve_answer(db, conversation_id, reply):
         raise HTTPException(422, '请选择当前问题提供的选项，或填写自定义口径')
     if not option and not reply.supplement:
         raise HTTPException(422, '请选择一个选项或补充你的口径')
-    text = f"口径确认 · {card['topic']}\n{card['question']}"
+    text = wording('口径确认 · ', 'Clarification · ') + f"{card['topic']}\n{card['question']}"
     if option:
-        text += f"\n选择：{option['label']}\n采用口径：{option['value']}"
+        text += wording('\n选择：', '\nSelection: ') + option['label'] + wording('\n采用口径：', '\nDefinition: ') + option['value']
         detail = option['detail']
         choice = card.get('scope_binding', {}).get('choices', {}).get(option['id'])
         if choice:
@@ -98,9 +103,9 @@ def resolve_answer(db, conversation_id, reply):
             detail = detail.removeprefix(choice['field'] + ' · ')
             members = card['scope_binding'].get('members')
             if members:
-                text += '\n该字段对应的完整原值清单：' + encode(members)
+                text += wording('\n该字段对应的完整原值清单：', '\nAll original values for this field: ') + encode(members)
         if detail:
-            text += '\n选项说明：' + detail
+            text += wording('\n选项说明：', '\nOption details: ') + detail
     if reply.supplement:
-        text += '\n用户补充：' + reply.supplement
+        text += wording('\n用户补充：', '\nAdditional details: ') + reply.supplement
     return text

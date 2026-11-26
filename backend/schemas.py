@@ -5,6 +5,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .streaming import GENERATION_IDLE_TIMEOUT, GENERATION_TIMEOUT
 from .engine.llm.diagnostics import DEFAULT_MAX_TOKENS
 from .engine.llm.reasoning import ReasoningLevel
+from .language import Language
+
+
+class LanguagePreference(BaseModel):
+    language: Language
 
 
 class LayoutInput(BaseModel):
@@ -85,6 +90,7 @@ class ClarificationReply(BaseModel):
 
 class MessageInput(BaseModel):
     content: str = Field(default='', max_length=24000)
+    language: Language = 'zh-CN'
     generation_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
     image_ids: list[str] = Field(default_factory=list, max_length=4)
     llm_profile_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -110,7 +116,9 @@ class MessageInput(BaseModel):
     @model_validator(mode='after')
     def require_input(self):
         if not self.content and not self.image_ids:raise ValueError('请输入需求或添加图片')
-        if not self.content:self.content='请结合图片和当前上下文，帮我分析并处理。'
+        if not self.content:
+            self.content = ('Please analyze the attached images using the current context.'
+                            if self.language == 'en' else '请结合图片和当前上下文，帮我分析并处理。')
         return self
 
 

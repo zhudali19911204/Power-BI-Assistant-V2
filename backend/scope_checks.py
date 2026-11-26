@@ -1,6 +1,7 @@
 """Verify the candidate fields for each business term together in one Desktop read."""
 import json
 import re
+from .language import wording
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Annotated
@@ -268,8 +269,10 @@ def scope_evidence(records):
 def _match_option(term, match, members=()):
     ref = field_ref(match['table'], match['column'])
     value = json.dumps(match['value'], ensure_ascii=False)
-    decision = (f'本次按 {ref} 中命中的 {value} 定位“{term}”所属字段，按原问题的包含或排除条件筛选全部 {len(members)} 个原值'
-                if members else f'本次将“{term}”按 {ref} 的实际取值 {value} 筛选，保留已确定的其他口径')
+    decision = (wording(f'本次按 {ref} 中命中的 {value} 定位“{term}”所属字段，按原问题的包含或排除条件筛选全部 {len(members)} 个原值',
+                        f'Use the match {value} in {ref} for “{term}” and apply the original inclusion or exclusion to all {len(members)} values')
+                if members else wording(f'本次将“{term}”按 {ref} 的实际取值 {value} 筛选，保留已确定的其他口径',
+                                       f'Filter {ref} using the verified value {value} for “{term}” and keep other confirmed conditions'))
     return {'label': f"{match['column']} · {match['value']}"[:100], 'value': decision,
             'detail': f"{match['field']} · {ref}"[:240]}
 
@@ -284,14 +287,16 @@ def scope_question(group, reason):
             options.append(option)
             seen.add(option['value'])
     if not options:
-        options.append({'label': '指定字段和取值', 'value': f'由我说明“{term}”在当前报表使用的字段和取值'})
+        options.append({'label': wording('指定字段和取值', 'Specify field and value'),
+                        'value': wording(f'由我说明“{term}”在当前报表使用的字段和取值', f'I will specify the field and value for “{term}”')})
     if len(options) < 4:
-        options.append({'label': '补充业务定义', 'value': f'由我补充“{term}”的业务定义或适用范围'})
-    question = f'本次分析中的“{term}”具体指哪个口径？'
+        options.append({'label': wording('补充业务定义', 'Add a business definition'),
+                        'value': wording(f'由我补充“{term}”的业务定义或适用范围', f'I will define the meaning or scope of “{term}”')})
+    question = wording(f'本次分析中的“{term}”具体指哪个口径？', f'Which definition of “{term}” should this analysis use?')
     if '?' in term or '？' in term:
-        question = '本次分析中的这个原词具体指哪个口径？'
-        reason = f'待确认原词为“{term}”。' + reason
-    return VerifiedScopeQuestion(topic='筛选口径', question=question, context=reason[:400], options=options)
+        question = wording('本次分析中的这个原词具体指哪个口径？', 'Which definition should this analysis use for the original term?')
+        reason = wording(f'待确认原词为“{term}”。', f'Original term: “{term}”. ') + reason
+    return VerifiedScopeQuestion(topic=wording('筛选口径', 'Filter scope'), question=question, context=reason[:400], options=options)
 
 
 def question_scope(question, groups):
@@ -311,8 +316,8 @@ def question_scope(question, groups):
 def annotate_card(card, groups):
     """Only choices constructed from a verified match can become a conversation binding."""
     focused = question_scope(card['question'], groups)
-    if not focused and card['context'].startswith('待确认原词为“'):
-        focused = question_scope(card['context'].split('”。', 1)[0] + '”', groups)
+    if not focused and card['context'].startswith(('待确认原词为“', 'Original term: “')):
+        focused = question_scope(card['context'].split('”', 1)[0] + '”', groups)
     if not focused:
         return card
     choices = {}
@@ -331,7 +336,9 @@ def annotate_card(card, groups):
         if group is focused or group['incomplete'] or len(group['matches']) != 1:
             continue
         m = group['matches'][0]
-        note = f" 同次核对中，“{group['term']}”在 {field_ref(m['table'], m['column'])} 命中 {m['value']}。"
+        ref = field_ref(m['table'], m['column'])
+        note = wording(f" 同次核对中，“{group['term']}”在 {ref} 命中 {m['value']}。",
+                       f" The same check matched “{group['term']}” to {m['value']} in {ref}.")
         if len(card['context'] + note) <= 400:
             card['context'] += note
     return card
@@ -585,7 +592,7 @@ def immediate_scope_question(groups, ctx, user_messages, bindings, dictionary):
             names = [m['column'] for m in group['misses']]
             if group.get('members') or not (any(_named_by_user(m.content, term, names) for m in turns)
                     or any(m.name.casefold() == key for m in ctx.measures)):
-                return scope_question(group, f'已在 {len(group["misses"])} 个候选字段核对代表原值“{term}”，均未命中。请确认字段或原值。')
+                return scope_question(group, wording(f'已在 {len(group["misses"])} 个候选字段核对代表原值“{term}”，均未命中。请确认字段或原值。', f'The value “{term}” was absent from {len(group["misses"])} candidate fields. Confirm the field or original value.'))
         if len({(m['table'],m['column'],m['value']) for m in matches}) < 2:
             continue
         if not group.get('members') and any(m['value'].casefold() != key or m.get('match_kind') for m in matches):
@@ -596,7 +603,7 @@ def immediate_scope_question(groups, ctx, user_messages, bindings, dictionary):
         if len(mappings) == 1:
             continue
         if group.get('members'):
-            return scope_question(group, '代表词在多个位置命中。请选择整组原值应使用的筛选字段。')
+            return scope_question(group, wording('代表词在多个位置命中。请选择整组原值应使用的筛选字段。', 'The term matched multiple fields. Which field should filter this group of values?'))
         # A measure can establish the field even when the question uses its business
         # name. Leave the choice and its validation to the planner if such a filter exists.
         dax_literal = key.replace('"', '""')
@@ -615,7 +622,7 @@ def immediate_scope_question(groups, ctx, user_messages, bindings, dictionary):
                     or key in _filter_literals(expressions, table, column)):
                 break
         else:
-            return scope_question(group, '多个字段都含有这个原值。请选择本次用于筛选的字段。')
+            return scope_question(group, wording('多个字段都含有这个原值。请选择本次用于筛选的字段。', 'Several fields contain this value. Which field should the filter use?'))
     return None
 
 
@@ -642,16 +649,16 @@ def select_scope(group, plan, ctx, user_text, bindings, dictionary):
                     and term.casefold() in _filter_literals(dax,table,column)):
                 # An explicitly requested field can legitimately give an empty business result.
                 return None, None
-        return None, scope_question(group, '已检查的候选字段尚无可用匹配，请补充这个原词的业务定义。')
+        return None, scope_question(group, wording('已检查的候选字段尚无可用匹配，请补充这个原词的业务定义。', 'No candidate field matched. Please define the original term.'))
     if len(declarations) > 1:
-        return None, scope_question(group, '同一原词有多种采用说明，需要确定本次使用的定义。')
+        return None, scope_question(group, wording('同一原词有多种采用说明，需要确定本次使用的定义。', 'This term has several possible definitions. Choose one for this analysis.'))
     chosen = None
     if declarations:
         decision = declarations[0]
         chosen = next((m for m in matches if m['field'] == decision.field
                        and m['value'].casefold() == decision.value.casefold()), None)
         if not chosen:
-            return None, scope_question(group, '规划使用的取值与实际读取的取值不一致。')
+            return None, scope_question(group, wording('规划使用的取值与实际读取的取值不一致。', 'The planned value differs from the observed field value.'))
     elif len(choices) == 1:
         chosen = matches[0]
     else:
@@ -680,4 +687,4 @@ def select_scope(group, plan, ctx, user_text, bindings, dictionary):
                                 and ('"'+value.replace('"','""')+'"').casefold() in source_code)
         if (used or declared_reference) and (bound or explicit or mapped or defined or documented):
             return chosen, None
-    return None, scope_question(group, '实际取值仍有多个可能的归属，或部分候选未能完成检查。请选择本次采用的范围。')
+    return None, scope_question(group, wording('实际取值仍有多个可能的归属，或部分候选未能完成检查。请选择本次采用的范围。', 'Several fields may match, or some checks are incomplete. Choose the scope for this analysis.'))

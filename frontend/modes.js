@@ -1,3 +1,5 @@
+import {language, translate} from './i18n.js';
+
 export const MODES={
   dax:{
     title:'DAX 助手',icon:'sparkles',historyIcon:'chat',
@@ -33,3 +35,22 @@ export const MODES={
     ],
   },
 };
+
+const englishModes = new Map();
+
+export function modeFor(key, locale = language) {
+  const mode = MODES[key] || MODES.dax;
+  if (locale !== 'en') return mode;
+  if (!englishModes.has(mode)) {
+    const message = source => translate(locale, source.trimEnd()) + source.slice(source.trimEnd().length);
+    englishModes.set(mode, {
+      ...mode,
+      title: message(mode.title),
+      headline: message(mode.headline),
+      subtitle: message(mode.subtitle),
+      placeholder: message(mode.placeholder),
+      cards: mode.cards.map(([symbol, ...copy]) => [symbol, ...copy.map(message)]),
+    });
+  }
+  return englishModes.get(mode);
+}

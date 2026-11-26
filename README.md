@@ -12,6 +12,8 @@
 
 ## 第一次使用
 
+源码版可在右上角点 **English** 切换到英文，再点 **中文** 切回。语言偏好保存在本机，三个助手的新回复默认使用所选语言。[English user guide](docs/USER_GUIDE.en.md)
+
 1. **打开报表。** 在本机 Power BI Desktop 中打开目标 PBIX，等待模型加载完成。
 2. **启动助手。** 安装版使用 `PowerBIAssistant-Setup-2.0.13.exe`，运行于 Windows 10/11 x64，桌面窗口使用 Edge WebView2 Runtime。首次安装时，将安装器显示的机器码交给发布者，凭返回的永久或 7 天试用 CD-KEY 完成安装。
 3. **配置 AI 服务。** 打开左下角「模型服务设置」→「添加模型」，选择 OpenAI 兼容或 Anthropic Messages 协议，填写服务地址、模型 ID 和凭据，测试后选择「保存并使用」。

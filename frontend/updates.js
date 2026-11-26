@@ -1,17 +1,18 @@
+import {serviceText, tr} from './i18n.js';
 export async function mountDesktopUpdates({button, dialog, api, post, notice, hasWork, hasDraft}) {
   const info = await api('/updates').catch(() => null);
   if (!info?.enabled) return;
   const find = name => dialog.querySelector(`[data-update-${name}]`);
   const status = find('status'), notes = find('notes'), install = find('install');
-  let release = null, downloaded = '', lastNotice = '', phase = 'idle', message = '', restartAfterDownload = false;
-  find('current').textContent = `当前版本 ${info.version}`;
+  let release = null, downloaded = '', lastNotice = '', phase = 'idle', message = () => '', restartAfterDownload = false;
 
   function render() {
-    const label = release ? `发现新版 ${release.version}` : '检查更新';
+    find('current').textContent = tr('当前版本 {0}', info.version);
+    const label = release ? tr('发现新版 {0}', release.version) : tr('检查更新');
     button.querySelector('[data-update-label]').textContent = label;
     button.title = label;
     button.setAttribute('aria-label', label);
-    status.textContent = message;
+    status.textContent = message();
     notes.textContent = release?.notes || '';
     notes.hidden = !notes.textContent;
     find('draft').hidden = !release || !hasDraft();
@@ -19,24 +20,24 @@ export async function mountDesktopUpdates({button, dialog, api, post, notice, ha
     find('close').disabled = find('later').disabled = phase === 'installing';
     install.hidden = !release;
     install.disabled = phase !== 'idle';
-    install.textContent = downloaded && downloaded === release?.sha256 ? '重启并安装' : '更新并重启';
+    install.textContent = downloaded && downloaded === release?.sha256 ? tr('重启并安装') : tr('更新并重启');
   }
 
   async function check(automatic = false) {
     if (phase !== 'idle') return;
     phase = 'checking';
-    message = '正在检查更新…';
+    message = () => tr('正在检查更新…');
     render();
     try {
       release = (await post('/updates/check')).release;
-      message = release ? `新版 ${release.version} 可用，下载大小 ${(release.size / 1024**2).toFixed(1)} MB。` : '当前已是最新版本。';
+      message = () => release ? tr('新版 {0} 可用，下载大小 {1} MB。', release.version, (release.size / 1024**2).toFixed(1)) : tr('当前已是最新版本。');
       if (automatic && release && lastNotice !== release.sha256) {
         lastNotice = release.sha256;
-        notice(`发现新版 ${release.version}，可在左下角查看更新。`);
+        notice(tr('发现新版 {0}，可在左下角查看更新。', release.version));
       }
     } catch (error) {
       release = null;
-      message = error.message;
+      message = () => serviceText(error.message);
     } finally {
       phase = 'idle';
       render();
@@ -46,7 +47,7 @@ export async function mountDesktopUpdates({button, dialog, api, post, notice, ha
   async function update() {
     if (!release || phase !== 'idle') return;
     if (hasWork()) {
-      message = '助手正在处理任务，请在任务结束后更新。';
+      message = () => tr('助手正在处理任务，请在任务结束后更新。');
       render();
       return;
     }
@@ -55,22 +56,22 @@ export async function mountDesktopUpdates({button, dialog, api, post, notice, ha
     try {
       if (downloaded !== release.sha256) {
         phase = 'downloading';
-        message = '正在下载并校验安装包…';
+        message = () => tr('正在下载并校验安装包…');
         render();
         await post(path + '/download');
         downloaded = release.sha256;
       }
       if (!restartAfterDownload || !dialog.open || hasWork()) {
-        message = '安装包已下载。准备好后可重启并安装。';
+        message = () => tr('安装包已下载。准备好后可重启并安装。');
         return;
       }
       phase = 'installing';
-      message = '正在启动安装器，完成后会重新打开助手。';
+      message = () => tr('正在启动安装器，完成后会重新打开助手。');
       render();
       await post(path + '/install');
     } catch (error) {
       downloaded = '';
-      message = error.message;
+      message = () => serviceText(error.message);
       phase = 'idle';
     } finally {
       if (phase === 'downloading') phase = 'idle';
@@ -96,6 +97,7 @@ export async function mountDesktopUpdates({button, dialog, api, post, notice, ha
     render();
     if (!release) void check();
   };
+  button.ownerDocument.addEventListener('languagechange', render);
   button.hidden = false;
   await check(true);
   return () => { if (!dialog.open) return check(true); };

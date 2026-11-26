@@ -6,6 +6,22 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 
 
+def test_language_restores_the_first_page_after_restart_on_a_different_port(tmp_path):
+    with TestClient(create_app(tmp_path), base_url='http://localhost:51001') as client:
+        assert client.get('/api/ui/language').json() == {'language': 'zh-CN'}
+        assert '<html lang="zh-CN">' in client.get('/').text
+        assert client.put('/api/ui/layout', json={'context_width': 410}).status_code == 200
+        assert client.put('/api/ui/language', json={'language': 'en'}).json() == {'language': 'en'}
+        assert client.put('/api/ui/language', json={'language': 'de'}).status_code == 422
+    with TestClient(create_app(tmp_path), base_url='http://localhost:51002') as client:
+        page = client.get('/')
+        assert '<html lang="en">' in page.text and 'no-store' in page.headers['cache-control']
+        assert client.get('/api/ui/language').json() == {'language': 'en'}
+        assert client.get('/api/ui/layout').json()['context_width'] == 410
+        assert client.put('/api/ui/language', json={'language': 'zh-CN'}).status_code == 200
+        assert '<html lang="zh-CN">' in client.get('/').text
+
+
 def test_layout_survives_restart_port_change_and_model_settings(tmp_path):
     with TestClient(create_app(tmp_path), base_url='http://localhost:51001') as client:
         assert client.get('/api/ui/layout').json() == {'context_width': None, 'sidebar_width': None}
