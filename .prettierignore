@@ -1,0 +1,6 @@
+frontend/vendor/
+build/
+dist/
+artifacts/
+data/
+.venv/

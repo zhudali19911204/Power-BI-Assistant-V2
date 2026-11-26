@@ -1,712 +1,816 @@
-import {language, mountLanguage, serviceText, tr} from './i18n.js';
-import {icon, hydrateIcons} from './icons.js';
-import {createMessageRenderer, createRenderScheduler} from './messages.js';
-import {escapeHtml as esc, markdown} from './markdown.js';
-import {codeBlock,createCodeTools} from './code_blocks.js';
-import {mountCalibrationEditor} from './calibration.js';
-import {MODES, modeFor} from './modes.js';
-import {analysisEvidence} from './analysis.js';
-import {mountModelManager} from './models.js';
-import {createWorkspaces, createGenerationManager} from './workspaces.js';
-import {clarificationCard, clarificationReply} from './clarification.js';
-import {fieldEvidence, mountFieldPreview} from './fields.js';
-import {modelTree} from './model_tree.js';
-import {mountSemanticWorkbench, semanticSummary} from './semantics.js';
-import {mountDictionaryLibrary} from './dictionaries.js';
-import {mountComposerImages, imageGallery} from './images.js';
-import {createConnectionMonitor,connectionPresentation,releaseSnapshot} from './connections.js';
-import {mountAnalysisTemplates,saveTemplateButton} from './analysis_templates.js';
-import {createWorkspaceLayout} from './layout.js';
-import {createTableTools} from './table_reader.js';
-import {mountChatContext} from './chat_context.js';
-import {mountUserGuide} from './user_guide.js';
-import {mountDesktopUpdates} from './updates.js';
+import { language, mountLanguage, serviceText, tr } from './i18n.js';
+import { icon, hydrateIcons } from './icons.js';
+import { createConversationView } from './conversation_view.js';
+import { escapeHtml as esc } from './html.js';
+import { codeBlock, createCodeTools } from './code_blocks.js';
+import { reviewWrite } from './artifacts.js';
+import { MODES, modeFor } from './modes.js';
+import { createWorkspaceDialogs } from './workspace_dialogs.js';
+import { createWorkspaces, createGenerationManager } from './workspaces.js';
+import { clarificationReply } from './clarification.js';
+import { createWorkspacePanels } from './workspace_panels.js';
+import { semanticSummary } from './semantics.js';
+import { mountComposerImages } from './images.js';
+import { createConnectionMonitor, releaseSnapshot } from './connections.js';
+import { mountAnalysisTemplates } from './analysis_templates.js';
+import { createWorkspaceLayout } from './layout.js';
+import { createTableTools } from './table_reader.js';
+import { mountChatContext } from './chat_context.js';
+import { $, $$, api, post, toast, guard } from './ui.js';
+import { mountDesktopUpdates } from './updates.js';
 
-const $ = (s, root=document) => root.querySelector(s);
-const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 mountLanguage(document, {
-  save: language => api('/ui/language', {method:'PUT', body:JSON.stringify({language}), keepalive:true}),
-  onError: message => toast(message, true),
+  save: (language) =>
+    api('/ui/language', { method: 'PUT', body: JSON.stringify({ language }), keepalive: true }),
+  onError: (message) => toast(message, true),
   onChange() {
-    const groups = $$('#model-tree .table-group').map(group => group.open);
+    const groups = $$('#model-tree .table-group').map((group) => group.open);
     render();
-    $$('#model-tree .table-group').forEach((group, i) => { group.open = groups[i]; });
+    $$('#model-tree .table-group').forEach((group, i) => {
+      group.open = groups[i];
+    });
     renderConnectionStatus();
     contextLayout.render();
     document.dispatchEvent(new document.defaultView.Event('languagechange'));
   },
 });
-const workspace=createWorkspaces();
-const codeTools=createCodeTools($('#code-reader'),{onNotice:toast});
-const state = {models:[], settings:{}, conversations:[], contextTab:'tables', get view(){return workspace.current;}};
-const historyContext=mountChatContext($('#history-context'),{getView:()=>state.view,api,
-  onChange:view=>{if(state.view===view)renderBusy();},
-  onError:(message,view)=>{if(state.view===view)toast(message,true);}});
-const contextLayout=createWorkspaceLayout({root:$('.workspace'),panel:$('#context-panel'),handle:$('#context-resizer'),toggle:$('#toggle-context'),
-  sidebar:{panel:$('#sidebar'),handle:$('#sidebar-resizer')},
-  save:value=>api('/ui/layout',{method:'PUT',body:JSON.stringify(value)}),onNotice:toast});
-const tableTools=createTableTools($('#table-reader'),{
-  getQuery:id=>state.view.messages.flatMap(message=>message.analysis||[]).find(query=>query.id===id),onNotice:toast});
-const connectionMonitor=createConnectionMonitor({api,
-  getModels:()=>[state.view.model,...workspace.all().filter(view=>view.busy).map(view=>view.model)],
-  onChange:result=>{
-    const released=result.connection?.status==='released';
-    const redraw=released&&state.view.model?.id===result.model_id&&!state.view.model.snapshot_released;
-    const patch=model=>model?.id===result.model_id?(released?releaseSnapshot(model):{...model,live:result.live,port:result.port,connection:result.connection}):model;
-    state.models=state.models.map(patch);
-    for(const view of workspace.all())view.model=patch(view.model);
-    if(redraw)render();else if(state.view.model?.id===result.model_id)renderConnectionStatus();
+const workspace = createWorkspaces();
+const codeTools = createCodeTools($('#code-reader'), { onNotice: toast });
+const state = {
+  models: [],
+  settings: {},
+  conversations: [],
+  contextTab: 'tables',
+  get view() {
+    return workspace.current;
+  },
+};
+const {
+  renderHistory,
+  renderBackgroundTasks,
+  renderContext,
+  renderModelTree,
+  renderConnectionStatus,
+  renderControls,
+} = createWorkspacePanels(state, workspace, renderBusy);
+const historyContext = mountChatContext($('#history-context'), {
+  getView: () => state.view,
+  api,
+  onChange: (view) => {
+    if (state.view === view) renderBusy();
+  },
+  onError: (message, view) => {
+    if (state.view === view) toast(message, true);
   },
 });
-let modalCleanup=null,modalReturn=null,composerImages=null;
-hydrateIcons();
-const messageRenderer=createMessageRenderer({
-  root:$('#messages'),scroll:$('#message-scroll'),
-  label:m=>`<span class="message-avatar">${m.role==='user'?tr('你'):icon('sparkles')}</span><span>${m.role==='user'?tr('你'):'Power BI Assistant'}</span>${m.model_stale?`<small class="validation-badge" title="${tr('同步前的回复与结果作为历史保留，后续分析使用最新模型重新取数')}">${tr('同步前回复')}</small>`:''}`,
-  content:m=>m.role==='user'?imageGallery(m.images)+'<p>'+esc(m.content).replace(/\n/g,'<br>')+'</p>':m.clarification&&m.status!=='error'&&m.status!=='cancelled'?'':markdown(m.content),
-  artifacts:m=>fieldEvidence(m.field_previews||[])+clarificationCard(m)+analysisEvidence(m.analysis||[])+(m.artifacts||[]).map(artifactCard).join('')+saveTemplateButton(m),
-  status:streamStatus,
+const contextLayout = createWorkspaceLayout({
+  root: $('.workspace'),
+  panel: $('#context-panel'),
+  handle: $('#context-resizer'),
+  toggle: $('#toggle-context'),
+  sidebar: { panel: $('#sidebar'), handle: $('#sidebar-resizer') },
+  save: (value) => api('/ui/layout', { method: 'PUT', body: JSON.stringify(value) }),
+  onNotice: toast,
 });
-const messagePaint=createRenderScheduler(renderMessages);
-let taskSignature='';
-const generation=createGenerationManager({
-  workspace,api,
-  onChange:view=>{
-    if(state.view===view){renderBusy();messagePaint.schedule();}
-    const signature=workspace.all().map(v=>`${v.key}:${v.busy}:${v.attention}:${v.conversation?.id||''}`).join('|');
-    if(signature!==taskSignature){taskSignature=signature;renderHistory();renderBackgroundTasks();}
+const tableTools = createTableTools($('#table-reader'), {
+  getQuery: (id) =>
+    state.view.messages.flatMap((message) => message.analysis || []).find((query) => query.id === id),
+  onNotice: toast,
+});
+const connectionMonitor = createConnectionMonitor({
+  api,
+  getModels: () => [
+    state.view.model,
+    ...workspace
+      .all()
+      .filter((view) => view.busy)
+      .map((view) => view.model),
+  ],
+  onChange: (result) => {
+    const released = result.connection?.status === 'released';
+    const redraw =
+      released && state.view.model?.id === result.model_id && !state.view.model.snapshot_released;
+    const patch = (model) =>
+      model?.id === result.model_id
+        ? released
+          ? releaseSnapshot(model)
+          : { ...model, live: result.live, port: result.port, connection: result.connection }
+        : model;
+    state.models = state.models.map(patch);
+    for (const view of workspace.all()) view.model = patch(view.model);
+    if (redraw) render();
+    else if (state.view.model?.id === result.model_id) renderConnectionStatus();
   },
-  onCreated:conversation=>{state.conversations=[conversation,...state.conversations.filter(c=>c.id!==conversation.id)];renderHistory();},
-  onModel:(view,event)=>{if(view.model?.id===event.model_id){view.model.live=event.live;if(event.live)view.model.connection={status:'connected'};if(state.view===view)renderConnectionStatus();}},
-  onComplete:(view,failed)=>{
-    void historyContext.load(view);
-    if(state.view===view){renderControls();if(!$('#prompt').value&&view.draft)$('#prompt').value=view.draft;messagePaint.flush();}
-    else toast(`“${view.conversation?.title||tr('后台会话')}”${view.cancelled?tr('已中止生成'):failed?tr('生成未完成，请查看原因'):view.messages.at(-1)?.clarification?tr('有一项口径待确认'):tr('已生成完成')}`,failed);
-    void reloadHistory().catch(error=>toast(error.message,true));
-  },
-  onError:(message,view)=>toast((state.view===view?'':`“${view.conversation?.title||tr('后台会话')}”：`)+message,true),
 });
 
-async function api(path, options={}) {
-  const response = await fetch('/api'+path, {...options, headers:{'Content-Type':'application/json','X-UI-Language':language,...options.headers}});
-  if(!response.ok) {
-    const body = await response.json().catch(()=>({detail:tr('服务暂时不可用')}));
-    if(Array.isArray(body.detail)&&body.detail.every(issue=>typeof issue?.msg==='string')){
-      const messages=body.detail.map(issue=>{
-        const field=issue.loc?.filter(part=>part!=='body').join('.');
-        return [field,serviceText(issue.msg.replace(/^Value error,\s*/,''))].filter(Boolean).join(' · ');
-      });
-      throw new Error(messages.join('；')||tr('请检查填写内容'));
+const {
+  showModal,
+  attachManager,
+  openUserGuide,
+  openConnections,
+  selectConnection,
+  updateModelSemantics,
+  openDictionaryLibrary,
+  openSettings,
+  openFieldPreview,
+  openSemantics,
+  openCalibration,
+} = createWorkspaceDialogs({
+  state,
+  workspace,
+  available,
+  useModel,
+  connectionMonitor,
+  renderControls,
+  renderContext,
+});
+let composerImages = null;
+hydrateIcons();
+const { renderMessages, messagePaint } = createConversationView(() => state.view);
+let taskSignature = '';
+const generation = createGenerationManager({
+  workspace,
+  api,
+  onChange: (view) => {
+    if (state.view === view) {
+      renderBusy();
+      messagePaint.schedule();
     }
-    throw new Error(typeof body.detail==='string'?serviceText(body.detail):JSON.stringify(body.detail));
+    const signature = workspace
+      .all()
+      .map((v) => `${v.key}:${v.busy}:${v.attention}:${v.conversation?.id || ''}`)
+      .join('|');
+    if (signature !== taskSignature) {
+      taskSignature = signature;
+      renderHistory();
+      renderBackgroundTasks();
+    }
+  },
+  onCreated: (conversation) => {
+    state.conversations = [conversation, ...state.conversations.filter((c) => c.id !== conversation.id)];
+    renderHistory();
+  },
+  onModel: (view, event) => {
+    if (view.model?.id === event.model_id) {
+      view.model.live = event.live;
+      if (event.live) view.model.connection = { status: 'connected' };
+      if (state.view === view) renderConnectionStatus();
+    }
+  },
+  onComplete: (view, failed) => {
+    void historyContext.load(view);
+    if (state.view === view) {
+      renderControls();
+      if (!$('#prompt').value && view.draft) $('#prompt').value = view.draft;
+      messagePaint.flush();
+    } else
+      toast(
+        `“${view.conversation?.title || tr('后台会话')}”${view.cancelled ? tr('已中止生成') : failed ? tr('生成未完成，请查看原因') : view.messages.at(-1)?.clarification ? tr('有一项口径待确认') : tr('已生成完成')}`,
+        failed
+      );
+    void reloadHistory().catch((error) => toast(error.message, true));
+  },
+  onError: (message, view) =>
+    toast((state.view === view ? '' : `“${view.conversation?.title || tr('后台会话')}”：`) + message, true),
+});
+
+function available() {
+  if (state.view.changingContext) {
+    toast(tr('正在更新当前对话的上下文，请稍候'));
+    return false;
   }
-  return response.json();
+  if (state.view.busy || state.view.loading || state.view.syncing || state.view.preparing) {
+    toast(
+      state.view.syncing
+        ? tr('正在同步当前对话的模型，请稍候')
+        : state.view.loading
+          ? tr('正在读取此会话')
+          : state.view.preparing
+            ? tr('正在检查语义，请稍候')
+            : tr('此会话正在生成，可切换到其他页面继续使用')
+    );
+    return false;
+  }
+  return true;
 }
-const post = (path, body={}) => api(path,{method:'POST', body:JSON.stringify(body)});
-function toast(text,error=false) {
-  const el=document.createElement('div');el.className='toast'+(error?' error':'');el.textContent=text;
-  $('#toasts').append(el);setTimeout(()=>el.remove(),5500);
-}
-const guard = fn => async (...args) => {try {await fn(...args);} catch(e) {toast(e.message,true);}};
-function available() {if(state.view.changingContext){toast(tr('正在更新当前对话的上下文，请稍候'));return false;}if(state.view.busy||state.view.loading||state.view.syncing||state.view.preparing){toast(state.view.syncing?tr('正在同步当前对话的模型，请稍候'):state.view.loading?tr('正在读取此会话'):state.view.preparing?tr('正在检查语义，请稍候'):tr('此会话正在生成，可切换到其他页面继续使用'));return false;}return true;}
 function renderBusy() {
   historyContext.render();
-  $('#send-button').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading||!!state.view.changingContext||state.view.images.some(img=>img.status==='uploading');
-  $('#refresh-model').disabled=state.view.busy||state.view.preparing||state.view.syncing||!!state.view.loading||!!state.view.changingContext;
-  $('#refresh-model').title=state.view.syncing?tr('正在同步模型'):state.view.busy?tr('当前对话结束或中止后可同步模型'):tr('同步模型，继续当前对话');
-  $('#stop-button').disabled=!state.view.busy||state.view.stopping;
-  $('#stop-button').setAttribute('aria-label',state.view.stopping?tr('正在中止本次生成'):tr('中止本次生成'));
-  $('#stop-button').title=state.view.stopping?tr('正在中止本次生成'):tr('中止本次生成，保留已收到的内容');
+  const view = state.view;
+  const processing = Boolean(
+    view.busy || view.preparing || view.syncing || view.loading || view.changingContext
+  );
+  $('#send-button').disabled = processing || view.images.some((image) => image.status === 'uploading');
+  $('#refresh-model').disabled = processing;
+  $('#refresh-model').title = state.view.syncing
+    ? tr('正在同步模型')
+    : state.view.busy
+      ? tr('当前对话结束或中止后可同步模型')
+      : tr('同步模型，继续当前对话');
+  $('#stop-button').disabled = !state.view.busy || state.view.stopping;
+  $('#stop-button').setAttribute(
+    'aria-label',
+    state.view.stopping ? tr('正在中止本次生成') : tr('中止本次生成')
+  );
+  $('#stop-button').title = state.view.stopping
+    ? tr('正在中止本次生成')
+    : tr('中止本次生成，保留已收到的内容');
   composerImages?.render();
-  document.body.classList.toggle('busy',state.view.busy);
+  document.body.classList.toggle('busy', state.view.busy);
 }
-function showModal(title,eyebrow,html,{wide=false,modelSettings=false}={}) {
-  modalReturn=null;
-  modalCleanup?.();modalCleanup=null;
-  $('#modal-close').setAttribute('aria-label',tr('关闭弹窗'));
-  $('#modal').classList.toggle('wide-modal',wide);
-  $('#modal').classList.toggle('model-settings-modal',modelSettings);
-  $('#modal-title').textContent=title;$('#modal-eyebrow').textContent=eyebrow;$('#modal-body').innerHTML=html;
-  if(!$('#modal').open) $('#modal').showModal();
-}
-function closeModalLayer(){if(modalReturn)modalReturn();else $('#modal').close();}
-function openUserGuide() {
-  showModal(tr('使用说明'),'',`<div id="user-guide"><p class="guide-empty" role="status">${tr('正在读取使用说明…')}</p></div>`,{wide:true});
-  const controller=new AbortController();
-  modalCleanup=()=>controller.abort();
-  return mountUserGuide($('#user-guide'),controller.signal);
-}
-function modalHasEditor(){
-  return !!$('#model-manager [data-model-form], [data-template-editor], [data-template-run-form], #semantic-workbench:not([hidden]) form', $('#modal'));
-}
-$('#modal-close').onclick=closeModalLayer;
-$('#modal').addEventListener('close',()=>{if($('#modal').open)return;modalReturn=null;modalCleanup?.();modalCleanup=null;});
-$('#modal').addEventListener('cancel',event=>{
-  // Escape can dismiss IME input too. Only an explicit close should discard this editor.
-  if(modalHasEditor()){event.preventDefault();return;}
-  if(modalReturn){event.preventDefault();modalReturn();}
-});
-$('#modal').addEventListener('click', e=>{
-  if(e.target!==$('#modal')||modalHasEditor())return;
-  const r=e.target.getBoundingClientRect();
-  if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModalLayer();
-});
 
-function welcome() {
-  const mode=modeFor(state.view.mode);
-  const model=state.view.model;
-  const needsReport=!model||(state.view.mode==='analysis'&&model.source!=='desktop');
-  return `<section class="welcome" aria-labelledby="welcome-title">
-    <div class="welcome-emblem">${icon(needsReport?'database':mode.icon)}</div>
-    <h1 id="welcome-title">${needsReport?tr('从哪份报表开始？'):mode.headline}</h1>
-    <p class="welcome-subtitle">${needsReport?tr('先在 Power BI Desktop 中打开报表，连接后即可使用其中的字段和度量值。'):mode.subtitle}</p>
-    ${needsReport?`<div class="welcome-actions"><button type="button" class="primary-button welcome-connect" id="welcome-connect">${icon('monitor')}${tr('连接 Power BI 报表')}</button>
-      <button type="button" class="text-link" data-open-guide aria-haspopup="dialog">${tr('快速上手')}${icon('arrow-right')}</button></div>`:''}
-  </section>`;
+function render() {
+  renderControls();
+  renderHistory();
+  renderContext();
+  renderMessages();
+  renderBackgroundTasks();
 }
-function renderMessages(forceFollow=false) {
-  const view=state.view;
-  const showWelcome=!view.messages.length&&(!view.conversation||view.loaded)&&!view.loading&&!view.busy&&!view.preparing&&!view.syncing;
-  $('#prompt-actions').hidden=!showWelcome;
-  for(const message of state.view.messages)if(message.clarification){
-    message.clarificationDraft=state.view.clarificationDrafts[message.id]||{};
-    message.clarificationLocked=!!(state.view.busy||state.view.preparing||state.view.loading||state.view.syncing||message.model_stale||message.status!=='complete'||message.clarification.answered||message!==state.view.messages.at(-1));
-  }
-  messageRenderer.render(state.view.messages,{
-    conversation:state.view.key, language,
-    welcome:showWelcome?welcome():'',forceFollow,
-  });
-}
-function streamStatus(message) {
-  const elapsed=state.view.startedAt?Math.floor((Date.now()-state.view.startedAt)/1000):(message.progress?.elapsed||0);
-  return serviceText(message.progress?.stage||state.view.status||'正在等待模型回复')+(elapsed>0?` ${tr('· 已用时 {0} 秒', elapsed)}`:'');
-}
-setInterval(()=>{
-  messageRenderer.updateStatus(state.view.messages);
-},1000);
-
-function artifactCard(obj) {
-  const v=obj.validation;const live=v.run_verified&&v.ok;
-  const column=obj.kind==='dax_column';
-  const retry=obj.kind!=='m_script'&&obj.message_id?`<button data-revalidate="${esc(obj.message_id)}">${icon('refresh')}${tr('重新实跑本组代码')}</button>`:'';
-  const calibration=(v.calibration||[]).map((p,i)=>`<div class="validation-detail">${tr('{0}：期望 {1} / 实际 {2} · {3}', v.calibration.length===1?tr('校准结果'):tr('历史校准点 {0}', i+1), esc(p.expected), esc(p.actual), p.matched?tr('匹配'):tr('未匹配'))}</div>`).join('');
-  return `<div class="validation-card ${!v.ok?'failed':!live?'warning':''}"><div class="validation-top">${icon(v.ok?'check':'info')}<strong>${column?`${tr('计算列 ·')} `+esc(obj.home_table)+'['+esc(obj.name)+']':esc(obj.name)}</strong><span class="validation-badge">${live?(column?tr('Desktop 行上下文抽样通过'):tr('Desktop 实跑通过')):v.run_verified?tr('Desktop 实跑未通过'):v.ok?tr('静态检查通过 · 未实跑'):tr('验证未通过')}</span></div>${v.sample!==null&&v.sample!==undefined?`<div class="validation-detail">${tr('实跑结果：{0}', esc(typeof v.sample==='object'?JSON.stringify(v.sample):v.sample))}</div>`:''}${v.errors?.length?`<div class="validation-detail">${v.errors.map(error=>esc(serviceText(error))).join('<br>')}</div>`:''}${v.warnings?.length?`<div class="validation-detail">${v.warnings.map(warning=>esc(serviceText(warning))).join('<br>')}</div>`:''}${calibration}${obj.kind==='m_script'?`<div class="validation-detail">${tr('复制脚本至 Power Query 高级编辑器，在 Desktop 中应用验证。')}</div>`:live?`<button data-apply="${esc(obj.id)}">${icon(obj.applied_at?'check':'database')}${obj.applied_at?tr('已写入模型'):tr('审阅并写入模型')}</button>`:''}${retry}</div>`;
-}
-function renderHistory() {
-  const needle=$('#history-search').value.toLowerCase();
-  const rows=state.conversations.filter(c=>c.title.toLowerCase().includes(needle));
-  $('#history-list').innerHTML=rows.length?rows.map(c=>{
-    const view=workspace.find(c.id),busy=view?.busy||(c.generating&&!view?.loaded);
-    const current=state.view.conversation?.id===c.id;
-    const last=view?.messages.at(-1),pending=last?.status==='complete'&&last.clarification&&!last.clarification.answered;
-    const badge=busy?`<small class="history-task running">${tr('生成中')}</small>`:pending?`<small class="history-task clarification">${tr('待确认')}</small>`:view?.attention?`<small class="history-task ${view.attention}">${view.attention==='error'?tr('查看错误'):view.attention==='cancelled'?tr('已中止'):tr('已完成')}</small>`:'';
-    return `<div class="history-item ${current?'active':''}"><button class="history-name" data-conversation="${c.id}"${current?' aria-current="true"':''} title="${esc(c.title)}">${icon(MODES[c.mode]?.historyIcon||'chat')}<span>${esc(c.title)}</span>${badge}</button><button class="icon-button" data-delete-conversation="${c.id}" aria-label="${tr('删除 {0}', esc(c.title))}" ${busy||view?.preparing?`disabled title="${tr('发送或生成完成后可删除')}"`:''}>${icon('trash')}</button></div>`;
-  }).join(''):'<p class="muted history-empty">'+(needle?tr('没有匹配的对话'):`${tr('还没有对话')}<br>${tr('从一个数据问题开始吧')}`)+'</p>';
-}
-function renderBackgroundTasks() {
-  const tasks=workspace.all().filter(view=>view!==state.view&&view.busy);
-  const banner=$('#background-generations');banner.hidden=!tasks.length;
-  banner.innerHTML=tasks.length?`<span class="background-dot"></span><span>${tr('{0} 个会话正在后台生成', tasks.length)}</span>${tasks.filter(v=>v.conversation).slice(0,2).map(view=>`<button data-conversation="${view.conversation.id}" title="${esc(view.conversation.title)}">${tr('查看：{0}', esc(view.conversation.title))}</button>`).join('')}`:'';
-}
-function renderContext() {
-  const model=state.view.model, ctx=model?.context;
-  $('#context-panel').classList.toggle('has-model',!!model);
-  const search=$('#field-search');
-  search.disabled=!model||!!model.snapshot_released;
-  const searchLabel={tables:tr('搜表、字段、度量值或业务别名'),relations:tr('搜索关系中的表或字段'),queries:tr('搜索 Power Query 查询')}[state.contextTab];
-  search.placeholder=searchLabel;
-  search.setAttribute('aria-label',searchLabel);
-  if(model?.snapshot_released){
-    $('#model-summary').innerHTML=`<div class="model-name">${esc(model.name)}</div><div class="model-state">${tr('快照已释放')}</div>`;
-    $('#model-tree').innerHTML=`<p class="history-empty muted">${tr('历史消息和结果仍可查看。打开对应报表并点击“同步模型”，即可重新读取字段。')}</p>`;
-    return;
-  }
-  $('#model-summary').innerHTML=model?`<div class="model-name">${esc(model.name)}</div><div class="model-state">${model.live?tr('● 本机实时连接'):model.source==='demo'?tr('○ 示例数据结构 · 仅供体验'):tr('○ 离线模型快照')}</div><div class="model-counts"><span><b>${Object.keys(ctx.tables).length}</b>${tr('表')}</span><span><b>${Object.values(ctx.tables).flat().length}</b>${tr('字段')}</span><span><b>${ctx.measures.length}</b>${tr('度量值')}</span></div>`:'';
-  if(model?.source==='desktop')$('#model-summary').insertAdjacentHTML('beforeend',`<button class="text-link semantic-open-button" data-open-semantics="${esc(model.id)}">${icon('book')}${tr('模型语义层')} <small>${['needs_update','unverified'].includes(model.semantics?.dictionary_notice?.status)?esc(serviceText(model.semantics.dictionary_notice.message)):model.semantics?.status==='ready'?tr('已梳理 · 可审阅定义'):model.semantics?.can_answer?tr('已有语义可用 · 更新可稍后处理'):model.semantics?.status==='building'?tr('正在后台梳理'):tr('需要先梳理语义')}</small></button>`);
-  if(!model) {$('#model-tree').innerHTML=`<div class="model-empty"><div class="empty-model-icon">${icon('database')}</div><p>${tr('连接报表后，可在这里查看字段并插入引用。')}</p></div>`;return;}
-  renderConnectionStatus();
-  renderModelTree();
-}
-function renderModelTree() {
-  const model=state.view.model;
-  if(!model||model.snapshot_released)return;
-  const ctx=model.context,needle=$('#field-search').value.trim().toLowerCase();
-  if(state.contextTab==='tables') {
-    $('#model-tree').innerHTML=modelTree(ctx,needle,model.semantics?.search_names);
-  } else if(state.contextTab==='relations') {
-    $('#model-tree').innerHTML=ctx.relationships.filter(r=>(r.from_table+r.to_table+r.from_column+r.to_column).toLowerCase().includes(needle)).map(r=>`<div class="relation-item">${esc(r.from_table)}[${esc(r.from_column)}]${icon('arrow-right')}${esc(r.to_table)}[${esc(r.to_column)}]<span>${r.cross_filter==='both'?tr('双向筛选'):tr('单向筛选')} · ${r.is_active?tr('活动关系'):tr('非活动关系')}</span></div>`).join('')||`<p class="history-empty muted">${tr('暂无匹配的关系')}</p>`;
-  } else {
-    const queries={...ctx.table_queries,...ctx.shared_expressions};
-    $('#model-tree').innerHTML=Object.keys(queries).filter(n=>n.toLowerCase().includes(needle)).map(name=>`<button class="query-button" data-query="${esc(name)}">${icon('code')}${esc(name)}</button>`).join('')||`<p class="history-empty muted">${tr('模型中暂无可用 M 查询')}</p>`;
-  }
-}
-function renderConnectionStatus() {
-  const model=state.view.model,view=connectionPresentation(model);
-  $('#connection-label').textContent=view.label;$('#connect-open').title=view.detail;
-  $('.status-dot').classList.toggle('connected',view.kind==='connected');
-  $('.status-dot').classList.toggle('reconnecting',view.kind==='reconnecting');
-  $('.status-dot').classList.toggle('warning',view.kind==='warning');
-  $('#composer-context').textContent=model?model.name+' · '+view.context:view.context;
-  const status=$('.model-state');if(status)status.textContent=(view.kind==='connected'?'● ':'○ ')+(view.state||view.detail);
-}
-function renderControls() {
-  $('#template-return').hidden=!state.view.templateReturn;
-  const query=state.view.queryName;
-  $('#query-select').hidden=state.view.mode!=='mquery';
-  const ctx=state.view.model?.context;
-  $('#query-select').innerHTML=Object.keys({...ctx?.table_queries,...ctx?.shared_expressions}).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')||`<option value="">${tr('没有可用查询')}</option>`;
-  if(state.view.conversation?.query_name)$('#query-select').value=state.view.conversation.query_name;
-  else if([...$('#query-select').options].some(o=>o.value===query))$('#query-select').value=query;
-  state.view.queryName=$('#query-select').value;
-  $('#calibration-open').hidden=state.view.mode!=='dax'||!state.view.model;
-  $('#calibration-label').textContent=state.view.points.length?(state.view.points[0].filters.length?tr('校准 · {0} 个条件', state.view.points[0].filters.length):tr('校准 · 全模型')):tr('校准');
-  const strength=state.settings.reasoning_control?.supported?(state.settings.reasoning_level==='high'?tr('高强度'):tr('低强度')):
-    state.settings.reasoning_control?tr('强度不可调'):'';
-  $('#active-llm').textContent=state.settings.model?(state.settings.model+(strength?` · ${strength}`:'')):tr('配置大模型');
-  $('#model-settings-chip').title=state.settings.name?tr('{0} · 点击切换或添加模型', state.settings.name):tr('点击添加模型');
-  $('#sidebar-model').textContent=state.settings.model||tr('连接你的大模型服务器');
-  const mode=modeFor(state.view.mode);
-  $('#page-title').textContent=mode.title;
-  $('#prompt').placeholder=mode.placeholder;
-  $('#conversation-caption').textContent=state.view.conversation?.title||tr('新对话');
-  $('#context-strip').hidden=!state.view.model;
-  const actions=$('#prompt-actions');
-  if(actions.dataset.modeFor!==state.view.mode || actions.dataset.language!==language){
-    actions.dataset.modeFor=state.view.mode;
-    actions.dataset.language=language;
-    actions.innerHTML=mode.cards.map(([symbol,label,description],i)=>
-      `<button type="button" data-prompt="${i}" title="${esc(description)}">${icon(symbol)}${esc(label)}</button>`).join('');
-  }
-  $('.composer-note').innerHTML='<span class="tiny-dot"></span>'+(state.view.mode==='analysis'?tr('只读查询 · 查询结果用于 AI 分析 · 依据和结果本地留存'):tr('模型在本机读取 · AI 在服务器推理 · 写入前由你确认'));
-  $$('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.mode===state.view.mode));
-  renderBusy();
-}
-function render() {renderControls();renderHistory();renderContext();renderMessages();renderBackgroundTasks();}
 function saveDraft() {
-  Object.assign(state.view,{draft:$('#prompt').value,queryName:$('#query-select').value,
-    scrollTop:$('#message-scroll').scrollTop,pinned:$('#message-scroll').scrollHeight-$('#message-scroll').scrollTop-$('#message-scroll').clientHeight<100});
+  Object.assign(state.view, {
+    draft: $('#prompt').value,
+    queryName: $('#query-select').value,
+    scrollTop: $('#message-scroll').scrollTop,
+    pinned:
+      $('#message-scroll').scrollHeight - $('#message-scroll').scrollTop - $('#message-scroll').clientHeight <
+      100,
+  });
 }
 function showView() {
-  const input=$('#prompt');
-  if(input.value!==state.view.draft)input.value=state.view.draft;
+  const input = $('#prompt');
+  if (input.value !== state.view.draft) input.value = state.view.draft;
   render();
-  renderConnectionStatus();void connectionMonitor.refresh();
-  if(state.view.scrollTop!==undefined&&!state.view.pinned)$('#message-scroll').scrollTo({top:state.view.scrollTop,behavior:'instant'});
+  renderConnectionStatus();
+  void connectionMonitor.refresh();
+  if (state.view.scrollTop !== undefined && !state.view.pinned)
+    $('#message-scroll').scrollTo({ top: state.view.scrollTop, behavior: 'instant' });
 }
-function newChat(mode=state.view.mode) {saveDraft();workspace.newChat(mode);showView();$('#prompt').focus();}
-async function openAnalysisTemplates(messageId=null) {
-  const seed=messageId?await api(`/messages/${messageId}/analysis-template`):null;
-  showModal(messageId?tr('保存分析模板'):tr('分析模板'),'ANALYSIS TEMPLATES','<div id="analysis-template-manager"></div>',{wide:true});
-  const root=$('#analysis-template-manager');
-  const manager=await mountAnalysisTemplates(root,{api,seed,getModel:()=>state.view.model,getService:()=>state.settings,
-    onStarted:async(result,model,visible)=>{
-      state.conversations=[result.conversation,...state.conversations.filter(c=>c.id!==result.conversation.id)];
-      const view=workspace.register(result.conversation,model);
+function newChat(mode = state.view.mode) {
+  saveDraft();
+  workspace.newChat(mode);
+  showView();
+  $('#prompt').focus();
+}
+async function openAnalysisTemplates(messageId = null) {
+  const seed = messageId ? await api(`/messages/${messageId}/analysis-template`) : null;
+  showModal(
+    messageId ? tr('保存分析模板') : tr('分析模板'),
+    'ANALYSIS TEMPLATES',
+    '<div id="analysis-template-manager"></div>',
+    { wide: true }
+  );
+  const root = $('#analysis-template-manager');
+  const manager = await mountAnalysisTemplates(root, {
+    api,
+    seed,
+    getModel: () => state.view.model,
+    getService: () => state.settings,
+    onStarted: async (result, model, visible) => {
+      state.conversations = [
+        result.conversation,
+        ...state.conversations.filter((c) => c.id !== result.conversation.id),
+      ];
+      const view = workspace.register(result.conversation, model);
       void historyContext.load(view);
-      if(visible&&root.isConnected){
+      if (visible && root.isConnected) {
         saveDraft();
-        if(!state.view.conversation&&(state.view.draft||state.view.images.length))view.templateReturn=state.view;
-        workspace.open(result.conversation,model);$('#modal').close();showView();
+        if (!state.view.conversation && (state.view.draft || state.view.images.length))
+          view.templateReturn = state.view;
+        workspace.open(result.conversation, model);
+        $('#modal').close();
+        showView();
       }
-      void generation.follow(view);renderHistory();renderBackgroundTasks();
+      void generation.follow(view);
+      renderHistory();
+      renderBackgroundTasks();
     },
-    onOpen:async id=>{
-      const conversation=await api(`/conversations/${id}`);
-      state.conversations=[conversation,...state.conversations.filter(c=>c.id!==id)];
-      await openConversation(id);$('#modal').close();
+    onOpen: async (id) => {
+      const conversation = await api(`/conversations/${id}`);
+      state.conversations = [conversation, ...state.conversations.filter((c) => c.id !== id)];
+      await openConversation(id);
+      $('#modal').close();
     },
   });
-  if(root.isConnected&&$('#modal').open)modalCleanup=()=>manager.dispose();else manager.dispose();
+  attachManager(root, manager);
 }
-function switchMode(mode) {saveDraft();workspace.switchMode(mode);showView();}
-function keepLatestSnapshot(model) {
-  state.models=[model,...state.models.filter(saved=>saved.source!=='desktop'&&saved.id!==model.id)];
-  for(const view of workspace.all())if(view.model?.source==='desktop'){
-    view.model=view.model.id===model.id?model:releaseSnapshot(view.model);
-  }
-}
-function useModel(model,connected=false) {
+function switchMode(mode) {
   saveDraft();
-  const view=state.view;
-  const firstReport=!view.model||(view.mode==='analysis'&&view.model.source==='demo'&&model.source==='desktop');
-  const keepDraft=firstReport&&!view.conversation&&!view.messages.length&&!view.busy;
-  if(connected)keepLatestSnapshot(model);
-  if(keepDraft)view.model=model;
-  else workspace.newChat(view.mode,model);
-  $('#modal').close();showView();
-  if(keepDraft)$('#prompt').focus();
-  if(model.source==='desktop'&&model.semantics?.status!=='ready'&&!model.semantics?.can_answer)
-    void openSemantics(model.id).catch(error=>toast(error.message,true));
+  workspace.switchMode(mode);
+  showView();
+}
+function keepLatestSnapshot(model) {
+  state.models = [
+    model,
+    ...state.models.filter((saved) => saved.source !== 'desktop' && saved.id !== model.id),
+  ];
+  for (const view of workspace.all())
+    if (view.model?.source === 'desktop') {
+      view.model = view.model.id === model.id ? model : releaseSnapshot(view.model);
+    }
+}
+function useModel(model, connected = false) {
+  saveDraft();
+  const view = state.view;
+  const firstReport =
+    !view.model || (view.mode === 'analysis' && view.model.source === 'demo' && model.source === 'desktop');
+  const keepDraft = firstReport && !view.conversation && !view.messages.length && !view.busy;
+  if (connected) keepLatestSnapshot(model);
+  if (keepDraft) view.model = model;
+  else workspace.newChat(view.mode, model);
+  $('#modal').close();
+  showView();
+  if (keepDraft) $('#prompt').focus();
+  if (model.source === 'desktop' && model.semantics?.status !== 'ready' && !model.semantics?.can_answer)
+    void openSemantics(model.id).catch((error) => toast(error.message, true));
 }
 async function syncCurrentModel() {
-  const view=state.view;
-  if(!view.model)return openConnections();
-  if(view.model.source==='demo'){toast(tr('当前为示例模型，请连接 Desktop 以读取真实模型'));return;}
-  if(!available())return;
-  saveDraft();view.syncing=true;historyRequest++;renderBusy();renderMessages();
+  const view = state.view;
+  if (!view.model) return openConnections();
+  if (view.model.source === 'demo') {
+    toast(tr('当前为示例模型，请连接 Desktop 以读取真实模型'));
+    return;
+  }
+  if (!available()) return;
+  saveDraft();
+  view.syncing = true;
+  historyRequest++;
+  renderBusy();
+  renderMessages();
   try {
-    const result=view.conversation?await post(`/conversations/${view.conversation.id}/refresh-model`):
-      {model:await post(`/models/${view.model.id}/refresh`)};
+    const result = view.conversation
+      ? await post(`/conversations/${view.conversation.id}/refresh-model`)
+      : { model: await post(`/models/${view.model.id}/refresh`) };
     // Capture edits typed while the request was running. Navigation saves the
     // owning draft separately; a late response must never activate another view.
-    if(state.view===view)saveDraft();
+    if (state.view === view) saveDraft();
     historyRequest++;
-    view.model=result.model;
+    view.model = result.model;
     keepLatestSnapshot(result.model);
-    if(result.conversation){
-      workspace.bind(view,result.conversation);
-      view.contextUsage=null;void historyContext.load(view);
-      state.conversations=state.conversations.map(c=>c.id===result.conversation.id?result.conversation:c);
-      for(const message of view.messages)if(message.role==='assistant')message.model_stale=true;
+    if (result.conversation) {
+      workspace.bind(view, result.conversation);
+      view.contextUsage = null;
+      void historyContext.load(view);
+      state.conversations = state.conversations.map((c) =>
+        c.id === result.conversation.id ? result.conversation : c
+      );
+      for (const message of view.messages) if (message.role === 'assistant') message.model_stale = true;
     }
-    if(state.view===view)render();else renderHistory();
+    if (state.view === view) render();
+    else renderHistory();
     toast(tr('模型已同步，可在原对话继续；历史回复已保留'));
   } finally {
-    view.syncing=false;renderBusy();
-    if(state.view===view)renderMessages();
+    view.syncing = false;
+    renderBusy();
+    if (state.view === view) renderMessages();
   }
 }
-let historyRequest=0;
+let historyRequest = 0;
 async function reloadHistory() {
-  const request=++historyRequest,conversations=await api('/conversations');if(request!==historyRequest)return;
-  const missing=workspace.all().filter(view=>view.busy&&view.conversation&&!conversations.some(c=>c.id===view.conversation.id));
-  state.conversations=[...missing.map(view=>view.conversation),...conversations];
-  for(const view of workspace.all()){
-    const current=conversations.find(c=>c.id===view.conversation?.id);if(current)view.conversation=current;
+  const request = ++historyRequest,
+    conversations = await api('/conversations');
+  if (request !== historyRequest) return;
+  const missing = workspace
+    .all()
+    .filter(
+      (view) => view.busy && view.conversation && !conversations.some((c) => c.id === view.conversation.id)
+    );
+  state.conversations = [...missing.map((view) => view.conversation), ...conversations];
+  for (const view of workspace.all()) {
+    const current = conversations.find((c) => c.id === view.conversation?.id);
+    if (current) view.conversation = current;
   }
-  renderHistory();renderBackgroundTasks();
+  renderHistory();
+  renderBackgroundTasks();
 }
 async function loadConversation(view) {
-  if(view.loading||view.preparing||view.syncing||generation.isRunning(view))return;
-  view.loading=true;if(state.view===view)renderBusy();
+  if (view.loading || view.preparing || view.syncing || generation.isRunning(view)) return;
+  view.loading = true;
+  if (state.view === view) renderBusy();
   void historyContext.load(view);
   try {
-    const [model,messages,status]=await Promise.all([api(`/models/${view.conversation.model_id}`),
-      api(`/conversations/${view.conversation.id}/messages`),api(`/conversations/${view.conversation.id}/generation`)]);
-    Object.assign(view,{model,messages,loaded:true});
-    if(status.running||messages.some(m=>m.status==='streaming'))void generation.follow(view);
-  } finally {view.loading=false;if(state.view===view)showView();}
+    const [model, messages, status] = await Promise.all([
+      api(`/models/${view.conversation.model_id}`),
+      api(`/conversations/${view.conversation.id}/messages`),
+      api(`/conversations/${view.conversation.id}/generation`),
+    ]);
+    Object.assign(view, { model, messages, loaded: true });
+    if (status.running || messages.some((m) => m.status === 'streaming')) void generation.follow(view);
+  } finally {
+    view.loading = false;
+    if (state.view === view) showView();
+  }
 }
 async function openConversation(id) {
-  const conversation=state.conversations.find(c=>c.id===id);if(!conversation)return;
-  saveDraft();const view=workspace.open(conversation,state.models.find(m=>m.id===conversation.model_id)||null);showView();
-  if(!generation.isRunning(view))await loadConversation(view);
+  const conversation = state.conversations.find((c) => c.id === id);
+  if (!conversation) return;
+  saveDraft();
+  const view = workspace.open(conversation, state.models.find((m) => m.id === conversation.model_id) || null);
+  showView();
+  if (!generation.isRunning(view)) await loadConversation(view);
 }
 
-async function openConnections() {
-  showModal(tr('连接 Power BI'),'LOCAL MODEL',`<p class="notice" id="connection-scanning">${tr('正在查找本机 Power BI Desktop 实例…')}</p>`);
-  const scanning=$('#connection-scanning'),view=state.view;
-  const [instances,models]=await Promise.all([api('/desktop/instances'),api('/models')]);
-  if(!scanning.isConnected||!$('#modal').open||state.view!==view)return;
-  state.models=models;
-  $('#modal-body').innerHTML=`<p class="notice">${tr('先在本机 Power BI Desktop 打开报表。连接后按报表名称与文件路径匹配本地语义词典，并核对字段、关系和公式；不会修改报表。')}</p>${instances.length?instances.map(i=>`<button class="instance-button" data-port="${i.port}">${icon('monitor')}<span>${esc(i.report?.name||'Power BI Desktop')} · ${i.port}<small>${esc(i.report?.path||`${tr('本地实例 · PID')} `+i.pid)}</small></span></button>`).join(''):`<p class="field-help">${tr('未找到已打开的实例。请打开报表后重新扫描。')}</p>`}${instances.some(i=>!i.report?.name)?`<label class="form-field">${tr('未识别报表名称时，可填写用于后续匹配的名称')}<input id="connection-report-name" maxlength="260" placeholder="${tr('例如：采购费用分析；以后打开同一报表填写相同名称')}"></label>`:''}<div class="modal-actions"><button class="secondary-button" id="demo-load">${tr('体验示例模型')}</button><button class="primary-button" id="rescan">${icon('refresh')}${tr('重新扫描')}</button></div>${models.length?`<div class="snapshot-section"><div class="section-label">${tr('本地保存的模型结构')}</div>${models.slice(0,8).map(m=>`<button class="snapshot-button" data-snapshot="${m.id}">${icon('database')}<span>${esc(m.name)}<small>${m.live?tr('实时连接'):m.source==='demo'?tr('示例模型'):tr('离线快照 · 无法实跑')}</small></span></button>`).join('')}</div>`:''}`;
-  $('#modal-body').insertAdjacentHTML('afterbegin',`<div class="semantic-tools"><button type="button" class="secondary-button" id="manage-dictionaries">${tr('管理历史业务词典')}</button></div>`);
-}
-
-async function selectConnection(button) {
-  const view=state.view,dialog=$('#modal');
-  const current=()=>dialog.open&&button.isConnected&&state.view===view;
-  if(!current()||button.disabled)return;
-  for(const control of $$('#modal-body button'))control.disabled=true;
-  const {port,snapshot}=button.dataset;
-  try {
-    let model;
-    if(port){
-      button.textContent=tr('正在读取模型…');
-      const reportName=$('#connection-report-name')?.value.trim()||'';
-      model=await post('/models/connect',{port:Number(port),report_name:reportName});
-    }else if(snapshot)model=await api(`/models/${snapshot}`);
-    else model=await post('/models/demo');
-    if(!current()){
-      if(port)void connectionMonitor.refresh();
-      return;
-    }
-    useModel(model,!!port);
-    if(port)toast(serviceText(model.semantics?.dictionary_notice?.message||(model.semantics?.status==='ready'&&model.semantics.stage)||tr('已读取 Desktop 模型')));
-  }catch(error){
-    if(!current())return;
-    await openConnections();throw error;
+function canSendMessage() {
+  if (!available()) return false;
+  if (state.view.images.some((img) => img.status === 'uploading')) {
+    toast(tr('请等待图片添加完成'));
+    return false;
   }
-}
-
-function updateModelSemantics(modelId,summary) {
-  for(const model of state.models)if(model.id===modelId)model.semantics=summary;
-  for(const view of workspace.all())if(view.model?.id===modelId)view.model.semantics=summary;
-  if(state.view.model?.id===modelId)renderContext();
-}
-
-async function openDictionaryLibrary() {
-  const modelId=state.view.model?.source==='desktop'?state.view.model.id:null;
-  showModal(tr('业务词典管理'),'DICTIONARY LIBRARY','<section id="dictionary-library"></section>',{wide:true});
-  const root=$('#dictionary-library');
-  const manager=await mountDictionaryLibrary(root,{api,modelId,onAssociate:async profile=>{
-    updateModelSemantics(modelId,semanticSummary(profile));
-    toast(serviceText(profile.dictionary_notice?.message)||tr('业务词典已关联'));await openSemantics(modelId);
-  },onDeleted:deletedId=>updateModelSemantics(deletedId,null)});
-  if(root.isConnected&&$('#modal').open)modalCleanup=()=>manager.dispose();else manager.dispose();
-}
-
-async function openSettings() {
-  showModal(tr('模型服务设置'),'MODEL SERVICES','<section id="model-manager"></section>',{modelSettings:true});
-  await mountModelManager($('#model-manager'),{
-    api,onSettings:settings=>{state.settings=settings;renderControls();},onNotice:toast,
-  });
-}
-
-async function openFieldPreview(table,column,modelId=state.view.model?.id) {
-  if(!modelId){toast(tr('请先连接本机 Power BI Desktop'));return;}
-  showModal(`${table}[${column}]`,'FIELD VALUES','<section id="field-preview"></section>');
-  const root=$('#field-preview'),manager=await mountFieldPreview(root,{api,modelId,table,column});
-  if(root.isConnected&&$('#modal').open)modalCleanup=()=>manager.dispose();else manager.dispose();
-}
-
-async function openSemantics(modelId=state.view.model?.id) {
-  if(!modelId)return;
-  showModal(tr('模型语义层'),'MODEL SEMANTICS','<section id="semantic-workbench"></section>',{wide:true});
-  const root=$('#semantic-workbench');
-  let manager,previewCleanup=null;
-  async function childPanel({id,title:childTitle,eyebrow:childEyebrow,mount,onReturn=()=>{}}) {
-    if(root.hidden||!root.isConnected||!$('#modal').open)return;
-    manager?.pause();
-    const dialog=$('#modal'),title=$('#modal-title').textContent,eyebrow=$('#modal-eyebrow').textContent;
-    const scrollTop=dialog.scrollTop;
-    const child=document.createElement('section');child.id=id;
-    let active=true,childManager;
-    function cleanup(){active=false;childManager?.dispose();child.remove();if(modalReturn===back)modalReturn=null;}
-    function back(){
-      if(!active)return;
-      cleanup();previewCleanup=null;root.hidden=false;
-      $('#modal-title').textContent=title;$('#modal-eyebrow').textContent=eyebrow;
-      $('#modal-close').setAttribute('aria-label',tr('关闭弹窗'));dialog.scrollTop=scrollTop;
-      manager?.resume();
-      onReturn();
-    }
-    previewCleanup=cleanup;modalReturn=back;root.hidden=true;root.after(child);
-    $('#modal-title').textContent=childTitle;$('#modal-eyebrow').textContent=childEyebrow;
-    $('#modal-close').setAttribute('aria-label',tr('返回模型语义层'));dialog.scrollTop=0;
-    const mounted=await mount(child,back);
-    if(active&&child.isConnected)childManager=mounted;else mounted.dispose();
+  if (state.view.images.length > 4) {
+    toast(tr('每条消息最多 4 张图片，请移除多余图片'));
+    return false;
   }
-  function preview(table,column,sourceModelId) {
-    return childPanel({id:'field-preview',title:`${table}[${column}]`,eyebrow:'FIELD VALUES',
-      mount:(child,back)=>mountFieldPreview(child,{api,modelId:sourceModelId,table,column,onBack:back})});
-  }
-  function dictionaries() {
-    return childPanel({id:'dictionary-library',title:tr('业务词典管理'),eyebrow:'DICTIONARY LIBRARY',
-      onReturn:()=>void manager?.refresh(),mount:(child,back)=>mountDictionaryLibrary(child,{api,modelId,onBack:back,
-        onAssociate:profile=>{toast(serviceText(profile.dictionary_notice?.message)||tr('业务词典已关联'));back();},
-        onDeleted:deletedId=>updateModelSemantics(deletedId,null)
-      })});
-  }
-  manager=await mountSemanticWorkbench(root,{api,modelId,
-    onUpdate:summary=>updateModelSemantics(modelId,summary),onPreview:(...args)=>void preview(...args),onManageDictionaries:()=>void dictionaries()});
-  if(root.isConnected&&$('#modal').open)modalCleanup=()=>{previewCleanup?.();manager.dispose();};
-  else {previewCleanup?.();manager.dispose();}
-}
-
-function openCalibration() {
-  if(!available())return;if(!state.view.model?.live){toast(tr('校准生成需要先连接本机 Desktop 的实时模型'),true);return;}
-  showModal(tr('用已知结果校准'),'CALIBRATION',`<p class="notice">${tr('可添加多个筛选条件，所有条件同时生效，共同对应一个已知正确结果。将对回复中的最后一个度量值实跑校准，失败时最多自动修复两轮。')}</p><form id="calibration-form"></form>`);
-  const form=$('#calibration-form');
-  const editor=mountCalibrationEditor(form,state.view.model.context,state.view.points[0]||{},message=>toast(message));
-  $('[data-clear-calibration]',form).onclick=()=>{state.view.points=[];renderControls();$('#modal').close();};
-  form.onsubmit=guard(async e=>{
-    e.preventDefault();state.view.points=[editor.read()];renderControls();$('#modal').close();
-    toast(tr('已设置 {0} 个筛选条件和 1 个校准结果', state.view.points[0].filters.length));
-  });
+  return true;
 }
 
 async function send(e) {
-  e.preventDefault();if(!available())return;
-  if(state.view.images.some(img=>img.status==='uploading')){toast(tr('请等待图片添加完成'));return;}
-  if(state.view.images.length>4){toast(tr('每条消息最多 4 张图片，请移除多余图片'));return;}
-  const draft=$('#prompt').value,images=state.view.images.filter(img=>img.id),content=draft.trim()||(images.length?tr('请结合图片和当前上下文，帮我分析并处理。'):'');if(!content)return;
-  if(!state.view.model){await openConnections();return;}
-  if(state.view.mode==='analysis'&&state.view.model.source!=='desktop'){toast(tr('请先连接真实 Desktop 模型进行数据分析'));await openConnections();return;}
-  if(!state.settings.ready){await openSettings();return;}
-  if(state.view.mode==='mquery'&&!$('#query-select').value){toast(tr('此模型没有可用的 Power Query 查询'),true);return;}
-  const view=state.view,modelId=view.model.id;
-  const payload=structuredClone({content,language,image_ids:images.map(img=>img.id),images,points:view.mode==='dax'?view.points:[],
-    query_name:view.mode==='mquery'?$('#query-select').value:'',llm_profile_id:state.settings.active_profile_id||null});
+  e.preventDefault();
+  if (!canSendMessage()) return;
+  const draft = $('#prompt').value,
+    images = state.view.images.filter((img) => img.id),
+    content = draft.trim() || (images.length ? tr('请结合图片和当前上下文，帮我分析并处理。') : '');
+  if (!content) return;
+  if (!state.view.model) {
+    await openConnections();
+    return;
+  }
+  if (state.view.mode === 'analysis' && state.view.model.source !== 'desktop') {
+    toast(tr('请先连接真实 Desktop 模型进行数据分析'));
+    await openConnections();
+    return;
+  }
+  if (!state.settings.ready) {
+    await openSettings();
+    return;
+  }
+  if (state.view.mode === 'mquery' && !$('#query-select').value) {
+    toast(tr('此模型没有可用的 Power Query 查询'), true);
+    return;
+  }
+  const view = state.view,
+    modelId = view.model.id;
+  const payload = structuredClone({
+    content,
+    language,
+    image_ids: images.map((img) => img.id),
+    images,
+    points: view.mode === 'dax' ? view.points : [],
+    query_name: view.mode === 'mquery' ? $('#query-select').value : '',
+    llm_profile_id: state.settings.active_profile_id || null,
+  });
   let pending;
-  view.preparing=true;renderBusy();renderMessages();renderHistory();
+  view.preparing = true;
+  renderBusy();
+  renderMessages();
+  renderHistory();
   try {
-    if(view.model.source==='desktop'&&view.mode!=='mquery'&&view.model.semantics?.status!=='ready'){
-      const dictionary=await api(`/models/${modelId}/semantics`);
-      if(state.view!==view||view.model?.id!==modelId)return;
-      updateModelSemantics(modelId,semanticSummary(dictionary));
-      if(!view.model.semantics.can_answer){await openSemantics(modelId);toast(tr('先建立初始语义词典，再继续这条需求'));return;}
+    if (
+      view.model.source === 'desktop' &&
+      view.mode !== 'mquery' &&
+      view.model.semantics?.status !== 'ready'
+    ) {
+      const dictionary = await api(`/models/${modelId}/semantics`);
+      if (state.view !== view || view.model?.id !== modelId) return;
+      updateModelSemantics(modelId, semanticSummary(dictionary));
+      if (!view.model.semantics.can_answer) {
+        await openSemantics(modelId);
+        toast(tr('先建立初始语义词典，再继续这条需求'));
+        return;
+      }
     }
-    if(view.busy||view.loading||view.syncing)return;
-    if(payload.image_ids.some(id=>!view.images.some(img=>img.id===id))){toast(tr('图片已变更，请确认后重新发送'));return;}
-    view.draft=$('#prompt').value;
-    if(view.draft===draft)$('#prompt').value='';
-    pending=generation.send(view,payload,{draft});renderMessages(true);
-  } catch(error){toast(error.message,true);}
-  finally {
-    view.preparing=false;
-    if(state.view===view){renderBusy();renderMessages();}
+    if (view.busy || view.loading || view.syncing) return;
+    if (payload.image_ids.some((id) => !view.images.some((img) => img.id === id))) {
+      toast(tr('图片已变更，请确认后重新发送'));
+      return;
+    }
+    view.draft = $('#prompt').value;
+    if (view.draft === draft) $('#prompt').value = '';
+    pending = generation.send(view, payload, { draft });
+    renderMessages(true);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    view.preparing = false;
+    if (state.view === view) {
+      renderBusy();
+      renderMessages();
+    }
     renderHistory();
   }
   await pending;
 }
 
-async function reviewWrite(id) {
-  if(!available())return;
-  const view=state.view,obj=view.messages.flatMap(m=>m.artifacts||[]).find(o=>o.id===id);if(!obj)return;
-  const measure=obj.kind==='dax_measure',column=obj.kind==='dax_column',hasHome=measure||column,
-    objectLabel=column?tr('计算列'):tr('度量值'),tables=Object.keys(view.model.context.tables);
-  showModal(tr('确认写入模型'),'REVIEW CHANGE',`<p class="notice gold" id="write-target-notice">${tr('将{0}', hasHome?tr('写入')+objectLabel:tr('创建计算表'))} <strong>${esc(obj.name)}</strong>${tr('{0}。完成后请在 Desktop 按 Ctrl+S 保存报表。', hasHome?`${tr('，存放于')} `+esc(obj.home_table):'')}</p>${hasHome?`<div class="form-row"><label class="form-field">${column?tr('计算列名称'):tr('度量值名称')}<input id="write-measure-name" required maxlength="300" value="${esc(obj.name)}" autocomplete="off"></label><label class="form-field">${column?tr('所属表'):tr('存放表')}<select id="write-home-table" required><option value="" ${!tables.includes(obj.home_table)?'selected':''} disabled>${tr('请选择{0}', column?tr('所属表'):tr('存放表'))}</option>${tables.map(table=>`<option value="${esc(table)}" ${table===obj.home_table?'selected':''}>${esc(table)}</option>`).join('')}</select></label></div><p class="field-help">${column?tr('确认后按所选表的行上下文重新抽样验证，再创建计算列并执行完整计算。数据类型由引擎推断，计算耗时取决于表大小和表达式。'):tr('可修改名称，并选择模型中已有的表。确认后将按所选名称和存放表重新验证，再写入模型。')}</p>`:''}${codeBlock(obj.expression,'dax',{title:obj.name+' · DAX'})}${measure?`<label class="check-label"><input type="checkbox" id="overwrite-measure">${tr('如果所选表中存在同名度量值，允许覆盖')}</label>`:`<p class="field-help">${column?tr('仅支持新建计算列，不覆盖已有字段；同名时请修改列名。'):tr('仅支持新建计算表，不覆盖同名已有表。')}</p>`}<div class="modal-actions"><button class="secondary-button" id="cancel-write">${tr('取消')}</button><button class="primary-button" id="confirm-write">${tr('确认写入')}</button></div>`);
-  if(hasHome){
-    const preview=()=>{$('#write-target-notice').textContent=tr('将写入{0} {1}，存放于 {2}。完成后请在 Desktop 按 Ctrl+S 保存报表。', objectLabel, $('#write-measure-name').value.trim()||tr('（未填写名称）'), $('#write-home-table').value||tr('（未选择表）'));};
-    $('#write-measure-name').oninput=preview;$('#write-home-table').onchange=preview;
-  }
-  $('#cancel-write').onclick=()=>$('#modal').close();
-  $('#confirm-write').onclick=guard(async e=>{
-    const body={overwrite:!!$('#overwrite-measure')?.checked};
-    if(hasHome){
-      body.name=$('#write-measure-name').value.trim();body.home_table=$('#write-home-table').value;
-      if(!body.name||body.name.length>300){toast(tr('请填写 1～300 字的{0}名称', objectLabel),true);$('#write-measure-name').focus();return;}
-      if(!tables.includes(body.home_table)){toast(tr('请选择模型中已有的存放表'),true);return;}
-    }
-    const b=e.currentTarget,fields=$$('input,select',$('#modal-body'));b.disabled=true;b.textContent=tr('重新验证并写入…');fields.forEach(el=>el.disabled=true);
-    try {
-      const r=await post(`/artifacts/${id}/apply`,body);
-      Object.assign(obj,{name:r.name??obj.name,home_table:r.home_table??obj.home_table,
-        validation:r.validation??obj.validation,applied_at:r.applied_at||new Date().toISOString()});
-      $('#modal').close();
-      try {view.model=await api(`/models/${view.model.id}`);}catch(error){toast(tr('已写入，模型信息读取失败，请同步模型：')+error.message,true);}
-      if(state.view===view)render();toast(serviceText(r.detail));
-    }finally {b.disabled=false;b.textContent=tr('确认写入');fields.forEach(el=>el.disabled=false);}
-  });
-}
-
-$('#composer-form').onsubmit=send;
-$('#stop-button').onclick=()=>{void generation.stop(state.view);};
-composerImages=mountComposerImages($('#composer-form'),{getView:()=>state.view,onNotice:toast,
-  onChange:view=>{if(state.view===view)renderBusy();}});
+$('#composer-form').onsubmit = send;
+$('#stop-button').onclick = () => {
+  void generation.stop(state.view);
+};
+composerImages = mountComposerImages($('#composer-form'), {
+  getView: () => state.view,
+  onNotice: toast,
+  onChange: (view) => {
+    if (state.view === view) renderBusy();
+  },
+});
 function updateClarificationDraft(event) {
-  const card=event.target.closest('[data-clarification]');if(!card)return;
-  const id=card.dataset.clarification,draft=state.view.clarificationDrafts[id]||{};
-  if(event.target.matches('[data-clarification-choice]'))draft.optionId=event.target.value;
-  if(event.target.matches('[data-clarification-supplement]'))draft.supplement=event.target.value;
-  state.view.clarificationDrafts[id]=draft;
-  if(event.type==='change')messagePaint.schedule();
+  const card = event.target.closest('[data-clarification]');
+  if (!card) return;
+  const id = card.dataset.clarification,
+    draft = state.view.clarificationDrafts[id] || {};
+  if (event.target.matches('[data-clarification-choice]')) draft.optionId = event.target.value;
+  if (event.target.matches('[data-clarification-supplement]')) draft.supplement = event.target.value;
+  state.view.clarificationDrafts[id] = draft;
+  if (event.type === 'change') messagePaint.schedule();
 }
-$('#messages').addEventListener('change',updateClarificationDraft);
-$('#messages').addEventListener('input',updateClarificationDraft);
-$('#prompt').addEventListener('input',()=>{state.view.draft=$('#prompt').value;});
-$('#prompt').addEventListener('keydown',e=>{
-  if(e.key!=='Enter'||e.shiftKey||e.isComposing||e.keyCode===229)return;
+$('#messages').addEventListener('change', updateClarificationDraft);
+$('#messages').addEventListener('input', updateClarificationDraft);
+$('#prompt').addEventListener('input', () => {
+  state.view.draft = $('#prompt').value;
+});
+$('#prompt').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
   e.preventDefault();
-  if(e.repeat||$('#send-button').disabled)return;
+  if (e.repeat || $('#send-button').disabled) return;
   $('#composer-form').requestSubmit();
 });
-document.addEventListener('keydown',e=>{
-  if(e.defaultPrevented||e.isComposing||e.keyCode===229||e.repeat||$('#modal').open||$('#code-reader').open||$('#table-reader').open||$('#updates-dialog').open)return;
-  if(e.key.toLowerCase()==='k'&&(e.ctrlKey||e.metaKey)){e.preventDefault();newChat();}
+document.addEventListener('keydown', (e) => {
+  if (
+    e.defaultPrevented ||
+    e.isComposing ||
+    e.keyCode === 229 ||
+    e.repeat ||
+    $('#modal').open ||
+    $('#code-reader').open ||
+    $('#table-reader').open ||
+    $('#updates-dialog').open
+  )
+    return;
+  if (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    newChat();
+  }
 });
-$('#new-chat').onclick=()=>newChat();
-$('#settings-open').onclick=guard(openSettings);$('#model-settings-chip').onclick=guard(openSettings);
-$('#connect-open').onclick=guard(openConnections);$('#calibration-open').onclick=openCalibration;
-$('#analysis-templates-open').onclick=guard(()=>openAnalysisTemplates());
-$('#template-return').onclick=()=>{const target=state.view.templateReturn;if(target){saveDraft();workspace.restore(target);showView();}};
-$('#search-toggle').onclick=()=>{const input=$('#history-search');input.hidden=!input.hidden;if(!input.hidden)input.focus();else{input.value='';renderHistory();}};
-$('#history-search').oninput=renderHistory;$('#field-search').oninput=renderModelTree;
-$('#refresh-model').onclick=guard(syncCurrentModel);
-$('#query-select').onchange=()=>{const query=$('#query-select').value;if(state.view.conversation)newChat('mquery');state.view.queryName=query;$('#query-select').value=query;};
-$('#export-chat').onclick=()=>{if(!state.view.conversation){toast(tr('先开始一段对话再导出'));return;}const a=document.createElement('a');a.href=`/api/conversations/${state.view.conversation.id}/export?language=${language}`;a.download='conversation.md';document.body.append(a);a.click();a.remove();};
-document.addEventListener('click',guard(async e=>{
-  const el=e.target.closest('button');if(!el)return;
-  if(el.hasAttribute('data-open-guide')){await openUserGuide();return;}
-  if(el.dataset.guideAction==='settings'){await openSettings();return;}
-  if(el.dataset.guideAction==='connect'){await openConnections();return;}
-  if(await codeTools.handleClick(el))return;
-  if(tableTools.handleClick(el))return;
-  if(el.dataset.saveAnalysisTemplate){await openAnalysisTemplates(el.dataset.saveAnalysisTemplate);return;}
-  if(el.dataset.openImage){
-    const id=el.dataset.openImage;if(!/^[a-f0-9]{32}$/.test(id))return;
-    showModal(tr('查看图片'),'IMAGE',`<img class="image-full-preview" src="/api/images/${id}" alt="${tr('消息附图')}"><p class="field-help">${tr('图片保存在本机；发送消息时会提供给所选模型服务。')}</p>`);return;
+$('#new-chat').onclick = () => newChat();
+$('#settings-open').onclick = guard(openSettings);
+$('#model-settings-chip').onclick = guard(openSettings);
+$('#connect-open').onclick = guard(openConnections);
+$('#calibration-open').onclick = openCalibration;
+$('#analysis-templates-open').onclick = guard(() => openAnalysisTemplates());
+$('#template-return').onclick = () => {
+  const target = state.view.templateReturn;
+  if (target) {
+    saveDraft();
+    workspace.restore(target);
+    showView();
   }
-  if(el.dataset.openSemantics){await openSemantics(el.dataset.openSemantics);return;}
-  if(el.dataset.previewColumn!==undefined){await openFieldPreview(el.dataset.previewTable,el.dataset.previewColumn,el.dataset.previewModel||state.view.model?.id);return;}
-  if(el.dataset.confirmClarification){
-    if(!available())return;
-    const view=state.view,message=view.messages.find(m=>m.id===el.dataset.confirmClarification);
-    if(view.images.some(img=>img.status==='uploading')){toast(tr('请等待图片添加完成'));return;}
-    if(view.images.length>4){toast(tr('每条消息最多 4 张图片，请移除多余图片'));return;}
-    if(!message?.clarification||message.clarification.answered||message!==view.messages.at(-1)){toast(tr('请回复会话中的最新口径问题'));return;}
-    const reply=clarificationReply(message,view.clarificationDrafts[message.id]);
-    view.draft=$('#prompt').value;
-    const pending=generation.send(view,{...reply,language,points:view.mode==='dax'?view.points:[],
-      image_ids:view.images.filter(img=>img.id).map(img=>img.id),images:view.images.filter(img=>img.id),
-      llm_profile_id:state.settings.active_profile_id||null});
-    renderMessages(true);await pending;return;
+};
+$('#search-toggle').onclick = () => {
+  const input = $('#history-search');
+  input.hidden = !input.hidden;
+  if (!input.hidden) input.focus();
+  else {
+    input.value = '';
+    renderHistory();
   }
-  if(el.dataset.mode)switchMode(el.dataset.mode);
-  if(el.dataset.contextTab){state.contextTab=el.dataset.contextTab;$$('[data-context-tab]').forEach(b=>{const active=b===el;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));});renderContext();}
-  if(el.dataset.prompt!==undefined){
-    const input=$('#prompt'),cards=modeFor(state.view.mode).cards;
-    const prefixes=[...MODES[state.view.mode].cards,...modeFor(state.view.mode,'en').cards];
-    const previous=prefixes.find(card=>input.value.startsWith(card[3]));
-    const draft=previous?input.value.slice(previous[3].length):input.value;
-    input.value=cards[Number(el.dataset.prompt)][3]+draft;
-    state.view.draft=input.value;
-    input.focus();
+};
+$('#history-search').oninput = renderHistory;
+$('#field-search').oninput = renderModelTree;
+$('#refresh-model').onclick = guard(syncCurrentModel);
+$('#query-select').onchange = () => {
+  const query = $('#query-select').value;
+  if (state.view.conversation) newChat('mquery');
+  state.view.queryName = query;
+  $('#query-select').value = query;
+};
+$('#export-chat').onclick = () => {
+  if (!state.view.conversation) {
+    toast(tr('先开始一段对话再导出'));
+    return;
   }
-  if(el.dataset.ref){
-    const input=$('#prompt');
-    input.setRangeText(el.dataset.ref,input.selectionStart,input.selectionEnd,'end');
-    state.view.draft=input.value;
-    contextLayout.dismissOverlay();
-    input.focus();
-  }
-  if(el.id==='welcome-connect'||el.id==='rescan')await openConnections();
-  if(el.id==='manage-dictionaries')await openDictionaryLibrary();
-  if(el.id==='demo-load'||el.dataset.port||el.dataset.snapshot){await selectConnection(el);return;}
-  if(el.dataset.query){const ctx=state.view.model.context,code=ctx.table_queries[el.dataset.query]??ctx.shared_expressions[el.dataset.query];showModal(el.dataset.query,'POWER QUERY',`${codeBlock(code,'powerquery')}<div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">${tr('在清洗助手中使用')}</button></div>`);}
-  if(el.dataset.useQuery){newChat('mquery');state.view.queryName=el.dataset.useQuery;$('#query-select').value=el.dataset.useQuery;$('#modal').close();}
-  if(el.dataset.conversation)await openConversation(el.dataset.conversation);
-  if(el.dataset.deleteConversation){const id=el.dataset.deleteConversation,owner=workspace.find(id);if(owner?.busy||owner?.preparing){toast(tr('此会话仍在发送或生成，完成后可删除'));return;}showModal(tr('删除此对话？'),'LOCAL HISTORY',`<p class="notice">${tr('会删除此对话及关联代码记录，已写入 Desktop 的内容不受影响。')}</p><div class="modal-actions"><button class="primary-button" id="delete-confirm">${tr('删除对话')}</button></div>`);$('#delete-confirm').onclick=guard(async()=>{await api(`/conversations/${id}`,{method:'DELETE'});workspace.remove(id);showView();$('#modal').close();await reloadHistory();});}
-  if(el.dataset.apply)await reviewWrite(el.dataset.apply);
-  if(el.dataset.revalidate){
-    if(!available())return;
-    const messageId=el.dataset.revalidate,view=state.view;
-    el.disabled=true;el.textContent=tr('正在 Desktop 实跑验证…');
-    try {
-      const result=await post(`/messages/${messageId}/validate`);
-      const message=view.messages.find(m=>m.id===messageId);
-      if(message)message.artifacts=result.artifacts;
-      if(view.model?.id===result.model.id)view.model=result.model;
-      if(state.view===view){renderContext();renderMessages();}
-      toast(result.artifacts.every(a=>a.validation.ok&&a.validation.run_verified)?tr('本组代码已通过 Desktop 实跑验证'):tr('验证已完成，请查看每段代码的结果'));
-    } finally {
-      // Reconciliation may reuse this node for the newly available write button.
-      if(el.dataset.revalidate===messageId){el.disabled=false;el.textContent=tr('重新实跑本组代码');}
+  const a = document.createElement('a');
+  a.href = `/api/conversations/${state.view.conversation.id}/export?language=${language}`;
+  a.download = 'conversation.md';
+  document.body.append(a);
+  a.click();
+  a.remove();
+};
+document.addEventListener(
+  'click',
+  guard(async (e) => {
+    const el = e.target.closest('button');
+    if (!el) return;
+    if (el.hasAttribute('data-open-guide')) {
+      await openUserGuide();
+      return;
     }
-  }
-}));
+    if (el.dataset.guideAction === 'settings') {
+      await openSettings();
+      return;
+    }
+    if (el.dataset.guideAction === 'connect') {
+      await openConnections();
+      return;
+    }
+    if (await codeTools.handleClick(el)) return;
+    if (tableTools.handleClick(el)) return;
+    if (el.dataset.saveAnalysisTemplate) {
+      await openAnalysisTemplates(el.dataset.saveAnalysisTemplate);
+      return;
+    }
+    if (el.dataset.openImage) {
+      const id = el.dataset.openImage;
+      if (!/^[a-f0-9]{32}$/.test(id)) return;
+      showModal(
+        tr('查看图片'),
+        'IMAGE',
+        `<img class="image-full-preview" src="/api/images/${id}" alt="${tr('消息附图')}"><p class="field-help">${tr('图片保存在本机；发送消息时会提供给所选模型服务。')}</p>`
+      );
+      return;
+    }
+    if (el.dataset.openSemantics) {
+      await openSemantics(el.dataset.openSemantics);
+      return;
+    }
+    if (el.dataset.previewColumn !== undefined) {
+      await openFieldPreview(
+        el.dataset.previewTable,
+        el.dataset.previewColumn,
+        el.dataset.previewModel || state.view.model?.id
+      );
+      return;
+    }
+    if (el.dataset.confirmClarification) {
+      if (!canSendMessage()) return;
+      const view = state.view,
+        message = view.messages.find((m) => m.id === el.dataset.confirmClarification);
+      if (!message?.clarification || message.clarification.answered || message !== view.messages.at(-1)) {
+        toast(tr('请回复会话中的最新口径问题'));
+        return;
+      }
+      const reply = clarificationReply(message, view.clarificationDrafts[message.id]);
+      view.draft = $('#prompt').value;
+      const pending = generation.send(view, {
+        ...reply,
+        language,
+        points: view.mode === 'dax' ? view.points : [],
+        image_ids: view.images.filter((img) => img.id).map((img) => img.id),
+        images: view.images.filter((img) => img.id),
+        llm_profile_id: state.settings.active_profile_id || null,
+      });
+      renderMessages(true);
+      await pending;
+      return;
+    }
+    if (el.dataset.mode) switchMode(el.dataset.mode);
+    if (el.dataset.contextTab) {
+      state.contextTab = el.dataset.contextTab;
+      $$('[data-context-tab]').forEach((b) => {
+        const active = b === el;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-selected', String(active));
+      });
+      renderContext();
+    }
+    if (el.dataset.prompt !== undefined) {
+      const input = $('#prompt'),
+        cards = modeFor(state.view.mode).cards;
+      const prefixes = [...MODES[state.view.mode].cards, ...modeFor(state.view.mode, 'en').cards];
+      const previous = prefixes.find((card) => input.value.startsWith(card[3]));
+      const draft = previous ? input.value.slice(previous[3].length) : input.value;
+      input.value = cards[Number(el.dataset.prompt)][3] + draft;
+      state.view.draft = input.value;
+      input.focus();
+    }
+    if (el.dataset.ref) {
+      const input = $('#prompt');
+      input.setRangeText(el.dataset.ref, input.selectionStart, input.selectionEnd, 'end');
+      state.view.draft = input.value;
+      contextLayout.dismissOverlay();
+      input.focus();
+    }
+    if (el.id === 'welcome-connect' || el.id === 'rescan') await openConnections();
+    if (el.id === 'manage-dictionaries') await openDictionaryLibrary();
+    if (el.id === 'demo-load' || el.dataset.port || el.dataset.snapshot) {
+      await selectConnection(el);
+      return;
+    }
+    if (el.dataset.query) {
+      const ctx = state.view.model.context,
+        code = ctx.table_queries[el.dataset.query] ?? ctx.shared_expressions[el.dataset.query];
+      showModal(
+        el.dataset.query,
+        'POWER QUERY',
+        `${codeBlock(code, 'powerquery')}<div class="modal-actions"><button class="primary-button" data-use-query="${esc(el.dataset.query)}">${tr('在清洗助手中使用')}</button></div>`
+      );
+    }
+    if (el.dataset.useQuery) {
+      newChat('mquery');
+      state.view.queryName = el.dataset.useQuery;
+      $('#query-select').value = el.dataset.useQuery;
+      $('#modal').close();
+    }
+    if (el.dataset.conversation) await openConversation(el.dataset.conversation);
+    if (el.dataset.deleteConversation) {
+      const id = el.dataset.deleteConversation,
+        owner = workspace.find(id);
+      if (owner?.busy || owner?.preparing) {
+        toast(tr('此会话仍在发送或生成，完成后可删除'));
+        return;
+      }
+      showModal(
+        tr('删除此对话？'),
+        'LOCAL HISTORY',
+        `<p class="notice">${tr('会删除此对话及关联代码记录，已写入 Desktop 的内容不受影响。')}</p><div class="modal-actions"><button class="primary-button" id="delete-confirm">${tr('删除对话')}</button></div>`
+      );
+      $('#delete-confirm').onclick = guard(async () => {
+        await api(`/conversations/${id}`, { method: 'DELETE' });
+        workspace.remove(id);
+        showView();
+        $('#modal').close();
+        await reloadHistory();
+      });
+    }
+    if (el.dataset.apply) await reviewWrite(el.dataset.apply, { state, available, showModal, render });
+    if (el.dataset.revalidate) {
+      if (!available()) return;
+      const messageId = el.dataset.revalidate,
+        view = state.view;
+      el.disabled = true;
+      el.textContent = tr('正在 Desktop 实跑验证…');
+      try {
+        const result = await post(`/messages/${messageId}/validate`);
+        const message = view.messages.find((m) => m.id === messageId);
+        if (message) message.artifacts = result.artifacts;
+        if (view.model?.id === result.model.id) view.model = result.model;
+        if (state.view === view) {
+          renderContext();
+          renderMessages();
+        }
+        toast(
+          result.artifacts.every((a) => a.validation.ok && a.validation.run_verified)
+            ? tr('本组代码已通过 Desktop 实跑验证')
+            : tr('验证已完成，请查看每段代码的结果')
+        );
+      } finally {
+        // Reconciliation may reuse this node for the newly available write button.
+        if (el.dataset.revalidate === messageId) {
+          el.disabled = false;
+          el.textContent = tr('重新实跑本组代码');
+        }
+      }
+    }
+  })
+);
 
 async function init() {
   void mountDesktopUpdates({
-    button: $('#updates-open'), dialog: $('#updates-dialog'), api, post, notice: toast,
-    hasWork: () => workspace.all().some(view => view.busy || view.preparing || view.syncing || view.changingContext ||
-      view.images.some(image => image.status === 'uploading')),
-    hasDraft: () => Boolean($('#prompt').value.trim()) || workspace.all().some(view => view.draft.trim() || view.images.length),
-  }).then(checkWhenIdle => {
+    button: $('#updates-open'),
+    dialog: $('#updates-dialog'),
+    api,
+    post,
+    notice: toast,
+    hasWork: () =>
+      workspace
+        .all()
+        .some(
+          (view) =>
+            view.busy ||
+            view.preparing ||
+            view.syncing ||
+            view.changingContext ||
+            view.images.some((image) => image.status === 'uploading')
+        ),
+    hasDraft: () =>
+      Boolean($('#prompt').value.trim()) ||
+      workspace.all().some((view) => view.draft.trim() || view.images.length),
+  }).then((checkWhenIdle) => {
     if (checkWhenIdle) setInterval(checkWhenIdle, 6 * 60 * 60 * 1000);
   });
   // A layout read failure must not block conversations or model connection.
-  void api('/ui/layout').then(value=>contextLayout.restore(value)).catch(()=>{});
+  void api('/ui/layout')
+    .then((value) => contextLayout.restore(value))
+    .catch(() => {});
   try {
-    const [settings,models,conversations]=await Promise.all([api('/settings'),api('/models'),api('/conversations')]);
-    Object.assign(state,{settings,models,conversations});state.view.model=models[0]||null;render();
-    renderConnectionStatus();void connectionMonitor.refresh();
-    for(const conversation of conversations.filter(c=>c.generating)) {
-      const view=workspace.register(conversation,models.find(m=>m.id===conversation.model_id)||null);
-      void loadConversation(view).catch(error=>toast(error.message,true));
+    const [settings, models, conversations] = await Promise.all([
+      api('/settings'),
+      api('/models'),
+      api('/conversations'),
+    ]);
+    Object.assign(state, { settings, models, conversations });
+    state.view.model = models[0] || null;
+    render();
+    renderConnectionStatus();
+    void connectionMonitor.refresh();
+    for (const conversation of conversations.filter((c) => c.generating)) {
+      const view = workspace.register(
+        conversation,
+        models.find((m) => m.id === conversation.model_id) || null
+      );
+      void loadConversation(view).catch((error) => toast(error.message, true));
     }
-  } catch(e) {render();toast(tr('无法连接本地服务：')+e.message,true);}
+  } catch (e) {
+    render();
+    toast(tr('无法连接本地服务：') + e.message, true);
+  }
 }
-setInterval(()=>{void connectionMonitor.refresh();},3000);
+setInterval(() => {
+  void connectionMonitor.refresh();
+}, 3000);
 init();

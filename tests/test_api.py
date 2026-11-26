@@ -331,8 +331,8 @@ def test_write_revalidates_and_audits(client, app, monkeypatch):
             calls.append(('write',k['overwrite']))
             from backend.engine.context.live_writer import WriteResult
             return WriteResult(True,'已写入')
-    monkeypatch.setattr('backend.app.LiveDesktopEvaluator', Evaluator)
-    monkeypatch.setattr('backend.app.LiveDesktopWriter', Writer)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopEvaluator', Evaluator)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopWriter', Writer)
     monkeypatch.setattr(app.state.powerbi, 'update_after_write', lambda *a: None)
     response = client.post(f"/api/artifacts/{obj['id']}/apply",json={})
     assert response.status_code == 200

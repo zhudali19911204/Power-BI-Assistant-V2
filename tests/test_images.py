@@ -59,14 +59,14 @@ def test_large_image_is_resized_and_windows_filename_is_sanitized(client):
 
 
 def test_same_origin_protection_also_covers_raw_uploads_and_screenshot_tool(client,monkeypatch):
-    monkeypatch.setattr('backend.app.os.startfile',lambda *args:pytest.fail('must not launch'),raising=False)
+    monkeypatch.setattr('backend.routes.images.os.startfile',lambda *args:pytest.fail('must not launch'),raising=False)
     response=client.post('/api/images',content=picture(),headers={'Content-Type':'image/png','Origin':'https://other.example'})
     assert response.status_code==403
     assert client.post('/api/desktop/screenshot',json={},headers={'Origin':'https://other.example'}).status_code==403
 
 
 def test_screenshot_button_only_launches_windows_snipping_uri(client,monkeypatch):
-    calls=[];monkeypatch.setattr('backend.app.os.startfile',lambda uri:calls.append(uri),raising=False)
+    calls=[];monkeypatch.setattr('backend.routes.images.os.startfile',lambda uri:calls.append(uri),raising=False)
     response=client.post('/api/desktop/screenshot',json={})
     assert response.status_code==200 and calls==['ms-screenclip:']
     assert 'Ctrl+V' in response.json()['detail']

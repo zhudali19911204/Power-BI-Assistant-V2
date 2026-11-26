@@ -147,9 +147,9 @@ def test_old_artifact_revalidates_and_writes_against_current_conversation_model(
     class Writer:
         def __init__(self,port):ports.append(port)
         def write_measure(self,*args,**kwargs):return WriteResult(True,'测试写入成功')
-    monkeypatch.setattr('backend.app.LiveDesktopEvaluator',Evaluator)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopEvaluator',Evaluator)
     monkeypatch.setattr('backend.chat.LiveDesktopEvaluator',Evaluator)
-    monkeypatch.setattr('backend.app.LiveDesktopWriter',Writer)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopWriter',Writer)
     monkeypatch.setattr(app.state.powerbi,'update_after_write',lambda *a:None)
     response=client.post(f'/api/messages/{mid}/validate',json={})
     assert response.status_code==200 and response.json()['artifacts'][0]['model_id']==new['id']

@@ -1,0 +1,12 @@
+{
+  "printWidth": 110,
+  "singleQuote": true,
+  "trailingComma": "es5",
+  "embeddedLanguageFormatting": "off",
+  "overrides": [
+    {
+      "files": "frontend/en.js",
+      "options": { "printWidth": 500, "singleQuote": false, "quoteProps": "preserve" }
+    }
+  ]
+}

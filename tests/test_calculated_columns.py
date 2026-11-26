@@ -124,8 +124,8 @@ def column_case(write_case,monkeypatch):
         def write_calculated_column(self,table,name,expr):
             c.calls.append(('column_write',table,name,expr))
             return WriteResult(True,'已创建并计算')
-    monkeypatch.setattr('backend.app.LiveDesktopEvaluator',Evaluator)
-    monkeypatch.setattr('backend.app.LiveDesktopWriter',Writer)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopEvaluator',Evaluator)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopWriter',Writer)
     return c
 
 
@@ -154,7 +154,7 @@ def test_api_refuses_column_collisions_missing_table_and_overwrite(column_case,b
 
 def test_api_does_not_write_a_column_that_failed_its_new_row_sample(column_case,monkeypatch):
     c=column_case
-    monkeypatch.setattr('backend.app.validate',lambda *a,**k:[asdict(ValidationResult(ok=False,run_verified=True,errors=['row error']))])
+    monkeypatch.setattr('backend.routes.artifacts.validate',lambda *a,**k:[asdict(ValidationResult(ok=False,run_verified=True,errors=['row error']))])
     response=c.client.post(f'/api/artifacts/{c.aid}/apply',json={})
     assert response.status_code==409 and not any(call[0]=='column_write' for call in c.calls)
 
@@ -164,7 +164,7 @@ def test_failed_full_column_calculation_keeps_artifact_unapplied(column_case,mon
     class Writer:
         def __init__(self,*a):pass
         def write_calculated_column(self,*a):return WriteResult(False,'测试：全量计算失败')
-    monkeypatch.setattr('backend.app.LiveDesktopWriter',Writer)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopWriter',Writer)
     response=c.client.post(f'/api/artifacts/{c.aid}/apply',json={'name':'新列'})
     assert response.status_code==409 and '全量计算失败' in response.json()['detail']
     saved=c.app.state.db.one('SELECT * FROM artifacts WHERE id=?',(c.aid,))

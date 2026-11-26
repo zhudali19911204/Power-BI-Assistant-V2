@@ -1,10 +1,17 @@
-import {serviceText, tr} from './i18n.js';
-export async function mountDesktopUpdates({button, dialog, api, post, notice, hasWork, hasDraft}) {
+import { serviceText, tr } from './i18n.js';
+export async function mountDesktopUpdates({ button, dialog, api, post, notice, hasWork, hasDraft }) {
   const info = await api('/updates').catch(() => null);
   if (!info?.enabled) return;
-  const find = name => dialog.querySelector(`[data-update-${name}]`);
-  const status = find('status'), notes = find('notes'), install = find('install');
-  let release = null, downloaded = '', lastNotice = '', phase = 'idle', message = () => '', restartAfterDownload = false;
+  const find = (name) => dialog.querySelector(`[data-update-${name}]`);
+  const status = find('status'),
+    notes = find('notes'),
+    install = find('install');
+  let release = null,
+    downloaded = '',
+    lastNotice = '',
+    phase = 'idle',
+    message = () => '',
+    restartAfterDownload = false;
 
   function render() {
     find('current').textContent = tr('当前版本 {0}', info.version);
@@ -30,7 +37,10 @@ export async function mountDesktopUpdates({button, dialog, api, post, notice, ha
     render();
     try {
       release = (await post('/updates/check')).release;
-      message = () => release ? tr('新版 {0} 可用，下载大小 {1} MB。', release.version, (release.size / 1024**2).toFixed(1)) : tr('当前已是最新版本。');
+      message = () =>
+        release
+          ? tr('新版 {0} 可用，下载大小 {1} MB。', release.version, (release.size / 1024 ** 2).toFixed(1))
+          : tr('当前已是最新版本。');
       if (automatic && release && lastNotice !== release.sha256) {
         lastNotice = release.sha256;
         notice(tr('发现新版 {0}，可在左下角查看更新。', release.version));
@@ -85,11 +95,13 @@ export async function mountDesktopUpdates({button, dialog, api, post, notice, ha
     dialog.close();
   }
   find('close').onclick = find('later').onclick = later;
-  dialog.addEventListener('cancel', event => {
+  dialog.addEventListener('cancel', (event) => {
     event.preventDefault();
     later();
   });
-  dialog.addEventListener('close', () => { restartAfterDownload = false; });
+  dialog.addEventListener('close', () => {
+    restartAfterDownload = false;
+  });
   find('install').onclick = update;
   find('check').onclick = () => check();
   button.onclick = () => {
@@ -100,5 +112,7 @@ export async function mountDesktopUpdates({button, dialog, api, post, notice, ha
   button.ownerDocument.addEventListener('languagechange', render);
   button.hidden = false;
   await check(true);
-  return () => { if (!dialog.open) return check(true); };
+  return () => {
+    if (!dialog.open) return check(true);
+  };
 }

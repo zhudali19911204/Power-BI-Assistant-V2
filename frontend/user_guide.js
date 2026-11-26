@@ -1,6 +1,6 @@
-import {language, tr} from './i18n.js';
-import {icon} from './icons.js';
-import {markdown} from './markdown.js';
+import { language, tr } from './i18n.js';
+import { icon } from './icons.js';
+import { markdown } from './markdown.js';
 
 const firstQuestion = () => tr('完成第一次提问');
 
@@ -17,29 +17,39 @@ function readChapters(doc, source) {
       const button = doc.createElement('button');
       button.type = 'button';
       button.textContent = title;
-      chapter = {title, button, body: doc.createElement('div')};
+      chapter = { title, button, body: doc.createElement('div') };
       chapter.body.className = 'message-content';
       chapters.push(chapter);
     }
     if (chapter) chapter.body.append(node);
   }
-  const start = chapters.find(item => item.title === firstQuestion());
-  return start ? [start, ...chapters.filter(item => item !== start)] : chapters;
+  const start = chapters.find((item) => item.title === firstQuestion());
+  return start ? [start, ...chapters.filter((item) => item !== start)] : chapters;
 }
 
 function addActions(chapter) {
   const start = chapter.title === firstQuestion();
   const actions = [];
   if (start || chapter.title === tr('配置大模型服务')) {
-    actions.push('<button type="button" class="secondary-button" data-guide-action="settings">' + icon('settings') + `${tr('模型服务设置')}</button>`);
+    actions.push(
+      '<button type="button" class="secondary-button" data-guide-action="settings">' +
+        icon('settings') +
+        `${tr('模型服务设置')}</button>`
+    );
   }
   if (start || chapter.title === tr('连接和同步报表')) {
-    actions.push('<button type="button" class="secondary-button" data-guide-action="connect">' + icon('monitor') + `${tr('连接 Power BI 报表')}</button>`);
+    actions.push(
+      '<button type="button" class="secondary-button" data-guide-action="connect">' +
+        icon('monitor') +
+        `${tr('连接 Power BI 报表')}</button>`
+    );
   }
   if (actions.length) {
     const steps = start && chapter.body.querySelector('ol');
-    (steps || chapter.body.firstElementChild).insertAdjacentHTML('afterend',
-      '<div class="guide-actions">' + actions.join('') + '</div>');
+    (steps || chapter.body.firstElementChild).insertAdjacentHTML(
+      'afterend',
+      '<div class="guide-actions">' + actions.join('') + '</div>'
+    );
   }
 }
 
@@ -54,7 +64,7 @@ function showReader(root, chapters) {
   const anchors = new Map();
   let current, matchedPassage;
   let words = [];
-  const matchesText = text => words.every(word => text.includes(word));
+  const matchesText = (text) => words.every((word) => text.includes(word));
 
   function select(chapter) {
     matchedPassage?.removeAttribute('data-guide-match');
@@ -70,22 +80,28 @@ function showReader(root, chapters) {
     }
     reader.scrollTop = 0;
     if (chapter && words.length) {
-      matchedPassage = [...chapter.body.querySelectorAll('h2,h3,h4,h5,h6,tr,li,p')]
-        .find(passage => matchesText(passage.textContent.toLowerCase()));
+      matchedPassage = [...chapter.body.querySelectorAll('h2,h3,h4,h5,h6,tr,li,p')].find((passage) =>
+        matchesText(passage.textContent.toLowerCase())
+      );
       if (matchedPassage) {
         matchedPassage.setAttribute('data-guide-match', '');
-        reader.scrollTop = Math.max(0, matchedPassage.getBoundingClientRect().top - reader.getBoundingClientRect().top - 6);
+        reader.scrollTop = Math.max(
+          0,
+          matchedPassage.getBoundingClientRect().top - reader.getBoundingClientRect().top - 6
+        );
       }
     }
   }
 
   function filter(preferred) {
     words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const matches = chapters.filter(item => matchesText(item.searchText));
+    const matches = chapters.filter((item) => matchesText(item.searchText));
     if (words.length) {
-      matches.sort((a, b) => Number(matchesText(b.title.toLowerCase())) - Number(matchesText(a.title.toLowerCase())));
+      matches.sort(
+        (a, b) => Number(matchesText(b.title.toLowerCase())) - Number(matchesText(a.title.toLowerCase()))
+      );
     }
-    nav.replaceChildren(...matches.map(item => item.button));
+    nav.replaceChildren(...matches.map((item) => item.button));
     select(matches.includes(preferred) ? preferred : matches[0] || null);
   }
 
@@ -93,10 +109,14 @@ function showReader(root, chapters) {
     chapter.searchText = chapter.body.textContent.toLowerCase();
     chapter.button.onclick = () => select(chapter);
     for (const heading of chapter.body.querySelectorAll('h2,h3,h4,h5,h6')) {
-      const slug = heading.textContent.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s+/g, '-');
+      const slug = heading.textContent
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+        .replace(/\s+/g, '-');
       heading.id = 'guide-' + slug;
       heading.tabIndex = -1;
-      const target = {chapter, heading};
+      const target = { chapter, heading };
       anchors.set('#' + slug, target);
       anchors.set('#' + encodeURIComponent(slug), target);
     }
@@ -109,12 +129,12 @@ function showReader(root, chapters) {
       if (target) {
         link.removeAttribute('target');
         link.setAttribute('href', '#' + target.heading.id);
-        link.onclick = event => {
+        link.onclick = (event) => {
           event.preventDefault();
           search.value = '';
           filter(target.chapter);
-          target.heading.focus({preventScroll: true});
-          target.heading.scrollIntoView?.({block: 'start'});
+          target.heading.focus({ preventScroll: true });
+          target.heading.scrollIntoView?.({ block: 'start' });
         };
       } else if (!/^https?:\/\//i.test(href)) {
         link.replaceWith(...link.childNodes);
@@ -127,7 +147,9 @@ function showReader(root, chapters) {
 
 export async function mountUserGuide(root, signal) {
   try {
-    const response = await fetch(language === 'en' ? '/help/user-guide.en.md' : '/help/user-guide.md', {signal});
+    const response = await fetch(language === 'en' ? '/help/user-guide.en.md' : '/help/user-guide.md', {
+      signal,
+    });
     if (!response.ok) throw new Error('Guide unavailable');
     const source = await response.text();
     if (signal.aborted) return;

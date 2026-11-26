@@ -25,7 +25,7 @@ flowchart LR
 
 | 工作内容 | 从哪里读 |
 | --- | --- |
-| 路由、请求校验、依赖装配、静态资源 | [app.py](../backend/app.py) · [schemas.py](../backend/schemas.py) |
+| 路由、请求校验、依赖装配、静态资源 | [app.py](../backend/app.py) · [功能路由](../backend/routes/) · [schemas.py](../backend/schemas.py) |
 | 前端事件、草稿、会话切换、消息渲染 | [app.js](../frontend/app.js) · [workspaces.js](../frontend/workspaces.js) · [messages.js](../frontend/messages.js) |
 | Desktop 实例发现、报表身份、结构快照、连接恢复 | [live_source.py](../backend/engine/context/live_source.py) · [reports.py](../backend/reports.py) · [powerbi.py](../backend/powerbi.py) · [reconnection.py](../backend/reconnection.py) |
 | 模型服务配置、供应商适配、生成诊断 | [settings.py](../backend/settings.py) · [engine/llm](../backend/engine/llm/) · [generation.py](../backend/generation.py) |
@@ -69,7 +69,7 @@ SQLite 开启 WAL 和外键约束。`conversations` 与 `messages` 保存会话�
 
 ## 一次生成的执行路径
 
-发送入口为 `POST /api/conversations/{conversation_id}/messages`，响应使用按行分隔的 JSON。`ChatService.begin()` 读取会话与附件、核对模型和目标查询、检查校准筛选、获取会话锁并注册取消令牌。`dax` 和 `mquery` 进入代码生成，`analysis` 进入只读数据分析。后端选择允许的执行动作，AI 提供候选代码或结构化计划。[聊天编排](../backend/chat.py) · [路由与响应](../backend/app.py)
+发送入口为 `POST /api/conversations/{conversation_id}/messages`，响应使用按行分隔的 JSON。`ChatService.begin()` 读取会话与附件、核对模型和目标查询、检查校准筛选、获取会话锁并注册取消令牌。`dax` 和 `mquery` 进入代码生成，`analysis` 进入只读数据分析。后端选择允许的执行动作，AI 提供候选代码或结构化计划。[聊天编排](../backend/chat.py) · [路由与响应](../backend/routes/conversations.py)
 
 ### 生成代码、验证和确认写入
 
@@ -82,11 +82,13 @@ SQLite 开启 WAL 和外键约束。`conversations` 与 `messages` 保存会话�
 
 `validation.candidates()` 从回复解析候选对象，同次生成最多 20 个。代码验证失败时，编排允许最多两轮自动修复。连接失败时先恢复连接。`POST /api/messages/{message_id}/validate` 可重新实跑已保存的 DAX 产物。当前工作区将 DAX 的“校准”放在快捷任务行右侧，前端继续提交相同的校准数据结构。[验证与校准](../backend/validation.py) · [实跑求值](../backend/engine/dax/live_eval.py) · [校准表单](../frontend/calibration.js)
 
-`POST /api/artifacts/{artifact_id}/apply` 是物理模型写入入口。后端要求原产物 `ok` 且 `run_verified`，随后持有 Desktop 锁，重新读取产物所属会话的**当前模型**，用用户最终选择的名称和表检查冲突并重新验证。TOM 返回结果后记录 `write_model` 审计。成功时更新 `applied_at` 和模型上下文。写入成功但读取新结构失败时，返回“已写入、需手动同步”的提示。报表文件仍由用户在 Desktop 中保存。[写入路由](../backend/app.py) · [TOM 写入器](../backend/engine/context/live_writer.py) · [目标与覆盖回归](../tests/test_write_target.py)
+`POST /api/artifacts/{artifact_id}/apply` 是物理模型写入入口。后端要求原产物 `ok` 且 `run_verified`，随后持有 Desktop 锁，重新读取产物所属会话的**当前模型**，用用户最终选择的名称和表检查冲突并重新验证。TOM 返回结果后记录 `write_model` 审计。成功时更新 `applied_at` 和模型上下文。写入成功但读取新结构失败时，返回“已写入、需手动同步”的提示。报表文件仍由用户在 Desktop 中保存。[写入路由](../backend/routes/artifacts.py) · [TOM 写入器](../backend/engine/context/live_writer.py) · [目标与覆盖回归](../tests/test_write_target.py)
 
 ### 数据分析与模板
 
-`analysis.py` 依次负责规划、补查语义或字段、澄清口径、执行只读 DAX、按证据总结。`AnalysisPlan` 明确约束每个阶段可以返回的动作。格式无效时，普通请求最多再纠正一次，整轮最多三次。整批失败后的替代查询评估仅一次，另需核对错误原因和新的取数依据。无法得到有效结果时，保存已取得的依据及缺口。[分析编排](../backend/analysis.py) · [计划协议](../backend/analysis_protocol.py) · [失败恢复](../backend/analysis_recovery.py)
+`AnalysisRun` 管理单次回复的时间预算、流式事件、完成状态和取消清理。查询规划与字段核对、DAX 批次执行、证据总结各自独立。[规划](../backend/analysis_planner.py) · [字段核对](../backend/analysis_fields.py) · [查询执行](../backend/analysis_queries.py) · [总结](../backend/analysis_summary.py)
+
+`AnalysisPlan` 明确约束每个阶段可以返回的动作。格式无效时，普通请求最多再纠正一次，整轮最多三次。整批失败后的替代查询评估仅一次，另需核对错误原因和新的取数依据。无法得到有效结果时，保存已取得的依据及缺口。[分析编排](../backend/analysis.py) · [计划协议](../backend/analysis_protocol.py) · [失败恢复](../backend/analysis_recovery.py)
 
 执行器仅接受单个 `EVALUATE` 结果集，可使用 `DEFINE` 声明查询内度量。`AnalysisBudget` 为总结保留时间，另设每批最多 4 条、每轮最多 4 批和 12 条业务查询、最多 18 次应用执行尝试。每个成功结果最多保留 200 行和 24,000 字节行数据，截断信息随结果保存。超过 30 列的查询返回错误。分析表格、查询依据和 `GET /api/analysis/{query_id}/csv` 复用本次保存的结果。报表页面切片器的条件需要显式写入任务。[执行预算](../backend/analysis_budget.py) · [只读边界测试](../tests/test_analysis_boundaries.py) · [表格阅读](../frontend/table_reader.js)
 
@@ -108,7 +110,7 @@ SQLite 开启 WAL 和外键约束。`conversations` 与 `messages` 保存会话�
 
 ## 接口与排错入口
 
-运行实例的 `/api/docs` 给出完整路由与请求结构。下表列出适合开始定位问题的入口，统一带 `/api` 前缀。[路由定义](../backend/app.py)
+运行实例的 `/api/docs` 给出完整路由与请求结构。下表列出适合开始定位问题的入口，统一带 `/api` 前缀。[功能路由](../backend/routes/) · [健康检查与桌面更新](../backend/app.py)
 
 | 现象 | 先查接口或记录 | 对照回归 |
 | --- | --- | --- |

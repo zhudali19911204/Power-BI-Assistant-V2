@@ -555,7 +555,7 @@ def test_explicit_scope_can_produce_an_empty_result(case):
 def test_cancel_or_timeout_stops_the_batch_without_treating_failure_as_an_empty_field(case,monkeypatch,error):
     s=case
     def fail(*args):raise error
-    monkeypatch.setattr('backend.analysis.read_scope_batch',fail)
+    monkeypatch.setattr('backend.analysis_fields.read_scope_batch',fail)
     events=s.run([encode({'scope_checks':[ORG, CATEGORY]})])
     assert not s.amounts and len(s.provider.calls)==1
     msg=latest(s.client,s.conv)

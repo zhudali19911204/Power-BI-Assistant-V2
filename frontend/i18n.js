@@ -1,4 +1,4 @@
-import {english} from './en.js';
+import { english } from './en.js';
 
 export let language = 'zh-CN';
 
@@ -24,9 +24,15 @@ const servicePatterns = [
   [/^正在检查字段实际取值 (.*)$/, 'Checking field values $1'],
   [/^正在 Desktop 查询 (.*)$/, 'Querying Desktop: $1'],
   [/^(Q\d+) 查询未通过，正在修复查询$/, '$1 failed. Repairing query'],
-  [/^业务词典需更新：(\d+) 项对象待补充或更新，(\d+) 项业务记录待复核$/, 'Dictionary update needed. Objects to update: $1. Business records to review: $2.'],
+  [
+    /^业务词典需更新：(\d+) 项对象待补充或更新，(\d+) 项业务记录待复核$/,
+    'Dictionary update needed. Objects to update: $1. Business records to review: $2.',
+  ],
   [/^已保留 (\d+) 项语义，(\d+) 项待增量梳理$/, 'Definitions kept: $1 · Pending updates: $2'],
-  [/^已保留全部 (\d+) 项对象定义，可单独生成业务总览$/, 'All $1 object definitions are saved. The overview can be built separately.'],
+  [
+    /^已保留全部 (\d+) 项对象定义，可单独生成业务总览$/,
+    'All $1 object definitions are saved. The overview can be built separately.',
+  ],
   [/^已保留全部 (\d+) 项语义，无需重复梳理$/, 'All $1 definitions are up to date.'],
   [/^全部重新梳理尚余 (\d+) 项，可继续梳理$/, 'Resume full build · Remaining objects: $1'],
   [/^正在梳理字段语义 · (\d+\/\d+)$/, 'Building field definitions · $1'],
@@ -47,7 +53,7 @@ export function serviceText(source) {
   return source;
 }
 
-export function mountLanguage(doc, {onChange, save, onError}) {
+export function mountLanguage(doc, { onChange, save, onError }) {
   const button = doc.querySelector('#language-toggle');
   const label = button.querySelector('span');
   const bindings = [];
@@ -55,9 +61,12 @@ export function mountLanguage(doc, {onChange, save, onError}) {
   for (const element of doc.body.querySelectorAll('*')) {
     for (const node of element.childNodes) {
       if (node.nodeType !== 3) continue;
-      const original = node.data, key = original.trim();
+      const original = node.data,
+        key = original.trim();
       if (Object.hasOwn(english, key)) {
-        bindings.push(() => { node.data = original.replace(key, () => tr(key)); });
+        bindings.push(() => {
+          node.data = original.replace(key, () => tr(key));
+        });
       }
     }
     for (const attr of ['placeholder', 'aria-label', 'title', 'alt']) {
@@ -69,7 +78,7 @@ export function mountLanguage(doc, {onChange, save, onError}) {
   function apply(next) {
     language = next === 'en' ? 'en' : 'zh-CN';
     doc.documentElement.setAttribute('lang', language);
-    bindings.forEach(update => update());
+    bindings.forEach((update) => update());
     const toEnglish = language === 'zh-CN';
     label.textContent = toEnglish ? 'English' : '中文';
     label.lang = toEnglish ? 'en' : 'zh-CN';
@@ -84,9 +93,11 @@ export function mountLanguage(doc, {onChange, save, onError}) {
     apply(next);
     onChange();
     // Keep clicks responsive and commit them in order, even on a slow disk.
-    saves = saves.then(() => save(next)).catch(() => {
-      if (language === next) onError(tr('语言偏好未保存，重启后请重新选择。'));
-    });
+    saves = saves
+      .then(() => save(next))
+      .catch(() => {
+        if (language === next) onError(tr('语言偏好未保存，重启后请重新选择。'));
+      });
     return saves;
   };
 }

@@ -168,7 +168,7 @@ def test_format_correction_cannot_bypass_readonly_engine_guard(setup, monkeypatc
 
 
 def test_format_correction_budget_is_shared_across_planning_repair_and_followup(setup, monkeypatch):
-    monkeypatch.setattr(analysis_module, 'MAX_FORMAT_CORRECTIONS', 1)
+    monkeypatch.setattr('backend.analysis_budget.MAX_FORMAT_CORRECTIONS', 1)
     app, client, conv, provider, queries = wire(setup, monkeypatch,
         ['bad plan', two_queries(), 'bad repair', 'bad followup', '仅总额取得结果125。[Q2]'])
     assert send(client, conv)[-1]['type'] == 'done'

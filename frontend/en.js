@@ -743,7 +743,7 @@ export const english = {
   // fields.js
   "未统计": "Not counted",
   "非有限数值": "Non-finite number",
-  "空字符串 \"\"": "Empty string \"\"",
+  '空字符串 ""': 'Empty string ""',
   "…（值已截断）": "… (value truncated)",
   "总行数": "Total rows",
   "不同取值（含空值）": "Distinct values (including blanks)",

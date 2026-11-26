@@ -62,6 +62,8 @@ npm ci --ignore-scripts
 npm test
 ```
 
+前端 JS 和 CSS 使用 Prettier，运行 `npm run format` 整理排版，`npm run format:check` 检查格式。Python 使用项目虚拟环境中的 Ruff，可指定本次修改的文件或目录，例如 `.\.venv\Scripts\ruff.exe format --check backend/app.py backend/routes`。去掉 `--check` 即可格式化。
+
 真实 Desktop 查询、模型服务调用和安装升级有各自的联调脚本。修改某一功能时，可先按模块选择对应的自动化测试。[技术架构与开发指南](docs/ARCHITECTURE.md)
 
 ## 数据与备份

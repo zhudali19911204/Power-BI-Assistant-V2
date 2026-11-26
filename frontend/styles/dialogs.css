@@ -1,0 +1,231 @@
+.modal-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 22px;
+}
+.modal-heading h2 {
+  font-size: 21px;
+  font-weight: 550;
+  letter-spacing: -0.4px;
+  margin: 8px 0 0;
+}
+.modal-heading .eyebrow {
+  font-size: var(--font-caption);
+}
+dialog {
+  border: 1px solid #e7e8ea;
+  border-radius: 15px;
+  padding: 28px;
+  width: 560px;
+  max-width: calc(100vw - 40px);
+  max-height: 88dvh;
+  overflow: auto;
+  box-shadow: 0 25px 90px #17222b22;
+  color: var(--ink);
+}
+dialog::backdrop {
+  background: #1c283744;
+  backdrop-filter: blur(3px);
+}
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0;
+  font-size: var(--font-ui);
+  color: var(--text-secondary);
+}
+.form-field input,
+.form-field select,
+.form-field textarea {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #dfe4e8;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: var(--font-body);
+}
+.form-field textarea {
+  min-height: 85px;
+  resize: vertical;
+}
+.field-help {
+  font-size: var(--font-caption);
+  color: var(--text-muted);
+  line-height: 1.8;
+}
+.form-row {
+  display: flex;
+  gap: 12px;
+}
+.form-row > .form-field {
+  flex: 1;
+  min-width: 0;
+}
+.notice {
+  background: #f5f7f9;
+  border: 1px solid #e8edf1;
+  border-radius: 7px;
+  padding: 12px 14px;
+  font-size: var(--font-ui);
+  line-height: 1.9;
+  color: var(--text-muted);
+}
+.notice.gold {
+  background: #fffbef;
+  border-color: #f1e7c7;
+  color: var(--text-warning);
+}
+.modal-actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 22px;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.primary-button,
+.secondary-button {
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: var(--font-ui);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.primary-button {
+  background: var(--gold);
+  color: #4f3b09;
+}
+.primary-button:hover {
+  background: #e6bb3b;
+}
+.secondary-button {
+  background: #fff;
+  border: 1px solid #dfe4e9;
+  color: var(--text-muted);
+}
+.secondary-button:hover {
+  background: #f6f7f9;
+}
+.modal-actions .field-help {
+  margin-right: auto;
+}
+.instance-button,
+.snapshot-button {
+  background: #fff;
+  border: 1px solid #e2e6eb;
+  border-radius: 7px;
+  padding: 15px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  margin: 10px 0;
+  font-size: var(--font-body);
+  color: var(--text-secondary);
+}
+.instance-button:hover,
+.snapshot-button:hover {
+  border-color: #d2b86a;
+  background: #fffdf5;
+}
+.instance-button .icon,
+.snapshot-button .icon {
+  color: var(--text-warning);
+}
+.instance-button small,
+.snapshot-button small {
+  display: block;
+  font-size: var(--font-caption);
+  color: var(--text-muted);
+  margin-top: 5px;
+}
+.snapshot-section {
+  margin-top: 22px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.snapshot-section > .section-label {
+  padding: 0;
+}
+.snapshot-button {
+  font-size: var(--font-ui);
+  padding: 10px;
+}
+.snapshot-button .icon {
+  width: 15px;
+  height: 15px;
+}
+.toasts {
+  position: fixed;
+  bottom: 25px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  max-width: 600px;
+  border: 1px solid #e3e7ec;
+  background: #fff;
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px #1e2c411c;
+  color: var(--text-success);
+  font-size: var(--font-body);
+  animation: fade-in 0.2s ease;
+}
+.toast.error {
+  color: var(--text-danger);
+  border-color: #ebd8d2;
+}
+.check-label {
+  font-size: var(--font-ui);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 15px 0;
+}
+.check-label input {
+  accent-color: #c4a440;
+}
+.calibration-point {
+  border: 1px solid var(--border);
+  background: #fbfcfd;
+  padding: 14px;
+  border-radius: 8px;
+  margin: 12px 0;
+}
+.point-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--font-ui);
+  color: var(--text-muted);
+}
+.calibration-point .form-field {
+  margin: 8px 0;
+}
+.calibration-point .form-field input,
+.calibration-point .form-field select {
+  font-size: var(--font-ui);
+  padding: 8px;
+}
+.mono {
+  font-family: Consolas, monospace;
+}
+.busy .send-button {
+  animation: pulse 1.3s infinite;
+}
+.context-panel.collapsed {
+  display: none;
+}

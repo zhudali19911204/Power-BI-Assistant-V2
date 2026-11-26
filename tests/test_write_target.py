@@ -37,8 +37,8 @@ def write_case(app,client,monkeypatch):
         def write_measure(self,home,name,expr,**options):
             calls.append(('write',home,name,expr,options))
             return WriteResult(True,'已写入')
-    monkeypatch.setattr('backend.app.LiveDesktopEvaluator',Evaluator)
-    monkeypatch.setattr('backend.app.LiveDesktopWriter',Writer)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopEvaluator',Evaluator)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopWriter',Writer)
     monkeypatch.setattr(app.state.powerbi,'update_after_write',lambda *a:None)
     return SimpleNamespace(app=app,client=client,ctx=ctx,aid=aid,mid=mid,cid=conv['id'],expression=expression,calls=calls,prior=prior)
 
@@ -98,7 +98,7 @@ def test_same_table_case_insensitive_collision_requires_explicit_overwrite(write
 
 def test_new_target_failing_validation_keeps_original_artifact(write_case,monkeypatch):
     c=write_case
-    monkeypatch.setattr('backend.app.validate',lambda *a,**k:[asdict(ValidationResult(ok=False,run_verified=True,errors=['test invalid target']))])
+    monkeypatch.setattr('backend.routes.artifacts.validate',lambda *a,**k:[asdict(ValidationResult(ok=False,run_verified=True,errors=['test invalid target']))])
     r=c.client.post(f'/api/artifacts/{c.aid}/apply',json={'name':'新名称','home_table':'产品'})
     assert r.status_code==409 and not any(call[0]=='write' for call in c.calls)
     saved=c.app.state.db.one('SELECT * FROM artifacts WHERE id=?',(c.aid,))
@@ -121,7 +121,7 @@ def test_failed_native_write_keeps_original_target_and_records_attempt(write_cas
     class FailedWriter:
         def __init__(self,*args):pass
         def write_measure(self,*args,**kwargs):return WriteResult(False,'测试写入失败')
-    monkeypatch.setattr('backend.app.LiveDesktopWriter',FailedWriter)
+    monkeypatch.setattr('backend.routes.artifacts.LiveDesktopWriter',FailedWriter)
     r=c.client.post(f'/api/artifacts/{c.aid}/apply',json={'name':'新名称','home_table':'产品'})
     assert r.status_code==409
     saved=c.app.state.db.one('SELECT * FROM artifacts WHERE id=?',(c.aid,))

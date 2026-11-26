@@ -3,6 +3,7 @@ import json
 import pytest
 
 import backend.analysis as analysis
+from backend import analysis_budget
 from backend.analysis_budget import AnalysisBudget
 from backend.analysis_protocol import parse_plan
 from backend.analysis_recovery import recovery_problem
@@ -135,7 +136,7 @@ def test_extra_planning_respects_all_global_budgets(setup, monkeypatch, limit):
         budget = AnalysisBudget(100,clock=lambda:elapsed[0])
         monkeypatch.setattr(analysis, 'AnalysisBudget', lambda _:budget)
     else:
-        monkeypatch.setattr(analysis, limit, 2 if limit == 'MAX_QUERY_ATTEMPTS' else 1)
+        monkeypatch.setattr(analysis_budget, limit, 2 if limit == 'MAX_QUERY_ATTEMPTS' else 1)
     def run(dax):
         if limit == 'time' and dax == REPAIR:
             elapsed[0] += 73
