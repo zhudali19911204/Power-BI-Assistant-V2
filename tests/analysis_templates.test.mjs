@@ -8,7 +8,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const initial={id:'template',name:'月度销售',model_id:'model',model_name:'销售报表',prompt:'分析 {{月份}} 的 {{部门}}，比较 {{月份}} 环比。',
   parameters:['月份','部门'],defaults:{月份:'2026-10',部门:'销售部'},revision:1};
 
-async function fixture({seed=null,templates=null,candidates=[]}={}) {
+async function fixture({seed=null,templates=null,candidates=[],review}={}) {
   const {document,window}=parseHTML('<html><body><section></section></body></html>');
   const root=document.querySelector('section'),calls=[],started=[],opened=[];
   let rows=structuredClone(templates??[initial]),waitRun=null,failRun=false,model={id:'model',source:'desktop',name:'销售报表'};
@@ -16,6 +16,8 @@ async function fixture({seed=null,templates=null,candidates=[]}={}) {
     const body=options.body?JSON.parse(options.body):null;calls.push({path,...options,body});
     if(path==='/analysis-templates'&&!options.method)return structuredClone(rows);
     if(path==='/analysis-templates/parameters/recognize')return {candidates};
+    if(path==='/analysis-templates/queries/preview')return review?review(body):
+      {queries:body.queries.map(q=>({...q,dax:q.dax.replace('"0087"','{{Plant}}')})),unresolved:[]};
     if(path==='/analysis-templates'&&options.method==='POST') {
       const row={...body,id:'new',revision:1,model_name:model.name,parameters:templateParameters(body.prompt)};rows.push(row);return row;
     }
@@ -46,11 +48,90 @@ async function fixture({seed=null,templates=null,candidates=[]}={}) {
     fail(value){failRun=value;},setModel(value){model=value;}};
 }
 
+test('editing binds a source value and rerunning changes only the request parameters',async()=>{
+  const original={...initial,prompt:'Sales for {{Plant}}',parameters:['Plant'],defaults:{Plant:'0087'},
+    queries:[{title:'Sales',dax:'EVALUATE FILTER(T,T[Plant]="0087")'}]};
+  const f=await fixture({templates:[original]});
+  await f.click('[data-template-edit]');
+  assert.equal(f.$('[data-query-dax]').value,original.queries[0].dax);
+  assert.equal(f.$('[data-template-query-editor]').hasAttribute('open'),false);
+  assert.equal(f.$('[data-preview-bindings]'),null);
+  const code='EVALUATE FILTER(T,T[Plant]={{Plant}})';
+  f.input('[data-template-default="Plant"]','0090');
+  await f.submit();
+  assert.equal(f.calls.find(c=>c.method==='PUT').body.queries[0].dax,code);
+  const binding=f.calls.find(c=>c.path.endsWith('/queries/preview')).body;
+  assert.deepEqual(binding.samples,{Plant:'0087'});
+  assert.deepEqual(f.calls.find(c=>c.method==='PUT').body.defaults,{Plant:'0090'});
+  await f.click('[data-template-run]');
+  const savedPreview=[...f.root.querySelectorAll('pre')].find(p=>p.textContent===code);
+  assert.ok(savedPreview);
+  assert.equal(f.$('[data-template-value="Plant"]').value,'0090');
+  f.input('[data-template-value="Plant"]','0110');await f.submit();
+  const run=f.calls.find(c=>c.method==='POST'&&c.path.endsWith('/runs'));
+  assert.deepEqual(run.body.values,{Plant:'0110'});assert.equal(run.body.queries,undefined);
+  assert.equal(savedPreview.textContent,code);
+});
+
 test('parameter expansion is repeatable, literal and validates malformed placeholders',()=>{
   assert.deepEqual(templateParameters('分析 {{ 月份 }}、{{部门}} 和 {{月份}}'),['月份','部门']);
   assert.equal(templatePreview('{{月份}} {{月份}}',{月份:'$& {{部门}}'}),'$& {{部门}} $& {{部门}}');
   assert.throws(()=>templateParameters('{{missing'));
   assert.throws(()=>templateParameters(Array.from({length:13},(_,i)=>`{{p${i}}}`).join(' ')));
+  const dax=`// {{comment}}
+    EVALUATE ROW("{{alias}}",{{Month.year}},"filter",{{Material}},"copy",{{Month.month}},"text","{{literal}}","amount",'{{Table}}'[{{Column}}])`;
+  assert.deepEqual(templateParameters('Report for {{Month}}',[{dax}]),['Month','Material']);
+});
+
+test('DAX-only parameters show up once in the form and can be saved without editing the task',async()=>{
+  const dax='EVALUATE ROW("material",{{Material}},"month",VALUE({{Month.month}}),"other",{{Material}})';
+  const f=await fixture({seed:{name:'Prices',model_id:'model',prompt:'Review monthly prices.',defaults:{},
+    queries:[{title:'Prices',dax}]}});
+  assert.deepEqual([...f.root.querySelectorAll('[data-template-default]')].map(el=>el.dataset.templateDefault),['Material','Month']);
+  f.input('[data-template-default="Material"]','XR40007');f.input('[data-template-default="Month"]','2026-10');
+  await f.submit();
+  const saved=f.calls.find(c=>c.path==='/analysis-templates'&&c.method==='POST').body;
+  assert.equal(saved.prompt,'Review monthly prices.');assert.deepEqual(saved.defaults,{Material:'XR40007',Month:'2026-10'});
+  assert.equal(saved.queries[0].dax,dax);
+});
+
+test('an ambiguous filter is chosen in its parameter row while the default and query edits are preserved',async()=>{
+  const source={...initial,prompt:'Prices for {{Plant}}',parameters:['Plant'],defaults:{Plant:'0087'},
+    queries:[{title:'Prices',dax:'EVALUATE FILTER(T,T[Plant]="0087" && T[Vendor]="0087")'}]};
+  const options={'t[plant]':'T[Plant]','t[vendor]':'T[Vendor]'};
+  const f=await fixture({templates:[source],review:({queries,choices})=>choices.Plant==='t[plant]'?
+    {queries:queries.map(q=>({...q,dax:q.dax.replace('T[Plant]="0087"','T[Plant]={{Plant}}')})),unresolved:[]}:
+    {queries,unresolved:[{name:'Plant',options}]}});
+  await f.click('[data-template-edit]');
+  f.input('[data-template-default="Plant"]','0001');await f.submit();
+  assert.equal(f.calls.some(c=>c.method==='PUT'),false);
+  const row=f.$('[data-parameter-row="Plant"]'),field=row.querySelector('select');
+  assert.ok(field);assert.equal(row.querySelector('[data-template-default]').value,'0001');
+  assert.equal(f.$('[data-template-query-editor]').hasAttribute('open'),false);
+  field.querySelector('option[value="t[plant]"]').selected=true;
+  field.dispatchEvent(new f.window.Event('change',{bubbles:true}));await f.submit();
+  const saved=f.calls.find(c=>c.method==='PUT').body;
+  assert.deepEqual(saved.defaults,{Plant:'0001'});
+  assert.equal(saved.queries[0].dax,'EVALUATE FILTER(T,T[Plant]={{Plant}} && T[Vendor]="0087")');
+});
+
+test('a saved analysis offers filter values in one editable row each and leaves fixed identifiers out',async()=>{
+  const prompt='物料 XR40007 的 Mov_Price';
+  const seed={name:'物料价格',model_id:'model',source_message_id:'answer',prompt,defaults:{},
+    queries:[{title:'价格',dax:'EVALUATE FILTER(T,T[Item]="XR40007" && [Mov_Price]>0)'}]};
+  const f=await fixture({seed,candidates:[
+    {name:'物料',value:'XR40007',spans:[[3,10]],bindable:true},
+    {name:'指标',value:'Mov_Price',spans:[[13,22]],bindable:false},
+  ]});
+  assert.equal(f.root.querySelectorAll('[data-parameter-row]').length,1);
+  const row=f.$('[data-parameter-row="物料"]');
+  assert.ok(row.querySelector('input[type="checkbox"]').checked);
+  assert.equal(row.querySelector('[data-template-default]').value,'XR40007');
+  f.input('[data-template-default="物料"]','XR40099');await f.submit();
+  const review=f.calls.find(c=>c.path.endsWith('/queries/preview')).body;
+  const saved=f.calls.find(c=>c.path==='/analysis-templates'&&c.method==='POST').body;
+  assert.deepEqual(review.samples,{物料:'XR40007'});assert.deepEqual(saved.defaults,{物料:'XR40099'});
+  assert.equal(saved.prompt,'物料 {{物料}} 的 Mov_Price');
 });
 
 test('new template saves parameter defaults, edits persist and list can be searched',async()=>{
@@ -197,47 +278,71 @@ test('temporary task edits preserve defaults and only active parameters are save
   await f.submit();assert.deepEqual(f.calls.find(call=>call.method==='PUT').body.defaults,{月份:'2026-10'});
 });
 
-test('first run with defaults needs no typing and whitespace inherits the previewed value',async()=>{
-  const f=await fixture();await f.click('[data-template-run]');
-  assert.equal(f.$('[data-template-value="月份"]').value,'');
-  assert.equal(f.$('[data-template-value="月份"]').placeholder,'2026-10');
+test('run fields are editable on opening and whitespace uses the prefilled default',async()=>{
+  const f=await fixture({templates:[{...initial,run_values:initial.defaults}]});await f.click('[data-template-run]');
+  const fields=[...f.root.querySelectorAll('[data-template-value]')];
+  assert.deepEqual(fields.map(field=>field.value),['2026-10','销售部']);
+  assert.ok(fields.every(field=>!field.disabled&&!field.hasAttribute('readonly')));
+  assert.equal(f.$('[data-template-adjust-values]'),null);
   f.input('[data-template-value="月份"]','   ');
-  assert.ok(f.$('[data-template-run-status]').textContent.includes('沿用 2 项'));
+  assert.equal(f.$('[data-template-preview]').textContent,'分析 2026-10 的 销售部，比较 2026-10 环比。');
+  assert.equal(f.$('[data-template-run-status]').hidden,true);
   await f.submit();assert.deepEqual(f.calls.find(call=>call.method==='POST').body.values,initial.defaults);
 });
 
-test('rerun inherits the latest actual values by name, allows partial overrides and can restore saved defaults',async()=>{
-  const f=await fixture();f.remember('template',{月份:'2026-12',部门:'物流部'});
+test('rerun uses saved defaults and falls back only for blank defaults, even if another window runs it',async()=>{
+  const f=await fixture({templates:[{...initial,defaults:{部门:'销售部'}}]});f.remember('template',{月份:'2026-12',部门:'物流部'});
   await f.click('[data-template-run]');
-  assert.equal(f.$('[data-template-value="月份"]').placeholder,'2026-12');
-  assert.equal(f.$('[data-template-value="月份"]').hasAttribute('required'),false);
+  const month=f.$('[data-template-value="月份"]'),department=f.$('[data-template-value="部门"]');
+  assert.equal(month.value,'2026-12');assert.equal(department.value,'销售部');
+  assert.ok(month.closest('label').textContent.includes('已带入上次取值'));
+  assert.equal(month.hasAttribute('required'),false);
   f.input('[data-template-value="部门"]','研发');
   assert.equal(f.$('[data-template-preview]').textContent,'分析 2026-12 的 研发，比较 2026-12 环比。');
   f.remember('template',{月份:'2027-01',部门:'另一个窗口的修改'});
   await f.submit();assert.deepEqual(f.calls.find(call=>call.method==='POST').body.values,{月份:'2026-12',部门:'研发'});
-  await f.click('[data-template-reset-values]');
-  assert.equal(f.$('[data-template-value="月份"]').value,'2026-10');
+  assert.equal(f.$('[data-template-value="月份"]').value,'2026-12');
   assert.equal(f.$('[data-template-value="部门"]').value,'销售部');
+});
+
+test('saving XR40010 prefills the run field and submits it unchanged despite a previous XR40009 run',async()=>{
+  const f=await fixture({templates:[{...initial,prompt:'查看 {{物料}}。按 {{物料}} 筛选。',
+    parameters:['物料'],defaults:{物料:'XR40009'},last_values:{物料:'XR40009'}}]});
+  await f.click('[data-template-edit]');
+  f.input('[data-template-default="物料"]','XR40010');
+  const preview=f.$('[data-template-editor-preview]').textContent;
+  assert.equal(preview,'查看 XR40010。按 XR40010 筛选。');
+  await f.submit();await f.click('[data-template-run]');
+  assert.equal(f.$('[data-template-value="物料"]').value,'XR40010');
+  assert.equal(f.$('[data-template-preview]').textContent,preview);
+  await f.submit();
+  assert.deepEqual(f.calls.find(call=>call.path.endsWith('/runs')).body.values,{物料:'XR40010'});
 });
 
 test('a manual parameter without a default or previous value is required only on first use',async()=>{
   const f=await fixture({templates:[{...initial,defaults:{},last_values:{月份:'2026-12'}}]});await f.click('[data-template-run]');
+  assert.equal(f.$('[data-template-value="月份"]').value,'2026-12');
   assert.equal(f.$('[data-template-value="部门"]').hasAttribute('required'),true);
   f.input('[data-template-value="部门"]','  ');await f.submit();
   assert.ok(f.$('[data-template-run-status]').textContent.includes('待填写：部门'));
   assert.ok(f.$('[data-template-notice]').textContent.includes('请填写参数：部门'));
   assert.equal(f.started.length,0);
-  f.input('[data-template-value="部门"]','0');await f.submit();
+  f.input('[data-template-value="部门"]','0');
+  await f.submit();
   assert.deepEqual(f.calls.find(call=>call.method==='POST').body.values,{月份:'2026-12',部门:'0'});
+  assert.equal(f.$('[data-template-value="部门"]').hasAttribute('required'),false);
 });
 
 test('bulk recognition on a saved analysis applies checked literals at their Unicode offsets on save',async()=>{
   const prompt='💡工厂0810在2026-5的费用，口径0810。按{{指标}}汇总';
   const candidates=[{name:'工厂',value:'0810',spans:[[3,7],[20,24]]},{name:'月份',value:'2026-5',spans:[[8,14]]}];
   const f=await fixture({candidates,seed:{model_id:'model',source_message_id:'answer',name:'费用',prompt,defaults:{指标:'实际费用'}}});
-  assert.equal(f.$('[data-template-selection]').textContent,'已选 2 项');
+  assert.equal(f.$('[data-template-parameter-count]').textContent,'3 个可填写参数');
+  assert.equal(f.$('[data-template-default="月份"]').value,'2026-5');
+  assert.equal(f.$('[data-template-apply-candidates]'),null);
   const month=f.$('[data-template-candidate="1"]');month.checked=false;month.dispatchEvent(new f.window.Event('change',{bubbles:true}));
-  assert.equal(f.$('[data-template-selection]').textContent,'已选 1 项');
+  assert.equal(f.$('[data-template-default="月份"]').disabled,true);
+  assert.equal(f.$('[data-template-parameter-count]').textContent,'2 个可填写参数');
   await f.submit();
   const scan=f.calls[0],saved=f.calls.find(call=>call.path==='/analysis-templates'&&call.method==='POST').body;
   assert.deepEqual(scan.body,{prompt,model_id:'model',source_message_id:'answer'});
@@ -249,10 +354,8 @@ test('changing text invalidates bulk suggestions and an existing fixed template 
   const prompt='费用 0887',f=await fixture({templates:[{...initial,prompt,parameters:[],defaults:{}}],
     candidates:[{name:'编号',value:'0887',spans:[[3,7]]}]});
   await f.click('[data-template-edit]');await f.click('[data-template-recognize]');
-  f.input('[name="prompt"]','其他任务');assert.equal(f.$('[data-template-candidate-panel]').hidden,true);
+  f.input('[name="prompt"]','其他任务');assert.equal(f.$('[data-template-candidate]'),null);
   f.input('[name="prompt"]',prompt);await f.click('[data-template-recognize]');
-  await f.click('[data-template-toggle-candidates]');assert.equal(f.$('[data-template-apply-candidates]').disabled,true);
-  await f.click('[data-template-toggle-candidates]');await f.click('[data-template-apply-candidates]');
   assert.equal(f.$('[data-template-default="编号"]').value,'0887');assert.equal(f.$('[data-template-editor-preview]').textContent,prompt);
   f.input('[data-template-default="编号"]','0257');await f.submit();
   const updated=f.calls.find(call=>call.method==='PUT').body;
@@ -268,10 +371,12 @@ test('a new template offers all candidates beyond the remaining slots and saves 
   f.input('[name="name"]','新任务');f.input('[name="prompt"]',prompt);await f.click('[data-template-recognize]');
   const [factory,year]=f.root.querySelectorAll('[data-template-candidate]');
   assert.equal(factory.checked,true);assert.equal(year.checked,false);
-  year.checked=true;year.dispatchEvent(new f.window.Event('change',{bubbles:true}));await f.submit();
-  assert.ok(f.$('[data-template-notice]').textContent.includes('最多还能添加 1 项'));
-  assert.equal(f.$('[name="prompt"]').value,prompt);
-  factory.checked=false;factory.dispatchEvent(new f.window.Event('change',{bubbles:true}));await f.submit();
+  year.checked=true;year.dispatchEvent(new f.window.Event('change',{bubbles:true}));
+  assert.ok(f.$('[data-template-parameter-notice]').textContent.includes('最多还能添加 1 项'));
+  assert.equal(year.checked,false);
+  factory.checked=false;factory.dispatchEvent(new f.window.Event('change',{bubbles:true}));
+  const available=f.$('[data-template-candidate="1"]');available.checked=true;
+  available.dispatchEvent(new f.window.Event('change',{bubbles:true}));await f.submit();
   const saved=f.calls.find(call=>call.path==='/analysis-templates'&&call.method==='POST').body;
   assert.equal(saved.prompt,marked+' 工厂0810在{{年份}}年');assert.equal(saved.defaults.年份,'2026');
 });

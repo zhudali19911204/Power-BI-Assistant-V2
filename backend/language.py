@@ -6,6 +6,7 @@ from typing import Literal
 Language = Literal['zh-CN', 'en']
 # These section labels are also recognized when compacting saved analysis replies.
 OPEN_QUESTION_LABELS = ('尚未完成：', 'Still open: ')
+SAVED_QUERY_SCOPE = ('使用模板中保存的 DAX 查询和本次参数。', 'Using the saved DAX queries and this run’s parameter values.')
 _language: ContextVar[Language] = ContextVar('ui_language', default='zh-CN')
 
 

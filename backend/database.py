@@ -86,7 +86,7 @@ class Database:
                     id TEXT PRIMARY KEY, model_id TEXT NOT NULL REFERENCES models(id),
                     source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
                     name TEXT NOT NULL, prompt TEXT NOT NULL, defaults_json TEXT NOT NULL,
-                    revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                    revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, queries_json TEXT);
                 CREATE TABLE IF NOT EXISTS analysis_template_runs (
                     id TEXT PRIMARY KEY, template_id TEXT REFERENCES analysis_templates(id) ON DELETE SET NULL,
                     conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
@@ -137,12 +137,15 @@ class Database:
                     message_rowid INTEGER NOT NULL, created_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS conversation_model_syncs_conversation ON conversation_model_syncs(conversation_id);
                 CREATE INDEX IF NOT EXISTS artifacts_message ON artifacts(message_id);
-                PRAGMA user_version=1;
             """)
+            if db.execute('PRAGMA user_version').fetchone()[0] == 0:
+                db.execute('PRAGMA user_version=1')
             if 'position' not in {r['name'] for r in db.execute('PRAGMA table_info(message_images)')}:
                 db.execute('ALTER TABLE message_images ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
             if 'sidebar_width' not in {r['name'] for r in db.execute('PRAGMA table_info(ui_layout)')}:
                 db.execute('ALTER TABLE ui_layout ADD COLUMN sidebar_width INTEGER CHECK(sidebar_width BETWEEN 215 AND 400)')
+            if 'queries_json' not in {r['name'] for r in db.execute('PRAGMA table_info(analysis_templates)')}:
+                db.execute('ALTER TABLE analysis_templates ADD COLUMN queries_json TEXT')
 
     @contextmanager
     def connection(self):

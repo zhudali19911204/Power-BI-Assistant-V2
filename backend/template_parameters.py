@@ -9,8 +9,9 @@ PARAMETER = re.compile(r'\{\{\s*([\w\u4e00-\u9fff][\w\u4e00-\u9fff -]{0,39}?)\s*
 PARAMETER_LIMIT = 12
 
 
-def parameter_names(prompt):
-    names = list(dict.fromkeys(m.group(1).strip() for m in PARAMETER.finditer(prompt)))
+def parameter_names(prompt, query_names=()):
+    text_names = (m.group(1).strip() for m in PARAMETER.finditer(prompt))
+    names = list(dict.fromkeys([*text_names, *query_names]))
     remainder = PARAMETER.sub('', prompt)
     if '{{' in remainder or '}}' in remainder or len(names) > PARAMETER_LIMIT:
         raise ValueError('参数请使用 {{月份}} 这样的名称，最多 12 项，每个名称最多 40 字')

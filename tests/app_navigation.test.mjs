@@ -265,7 +265,7 @@ test('actual app navigation keeps background streams, drafts and independent sen
           {id:'template-query',ok:true,rows:[{金额:250}],columns:['金额'],row_count:1,dax:'EVALUATE ROW("金额",250)'}]}]);
       return json({id:body.request_id,conversation});
     }
-    if(path==='/api/messages/template-run-answer/analysis-template')return json({name:'月度分析模板',prompt:'分析 2026-11 的金额',
+    if(path==='/api/messages/template-run-answer/analysis-template')return json({name:'2026-11 月度金额',prompt:'分析 2026-11 的金额',
       model_id:'model',source_message_id:'template-run-answer',defaults:{}});
     if(path==='/api/images'&&opts.method==='POST'){uploads.push(opts);return json(imageMeta);}
     if(path==='/api/settings')return json(settings);
@@ -818,8 +818,9 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('#prompt').value,'尚未发送的草稿');
     // Template runs open a separate analysis and preserve the original conversation draft.
     await click('#analysis-templates-open');await click('[data-template-run="saved-analysis"]');
-    $('[data-template-value="月份"]').value='2026-11';
-    $('[data-template-value="月份"]').dispatchEvent(new window.Event('input',{bubbles:true}));
+    const runMonth=$('[data-template-value="月份"]');
+    assert.equal(runMonth.value,'2026-10');
+    runMonth.value='2026-11';runMonth.dispatchEvent(new window.Event('input',{bubbles:true}));
     assert.ok($('[data-template-preview]').textContent.includes('2026-11'));
     const runForm=$('[data-template-run-form]');runForm.reportValidity=()=>true;
     runForm.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));
@@ -833,10 +834,9 @@ test('actual app navigation keeps background streams, drafts and independent sen
     await click('[data-table-reader-close]');assert.equal(tableReader.open,false);
     assert.equal($('[data-evidence="template-query"]'),resultEvidence);assert.ok(resultEvidence.hasAttribute('open'));
     await click('[data-save-analysis-template="template-run-answer"]');
-    assert.equal($('[name="prompt"]').value,'分析 2026-11 的金额');
-    assert.equal($('[data-template-selection]').textContent,'已选 1 项');
-    const templatePrompt=$('[name="prompt"]');await click('[data-template-apply-candidates]');
-    assert.equal(templatePrompt.value,'分析 {{月份}} 的金额');
+    assert.equal($('[name="name"]').value,'2026-11 月度金额');
+    assert.equal($('[name="prompt"]').value,'分析 {{月份}} 的金额');
+    assert.equal($('[data-template-parameter-count]').textContent,'1 个可填写参数');
     assert.equal($('[data-template-default="月份"]').value,'2026-11');
     assert.equal($('[data-template-editor-preview]').textContent,'分析 2026-11 的金额');
     await click('#modal-close');await click('#template-return');

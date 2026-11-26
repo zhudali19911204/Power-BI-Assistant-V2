@@ -17,7 +17,8 @@ from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .chat import ChatService
-from .analysis_templates import AnalysisTemplates, TemplateCreate, TemplateEdit, TemplateRun, TemplateScan
+from .analysis_templates import AnalysisTemplates, QueryPreview, TemplateCreate, TemplateEdit, TemplateRun, TemplateScan
+from .template_queries import review_bindings
 from .database import Database, encode, now, uid
 from .engine.context.live_source import find_instances
 from .engine.context.live_writer import LiveDesktopWriter
@@ -427,6 +428,13 @@ def create_app(directory=None):
     def recognize_template_parameters(body: TemplateScan):
         return templates.scan(body)
 
+    @app.post('/api/analysis-templates/queries/preview')
+    def preview_template_queries(body: QueryPreview):
+        try:
+            return review_bindings([q.model_dump() for q in body.queries], body.prompt, body.samples, body.choices)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from exc
+
     @app.get('/api/analysis-templates/{template_id}')
     def get_analysis_template(template_id: str):
         return templates.get(template_id)
@@ -511,7 +519,10 @@ def create_app(directory=None):
 
     @app.post("/api/conversations/{conversation_id}/messages")
     def send_message(conversation_id: str, body: MessageInput):
-        task = BackgroundStream(chat.begin(conversation_id, body, settings))
+        source = templates.continue_preparation(conversation_id, body)
+        if source is None:
+            source = chat.begin(conversation_id, body, settings)
+        task = BackgroundStream(source)
         return StreamingResponse(task.events(),
                                  media_type="application/x-ndjson", headers={"X-Accel-Buffering": "no"})
 
@@ -580,6 +591,8 @@ def create_app(directory=None):
                 for note in result.get('convention_exceptions', {}).values():
                     text+=wording('分析约定「{title}」　{reason}', 'Analysis convention “{title}”: {reason}').format(**note)+'\n\n'
                 text+='```dax\n'+result['dax']+'\n```\n\n'
+                if result.get('parameters'):
+                    text+=wording('本次查询参数','Query parameters')+'\n\n```json\n'+encode(result['parameters'])+'\n```\n\n'
                 if not result['ok']:
                     text+=wording('查询未成功：','Query failed: ')+result['error']+'\n\n';continue
                 limit=wording('结果已截断','truncated') if result['truncated'] else wording('返回结果未截断','complete')

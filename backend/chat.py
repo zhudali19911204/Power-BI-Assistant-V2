@@ -170,7 +170,7 @@ class ChatService:
             if record:message['clarification'].pop('_field_sources',None)
         return rows
 
-    def begin(self, conversation_id, body, settings):
+    def begin(self, conversation_id, body, settings, *, template=None):
         conv = self.conversation(conversation_id)
         self.images.ensure_available(body.image_ids)
         model = self.powerbi.get(conv["model_id"])
@@ -217,19 +217,19 @@ class ChatService:
                     content=resolve_answer(self.db,conversation_id,body.clarification_reply)
                 if self.semantics:self.semantics.capture_answer(conv,body,ctx)
                 body=body.model_copy(update={'content':content})
-            if self.semantics and model['source']=='desktop' and conv['mode'] in ('dax','analysis'):
+            if self.semantics and model['source']=='desktop' and conv['mode'] in ('dax','analysis') and not (template and template.commands):
                 self.semantics.require_ready(model,ctx)
-                return self.cancellable_stream(conv,token,self.grounded_stream(conv,model,ctx,body,home,settings,lock),body.language)
+                return self.cancellable_stream(conv,token,self.grounded_stream(conv,model,ctx,body,home,settings,lock,template),body.language)
             provider = settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
         except BaseException:
             with self.mutex: self.cancellations.pop(conversation_id, None)
             lock.release()
             raise
         if conv['mode']=='analysis':
-            return self.cancellable_stream(conv,token,self.analysis.stream(conv,model,ctx,body,provider,lock),body.language)
+            return self.cancellable_stream(conv,token,self.analysis.stream(conv,model,ctx,body,provider,lock,template),body.language)
         return self.cancellable_stream(conv,token,self.stream(conv, model, ctx, body, home, provider, lock),body.language)
 
-    def grounded_stream(self,conv,model,ctx,body,home,settings,lock):
+    def grounded_stream(self,conv,model,ctx,body,home,settings,lock,template=None):
         delegated=False
         try:
             # Let the model interpret the semantic context before choosing whether
@@ -239,7 +239,7 @@ class ChatService:
             provider=settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
             delegated=True
             if conv['mode']=='analysis':
-                yield from self.analysis.stream(conv,model,ctx,body,provider,lock)
+                yield from self.analysis.stream(conv,model,ctx,body,provider,lock,template)
             else:
                 yield from self.stream(conv,model,ctx,body,home,provider,lock)
         except GeneratorExit:raise

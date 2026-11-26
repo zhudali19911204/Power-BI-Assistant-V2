@@ -138,9 +138,15 @@ In **Data Analysis**, name the metric, date range, comparison, grouping and unit
 
 ### Save and rerun an analysis template
 
-Save a completed analysis using **Save as analysis template**, or open **Analysis templates** and choose **New template**. Write down any definitions that depend on screenshots. Keep a fixed task or use **Detect parameters** to find replaceable values. You can enter tokens such as `{{Month}}` manually, up to 12 distinct parameters.
+Select **Save as analysis template** beneath a completed analysis. The task contains the question from that turn and the scope of the queries that succeeded in that reply. You can edit the suggested name before saving. You can also choose **New template** in **Analysis templates**. Include any definitions that depend on screenshots in the task.
 
-Connect the template’s report and select **Run again**. Blank inputs reuse the last values or the template defaults. Supply missing first-run values and review the expanded task before selecting **Run analysis**. Each run opens its own chat and queries the current report. **Run history** records the version, parameters and results.
+Under **Run parameters**, each row has one parameter and its default. Saving from an analysis finds reusable values automatically. Select the values you want to change in future runs and edit their defaults in the same rows. For a new task, use **Find values in task** or select text and add a **Custom parameter**.
+
+Choose **Save template** to connect the parameters to the saved queries. If a value appears in several filter fields, select the field in its parameter row and save again. Parameters entered directly in DAX under **Query code (advanced)** also appear in the same list.
+
+Connect the template’s report and select **Run again**. The fields open with the saved defaults. Select **Run analysis** to use them, or edit a field first to change its value for this run. A field without a default starts with its last value, or requires an entry if it has never been used. **Run history** records the version, parameters and results in a separate chat for each run.
+
+Each run sends the same DAX to Desktop with its own values. The assistant analyzes the rows returned by that run. A manually created template can include DAX or prepare it on the first run. Older templates reuse successful queries from the source analysis or a previous run of the same revision when available.
 
 ## Chats, images and exports
 

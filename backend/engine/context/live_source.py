@@ -162,12 +162,15 @@ class _LiveSession:
         except Exception:  # noqa: BLE001 — best-effort close
             pass
 
-    def query(self, dax: str, max_rows: int | None = None, timeout_seconds: int = 60) -> list[dict[str, Any]]:
+    def query(self, dax: str, max_rows: int | None = None, timeout_seconds: int = 60,
+              parameters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         from ...cancellation import check_cancelled, close_on_cancel
         check_cancelled()
         cmd = self._conn.CreateCommand()
         cmd.CommandTimeout = timeout_seconds
         cmd.CommandText = dax
+        for name, value in (parameters or {}).items():
+            cmd.Parameters.Add(name, value)
         unregister = close_on_cancel(cmd.Cancel) if callable(getattr(cmd, 'Cancel', None)) else lambda: None
         rdr = None
         try:

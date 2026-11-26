@@ -36,9 +36,11 @@
         <button class="nav-item" data-mode="analysis"><span data-icon="chart"></span>数据分析助手</button>
       </nav>
       <button class="nav-item template-entry" id="analysis-templates-open" title="分析模板"><span data-icon="book"></span>分析模板</button>
-      <div class="history-heading"><span class="section-label">最近对话</span><button class="icon-button" id="search-toggle" aria-label="搜索会话"><span data-icon="search"></span></button></div>
-      <input id="history-search" class="history-search" placeholder="搜索对话…" aria-label="搜索会话" hidden>
-      <div class="history-list" id="history-list"><p class="muted history-empty">还没有对话<br>从一个数据问题开始吧</p></div>
+      <section class="history-panel" aria-labelledby="history-title">
+        <div class="history-heading"><span class="section-label" id="history-title">最近对话</span><button class="icon-button" id="search-toggle" aria-label="搜索会话"><span data-icon="search"></span></button></div>
+        <input id="history-search" class="history-search" placeholder="搜索对话…" aria-label="搜索会话" hidden>
+        <div class="history-list" id="history-list"><p class="muted history-empty">还没有对话<br>从一个数据问题开始吧</p></div>
+      </section>
       <div class="sidebar-bottom">
         <button type="button" class="nav-item guide-entry" id="updates-open" aria-haspopup="dialog" aria-label="检查更新" title="检查更新" hidden><span data-icon="download"></span><span data-update-label>检查更新</span></button>
         <button type="button" class="nav-item guide-entry" data-open-guide aria-label="使用说明" aria-haspopup="dialog" title="使用说明"><span data-icon="help"></span>使用说明</button>

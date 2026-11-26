@@ -197,9 +197,10 @@ function renderHistory() {
   const rows=state.conversations.filter(c=>c.title.toLowerCase().includes(needle));
   $('#history-list').innerHTML=rows.length?rows.map(c=>{
     const view=workspace.find(c.id),busy=view?.busy||(c.generating&&!view?.loaded);
+    const current=state.view.conversation?.id===c.id;
     const last=view?.messages.at(-1),pending=last?.status==='complete'&&last.clarification&&!last.clarification.answered;
     const badge=busy?`<small class="history-task running">${tr('生成中')}</small>`:pending?`<small class="history-task clarification">${tr('待确认')}</small>`:view?.attention?`<small class="history-task ${view.attention}">${view.attention==='error'?tr('查看错误'):view.attention==='cancelled'?tr('已中止'):tr('已完成')}</small>`:'';
-    return `<div class="history-item ${state.view.conversation?.id===c.id?'active':''}"><button class="history-name" data-conversation="${c.id}" title="${esc(c.title)}">${icon(MODES[c.mode]?.historyIcon||'chat')}<span>${esc(c.title)}</span>${badge}</button><button class="icon-button" data-delete-conversation="${c.id}" aria-label="${tr('删除 {0}', esc(c.title))}" ${busy||view?.preparing?`disabled title="${tr('发送或生成完成后可删除')}"`:''}>${icon('trash')}</button></div>`;
+    return `<div class="history-item ${current?'active':''}"><button class="history-name" data-conversation="${c.id}"${current?' aria-current="true"':''} title="${esc(c.title)}">${icon(MODES[c.mode]?.historyIcon||'chat')}<span>${esc(c.title)}</span>${badge}</button><button class="icon-button" data-delete-conversation="${c.id}" aria-label="${tr('删除 {0}', esc(c.title))}" ${busy||view?.preparing?`disabled title="${tr('发送或生成完成后可删除')}"`:''}>${icon('trash')}</button></div>`;
   }).join(''):'<p class="muted history-empty">'+(needle?tr('没有匹配的对话'):`${tr('还没有对话')}<br>${tr('从一个数据问题开始吧')}`)+'</p>';
 }
 function renderBackgroundTasks() {

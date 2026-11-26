@@ -90,7 +90,9 @@ SQLite 开启 WAL 和外键约束。`conversations` 与 `messages` 保存会话�
 
 执行器仅接受单个 `EVALUATE` 结果集，可使用 `DEFINE` 声明查询内度量。`AnalysisBudget` 为总结保留时间，另设每批最多 4 条、每轮最多 4 批和 12 条业务查询、最多 18 次应用执行尝试。每个成功结果最多保留 200 行和 24,000 字节行数据，截断信息随结果保存。超过 30 列的查询返回错误。分析表格、查询依据和 `GET /api/analysis/{query_id}/csv` 复用本次保存的结果。报表页面切片器的条件需要显式写入任务。[执行预算](../backend/analysis_budget.py) · [只读边界测试](../tests/test_analysis_boundaries.py) · [表格阅读](../frontend/table_reader.js)
 
-模板复用分析任务文字和口径。参数识别位于 `template_parameters.py`，运行时按本次输入、上次实际取值、模板默认值的顺序填入 `{{参数}}`。`POST /api/analysis-templates/{template_id}/runs` 校验模板 `revision` 和报表身份，事务内建立新分析会话和参数快照，再调用 `ChatService.begin()` 重新查询。相同 `request_id` 和请求内容返回同一运行，不同内容复用同一 ID 会得到 `409`。删除模板和删除历史会话属于不同操作。[模板参数](../backend/template_parameters.py) · [模板服务](../backend/analysis_templates.py) · [模板界面](../frontend/analysis_templates.js)
+模板按版本保存分析任务、参数和只读 DAX。从分析回复保存时复制每个逻辑查询成功执行的代码。手动新建的纯文字模板在首次准备好查询后固定代码。旧模板优先恢复来源分析或同版本历史运行中的查询。模板详情返回本次起始值，优先采用当前版本保存的默认值，缺少默认值的参数沿用上次取值。运行页的预览和后端查询使用相同的起始值，并接受本次提交的覆盖值。[模板参数](../backend/template_parameters.py) · [查询参数绑定](../backend/template_queries.py)
+
+`POST /api/analysis-templates/{template_id}/runs` 校验版本和报表身份，事务内建立独立分析对话并快照查询及参数。Desktop 接收固定 DAX 命令和单独的 XMLA 参数，AI 总结本轮查询证据。每次执行记录实际发送的代码、参数和返回行。运行请求按 `request_id` 去重，编辑模板保留以往的运行记录。[模板服务](../backend/analysis_templates.py) · [模板界面](../frontend/analysis_templates.js)
 
 ## 流式更新、恢复和取消
 
