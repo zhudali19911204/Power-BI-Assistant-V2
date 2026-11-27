@@ -9,15 +9,17 @@ from collections import Counter
 
 from fastapi import HTTPException
 
-from .analysis_budget import ROW_LIMIT, AnalysisBudget
+from .analysis_budget import ROW_LIMIT, AnalysisBudget, execution_key
+from .analysis_checkpoint import remaining_tasks, save_checkpoint
 from .analysis_planner import AnalysisPlanner
 from .analysis_prompts import SUMMARY_SYSTEM as SUMMARY_SYSTEM
 from .analysis_prompts import plan_system as plan_system
-from .analysis_protocol import parse_plan as parse_plan
+from .analysis_protocol import PlanResponseError, parse_plan as parse_plan
 from .analysis_queries import AnalysisQueries
 from .analysis_summary import summarize
 from .cancellation import GenerationCancelled, cancelled_text, check_cancelled, close_cancelled_provider
 from .clarifications import ClarificationQuestion, card_markdown
+from .conversation_context import HistoryWindow
 from .database import encode, now, uid
 from .engine.context.live_source import _LiveSession, find_adomd_dll, find_instances
 from .fields import FieldCheck, FieldService, field_ref
@@ -85,6 +87,8 @@ def readonly_query(text):
 
 
 class AnalysisService:
+    readonly_query = staticmethod(readonly_query)
+
     def __init__(self, chat):
         self.chat = chat
         self.db = chat.db
@@ -235,21 +239,23 @@ class AnalysisService:
             if result["truncated"]:
                 result["warnings"].append("结果已截断，保留的行不能代表全部数据")
             result["ok"] = True
+        except GenerationCancelled:
+            raise
         except Exception as exc:
             result["error"] = str(exc.detail if isinstance(exc, HTTPException) else exc).splitlines()[0][:350]
             result["connection_error"] = isinstance(exc, HTTPException) or transport_disconnected(exc)
         result["seconds"] = round(time.monotonic() - started, 3)
         return result
 
-    def stream(self, conv, model, ctx, body, provider, lock, template=None):
-        run = AnalysisRun(self, conv, model, ctx, body, provider, template)
+    def stream(self, conv, model, ctx, body, provider, lock, template=None, checkpoint=None):
+        run = AnalysisRun(self, conv, model, ctx, body, provider, template, checkpoint)
         yield from run.stream(lock)
 
 
 class AnalysisRun:
     """State shared by the planning, execution and summary stages of one reply."""
 
-    def __init__(self, service, conversation, model, ctx, body, provider, template):
+    def __init__(self, service, conversation, model, ctx, body, provider, template, checkpoint=None):
         self.service = service
         self.db = service.db
         self.chat = service.chat
@@ -260,7 +266,10 @@ class AnalysisRun:
         self.provider = provider
         self.template = template
         self.commands = template.commands if template else []
-        self.message_id = uid()
+        self.command_definitions = template.queries if template else []
+        self.use_saved_results = False
+        self.checkpoint = checkpoint
+        self.message_id = checkpoint["message_id"] if checkpoint else uid()
         self.total_timeout = generation_timeout(provider)
         self.budget = AnalysisBudget(self.total_timeout)
         self.call_counts = {}
@@ -270,6 +279,11 @@ class AnalysisRun:
         self.query_count = 0
         self.attempt_count = 0
         self.batch_count = 0
+        self.query_offset = 0
+        self.batch_offset = 0
+        self.scope = checkpoint["scope"] if checkpoint else ""
+        self.open_questions = checkpoint["pending"] if checkpoint else []
+        self.resume_items = {}
 
     def remaining(self, limit, *, summary=False):
         check_cancelled()
@@ -329,10 +343,55 @@ class AnalysisRun:
                 result = event["result"]
         return result
 
+    def completed_commands(self):
+        return {
+            execution_key(q["dax"], q.get("parameters"))
+            for q in self.evidence
+            if q["ok"] and q.get("run_verified")
+        }
+
     def open_turn(self):
+        if self.checkpoint:
+            self.user_id = self.checkpoint["user_id"]
+            self.window = HistoryWindow({}, **self.checkpoint["window"])
+            self.messages = self.chat.images.llm_messages(
+                self.window.messages, self.user_id, self.body.content
+            )
+            self.evidence = self.service.records(self.message_id)
+            self.open_questions = remaining_tasks(self.checkpoint, self.evidence)
+            self.use_saved_results = bool(self.checkpoint["pending"]) and not self.open_questions
+            self.resume_items = {f"P{i}": title for i, title in enumerate(self.open_questions, 1)}
+            if self.commands:
+                completed = self.completed_commands()
+                remaining = [
+                    (c, d)
+                    for c, d in zip(self.commands, self.command_definitions, strict=True)
+                    if execution_key(c.dax, c.parameters) not in completed
+                ]
+                self.commands = [c for c, _ in remaining]
+                self.command_definitions = [d for _, d in remaining]
+                self.use_saved_results = not remaining
+            self.query_offset = max((int(q["label"][1:]) for q in self.evidence), default=0)
+            self.batch_offset = max((q["batch"] for q in self.evidence), default=0)
+            self.call_counts = {
+                r["stage"]: r["attempt"]
+                for r in self.db.all(
+                    "SELECT stage,MAX(attempt) AS attempt FROM llm_generations WHERE message_id=? GROUP BY stage",
+                    (self.message_id,),
+                )
+            }
+            self.db.execute(
+                "UPDATE messages SET status='streaming',content='' WHERE id=?", (self.message_id,)
+            )
+            yield encode({"type": "start", "message_id": self.message_id}) + "\n"
+            yield self.status(
+                wording("正在沿用原问题及已核对的结果", "Resuming with the original task and saved evidence")
+            )
+            return self.window, self.window.retrieval_history()
         window = self.chat.history.window(self.conversation["id"], send=True)
         history = window.retrieval_history()
         user_id = self.chat.images.save_user(self.conversation["id"], self.body.content, self.body.image_ids)
+        self.window, self.user_id = window, user_id
         self.db.execute(
             "INSERT INTO messages VALUES (?,?,?,?,?,?)",
             (self.message_id, self.conversation["id"], "assistant", "", "streaming", now()),
@@ -348,6 +407,65 @@ class AnalysisRun:
         self.messages = self.chat.images.llm_messages(window.messages, user_id, self.body.content)
         return window, history
 
+    def analyze_queries(self, planner, plan, saved_scope, pause):
+        version = None
+        self.scope = self.scope or (plan.scope if plan else "")
+        if self.scope:
+            self.display = wording("### 分析口径", "### Analysis scope") + "\n\n" + self.scope + "\n\n"
+            yield encode({"type": "delta", "text": self.display}) + "\n"
+            self.save_partial()
+        queries = AnalysisQueries(self, planner, self.scope)
+        if plan:
+            yield from queries.execute(plan, saved_scope)
+        if pause:
+            queries.stop_reason = pause
+        if planner.pending and planner.recent_issues and not queries.stop_reason:
+            last_issue = planner.recent_issues[-1]["issues"][0]
+            queries.stop_reason = wording("部分查询仍需校验", "Some queries still need validation") + (
+                f" ({last_issue['path']}) {last_issue['message']}"
+            )
+        pending = list(dict.fromkeys([*planner.pending, *queries.unanswered]))
+        if planner.minimal_used:
+            completed = {r["title"] for r in self.evidence if r["ok"] and r.get("run_verified")}
+            pending = [
+                task for task in dict.fromkeys([*pending, *self.open_questions]) if task not in completed
+            ]
+        if self.checkpoint:
+            pending.extend(
+                task for task in remaining_tasks(self.checkpoint, self.evidence) if task not in pending
+            )
+            if self.commands:
+                completed_commands = self.completed_commands()
+                pending.extend(
+                    c.title
+                    for c in self.commands
+                    if execution_key(c.dax, c.parameters) not in completed_commands and c.title not in pending
+                )
+        if not queries.pending_card and (
+            pause
+            or (pending and (planner.pending or planner.minimal_used))
+            or queries.format_failures
+            or (self.checkpoint and (pending or (not self.use_saved_results and not queries.new_result)))
+        ):
+            version = save_checkpoint(self, planner, pending)
+            queries.unanswered = pending
+            yield encode({"type": "analysis_resume", "version": version}) + "\n"
+        yield from summarize(self, planner, queries)
+        if version:
+            fields = sum(
+                r["ok"] and bool((r.get("profile") or {}).get("run_verified")) for r in planner.fields.records
+            )
+            results = len({q["label"] for q in self.evidence if q["ok"] and q.get("run_verified")})
+            note = wording(
+                f"\n\n已保留 {fields} 项字段核对和 {results} 项成功查询。可继续未完成部分。",
+                f"\n\nSaved {fields} verified field checks and {results} successful queries. You can resume the remaining work.",
+            )
+            if pending and not results:
+                note += wording(" 待完成：", " Remaining: ") + wording("、", ", ").join(pending)
+            self.display += note
+            yield encode({"type": "delta", "text": note}) + "\n"
+        return version
+
     def stream(self, lock):
         saved = False
         cancelled = False
@@ -356,28 +474,33 @@ class AnalysisRun:
         try:
             window, history = yield from self.open_turn()
             planner = AnalysisPlanner(self)
-            plan, saved_scope, inherited = yield from planner.initial_plan(window, history)
-            if plan.clarification or not plan.queries:
+            pause = ""
+            try:
+                plan, saved_scope, inherited = yield from planner.initial_plan(window, history)
+            except PlanResponseError as exc:
+                plan, saved_scope = None, self.scope
+                pause = exc.detail
+            version = None
+            if plan and plan.clarification:
                 card = planner.fields.save_analysis_card(plan.clarification, inherited)
                 self.display = card_markdown(card)
                 yield encode({"type": "clarification", "clarification": card}) + "\n"
                 yield encode({"type": "delta", "text": self.display}) + "\n"
             else:
-                if plan.scope:
-                    self.display = (
-                        wording("### 分析口径", "### Analysis scope") + "\n\n" + plan.scope + "\n\n"
-                    )
-                    yield encode({"type": "delta", "text": self.display}) + "\n"
-                    self.save_partial()
-                queries = AnalysisQueries(self, planner, plan.scope)
-                yield from queries.execute(plan, saved_scope)
-                yield from summarize(self, planner, queries)
+                version = yield from self.analyze_queries(planner, plan, saved_scope, pause)
             check_cancelled()
             fixed_failure = bool(self.commands) and not any(q["ok"] for q in self.evidence)
-            self.db.execute(
-                "UPDATE messages SET content=?,status=? WHERE id=?",
-                (self.display, "error" if fixed_failure else "complete", self.message_id),
-            )
+            with self.db.connection() as db:
+                db.execute(
+                    "UPDATE messages SET content=?,status=? WHERE id=?",
+                    (
+                        self.display,
+                        "partial" if version else "error" if fixed_failure else "complete",
+                        self.message_id,
+                    ),
+                )
+                if not version:
+                    db.execute("DELETE FROM analysis_checkpoints WHERE message_id=?", (self.message_id,))
             saved = True
             yield encode({"type": "analysis", "queries": self.evidence}) + "\n"
             if fixed_failure:
@@ -394,7 +517,7 @@ class AnalysisRun:
                     + "\n"
                 )
             else:
-                yield encode({"type": "done"}) + "\n"
+                yield encode({"type": "done", **({"partial": True} if version else {})}) + "\n"
         except GeneratorExit:
             raise
         except GenerationCancelled:

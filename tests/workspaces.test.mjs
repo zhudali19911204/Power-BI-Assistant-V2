@@ -61,6 +61,26 @@ test('image attachments are pinned to the submitted view and only IDs reach the 
   assert.equal(owner.messages[0].images[0].id,image.id);
 });
 
+test('resume reuses the assistant message, preserves drafts and attachments, and coalesces clicks',async()=>{
+  const f=fixture(), view=f.workspace.open(conversation('A','analysis'),model), s=stream();
+  f.streams.set('A',s);
+  const partial={id:'answer',role:'assistant',content:'进度',status:'partial',analysis_resume:'v1',analysis:[{label:'Q1'}]};
+  view.messages=[{role:'user',content:'原始问题'},partial];
+  view.draft='未发送的下一题'; view.images=[{id:'draft-image'}];
+  const request=f.manager.send(view,{language:'zh-CN'},{resume:partial});
+  assert.equal(f.manager.send(view,{},{resume:partial}),request);
+  assert.equal(view.messages.length,2);
+  assert.deepEqual(view.messages[1].analysis,partial.analysis);
+  await tick();
+  assert.equal(f.sent.length,1);assert.equal(f.sent[0].body.version,'v1');
+  assert.equal(f.sent[0].body.content,undefined);assert.equal(f.sent[0].body.image_ids,undefined);
+  f.saved.set('A',[view.messages[0],{...partial,status:'partial',analysis_resume:'v2',content:'仍有一项'}]);
+  s.event({type:'analysis_resume',version:'v2'});s.event({type:'done',partial:true});s.close();
+  await request;
+  assert.equal(view.messages[1].analysis_resume,'v2');assert.equal(view.messages[1].status,'partial');
+  assert.equal(view.images[0].id,'draft-image');assert.equal(view.draft,'未发送的下一题');
+});
+
 test('early rejection restores image attachments for retry without clearing another draft',async()=>{
   const workspace=createWorkspaces(),owner=workspace.open(conversation('A'),model);
   const image={id:'a'.repeat(32),name:'截图.png',status:'ready'};owner.images=[image];

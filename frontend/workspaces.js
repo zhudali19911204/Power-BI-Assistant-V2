@@ -243,8 +243,9 @@ export function createGenerationManager({
         return poll(view);
       });
     },
-    send(view, request, { draft = view.draft } = {}) {
+    send(view, request, { draft = view.draft, resume = null } = {}) {
       if (running.has(view)) return running.get(view);
+      if (resume && (resume !== view.messages.at(-1) || !resume.analysis_resume)) return;
       // Copy filters and service selection before the user navigates or edits another page.
       const body = structuredClone(request),
         previous = view.messages.slice();
@@ -252,18 +253,29 @@ export function createGenerationManager({
       view.generationId = body.generation_id;
       const submittedImages = body.images || [];
       delete body.images;
-      const answer = { role: 'assistant', content: '', status: 'streaming', artifacts: [], analysis: [] };
-      view.messages.push(
-        { role: 'user', content: body.content, images: submittedImages, artifacts: [] },
-        answer
-      );
+      const answer = {
+        artifacts: [],
+        analysis: [],
+        ...resume,
+        role: 'assistant',
+        content: '',
+        status: 'streaming',
+      };
+      delete answer.analysis_resume;
+      if (resume) view.messages.splice(-1, 1, answer);
+      else
+        view.messages.push(
+          { role: 'user', content: body.content, images: submittedImages, artifacts: [] },
+          answer
+        );
       view.images = view.images.filter((img) => !body.image_ids?.includes(img.id));
       // A semantic preflight may have awaited while the user typed a new draft.
-      if (!body.clarification_reply && view.draft === draft) view.draft = '';
+      if (!resume && !body.clarification_reply && view.draft === draft) view.draft = '';
       view.status = '正在等待模型回复';
       function restoreUnsent() {
         view.cancelled = true;
         view.messages = previous;
+        if (resume) return;
         view.draft = view.draft || (body.clarification_reply ? '' : body.content);
         view.images = [
           ...submittedImages,
@@ -299,10 +311,19 @@ export function createGenerationManager({
             return;
           }
           delete body.query_name;
-          const response = await fetchResponse(`/api/conversations/${id}/messages`, {
+          const path = `/api/conversations/${id}/messages` + (resume ? `/${resume.id}/resume` : '');
+          const response = await fetchResponse(path, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-UI-Language': body.language || language },
-            body: JSON.stringify(body),
+            body: JSON.stringify(
+              resume
+                ? {
+                    version: resume.analysis_resume,
+                    generation_id: body.generation_id,
+                    llm_profile_id: body.llm_profile_id,
+                  }
+                : body
+            ),
           });
           if (!response.ok) {
             rejected = true;
@@ -331,9 +352,10 @@ export function createGenerationManager({
             if (event.type === 'status') view.status = event.text;
             if (event.type === 'artifacts') answer.artifacts = event.artifacts;
             if (event.type === 'analysis') answer.analysis = event.queries;
+            if (event.type === 'analysis_resume') answer.analysis_resume = event.version;
             if (event.type === 'field_previews') answer.field_previews = event.records;
             if (event.type === 'clarification') answer.clarification = event.clarification;
-            if (event.type === 'done') answer.status = 'complete';
+            if (event.type === 'done') answer.status = event.partial ? 'partial' : 'complete';
             if (event.type === 'cancelled') {
               view.cancelled = true;
               answer.status = 'cancelled';
@@ -356,7 +378,8 @@ export function createGenerationManager({
             try {
               await poll(view);
               if (
-                view.messages.length > previous.length &&
+                (view.messages.length > previous.length ||
+                  (resume && view.messages.at(-1)?.analysis_resume !== resume.analysis_resume)) &&
                 !view.messages.some((m) => m.status === 'streaming')
               )
                 return;
@@ -366,6 +389,15 @@ export function createGenerationManager({
           }
           if (rejected || !view.conversation || view.messages.length <= previous.length) {
             view.messages = previous;
+            if (resume) {
+              // Another viewer can have consumed this checkpoint during the request.
+              try {
+                await snapshot(view);
+              } catch {
+                /* The original resume error is shown below. */
+              }
+              throw error;
+            }
             view.draft = view.draft || (body.clarification_reply ? '' : body.content);
             view.images = [
               ...submittedImages,

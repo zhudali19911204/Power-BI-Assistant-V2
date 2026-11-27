@@ -304,6 +304,48 @@ def test_incomplete_model_response_cannot_mark_the_dictionary_fully_built(setup,
     assert all(e['state']=='unresolved' for e in p['entries'])
 
 
+@pytest.mark.parametrize('resolution',['incremental','manual'])
+def test_malformed_batch_isolated_while_following_batches_finish_and_resume_only_the_bad_id(setup,monkeypatch,resolution):
+    app,client,model,ctx,conv=setup
+    ctx.tables['Fact'] += [Column(f'Column{i}','string','Fact') for i in range(25)]
+    model.update(context=asdict(ctx), fingerprint=fingerprint(ctx))
+    app.state.db.execute('UPDATE models SET context=?,fingerprint=? WHERE id=?',
+                         (encode(model['context']),model['fingerprint'],model['id']))
+    service=app.state.semantics
+    bad=object_id('column','Fact','Amount')
+    manual=object_id('column','Dim Cost Center','CC Number')
+    service.edit(model['id'],manual,SemanticEdit(meaning='用户核实的编号',confirmed=True))
+    class Faulty(DictionaryProvider):
+        def stream(self,system,messages,**opts):
+            payload=json.loads(messages[0].content)
+            assert 'object_definitions' not in payload, 'An incomplete dictionary reached the overview'
+            self.calls.append((system,payload))
+            if len(payload['objects'])==20:
+                yield '{'
+                return
+            yield encode({'entries':[{'id':e['id'],'meaning':'本批的建议','unit':None if e['id']==bad else ''}
+                                     for e in payload['objects']]})
+    provider=Faulty()
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    service.start(model['id'],app.state.settings,mode='full')
+    partial=wait_ready(app,model['id'])
+    assert partial['status']=='inventory' and partial['pending_ids']==partial['rebuild_remaining']==[bad]
+    assert partial['coverage']==len(partial['entries'])-1
+    assert next(e for e in partial['entries'] if e['id']==manual)['meaning']=='用户核实的编号'
+    sizes=[len(payload['objects']) for _,payload in provider.calls]
+    assert sizes[:2]==[20,20] and sizes[2]<20 and len(sizes)<=9
+    if resolution=='manual':
+        complete=service.edit(model['id'],bad,SemanticEdit(meaning='手工核实的金额',confirmed=True))
+        assert complete['pending_ids']==complete['rebuild_remaining']==[] and complete['coverage']==len(complete['entries'])
+        return
+    provider=DictionaryProvider()
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    service.start(model['id'],app.state.settings)
+    complete=wait_ready(app,model['id'])
+    assert complete['status']=='ready' and complete['pending_ids']==complete['rebuild_remaining']==[]
+    assert [e['id'] for _,payload in provider.calls for e in payload['objects']]==[bad]
+
+
 def test_all_definitions_can_be_confirmed_manually_without_external_semantic_generation(setup):
     app,client,model,ctx,conv=setup
     p=app.state.semantics.ensure(model,ctx)

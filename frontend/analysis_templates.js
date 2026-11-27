@@ -90,6 +90,7 @@ export async function mountAnalysisTemplates(
     error: tr('未完成'),
     cancelled: tr('已中止'),
     clarification: tr('待确认口径'),
+    partial: tr('已保留进度，可继续'),
   };
   const request = (path, method, body) => api(path, { method, body: JSON.stringify(body) });
   function feedback(message, error = false) {

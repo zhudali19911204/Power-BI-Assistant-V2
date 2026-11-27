@@ -54,6 +54,9 @@ class Database:
                     automatic INTEGER NOT NULL DEFAULT 1, through_rowid INTEGER NOT NULL DEFAULT 0,
                     folded_count INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '[]');
                 CREATE INDEX IF NOT EXISTS messages_by_conversation ON messages(conversation_id);
+                CREATE TABLE IF NOT EXISTS analysis_checkpoints (
+                    message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                    version TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS message_clarifications (
                     message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL, created_at TEXT NOT NULL);

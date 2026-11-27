@@ -166,10 +166,11 @@ def test_other_references_require_correction_before_executing_a_resumed_query(ca
 def test_repeated_unverified_reference_reports_missing_evidence_and_runs_no_query(case):
     query = json.loads(plan(BUSINESS_DAX))
     query['scope_resolutions'] = [{'field': 'F1', 'value': '0887', 'basis': '沿用之前的编号'}]
-    events = case.run([encode(query), encode(query)])
-    assert events[-1]['type'] == 'error' and not case.amounts
-    assert '本轮没有字段核对记录' in events[-1]['text']
-    assert '格式不符合要求' not in events[-1]['text']
+    events = case.run([encode(query)] * 3)
+    assert events[-1] == {'type': 'done', 'partial': True} and not case.amounts
+    message = latest(case.client, case.conv)
+    assert '本轮没有字段核对记录' in message['content'] and message['analysis_resume']
+    assert '格式不符合要求' not in message['content']
 
 
 def test_new_field_check_owns_its_label_after_confirmation(case, monkeypatch):
@@ -656,7 +657,7 @@ def test_repeated_partial_filter_does_not_ask_user_to_repeat_a_resolved_group(ca
     s.values[field_ref(CC,'CC Number')]=CENTERS
     group={'term':'46000','candidates':[{'table':CC,'column':'CC Number'}]}
     partial=plan(f'EVALUATE CALCULATETABLE(ROW("A",1),TREATAS({{"46000"}},{field_ref(CC,"CC Number")}))')
-    s.run([encode({'scope_checks':[group]}),partial,partial],text='成本中心 '+' '.join(CENTERS))
+    s.run([encode({'scope_checks':[group]}),partial,partial,partial],text='成本中心 '+' '.join(CENTERS))
     message=latest(s.client,s.conv)
     assert not message['clarification'] and not s.amounts and '遗漏同组筛选原值' in message['content']
 

@@ -1,5 +1,11 @@
 // Chinese source messages are the keys. Numbered placeholders preserve runtime values verbatim.
 export const english = {
+  "继续未完成部分": "Resume remaining work",
+  "已保留进度，可继续": "Progress saved. Ready to resume",
+  "待继续": "Ready to resume",
+  "模型或口径已变化，请按当前模型重新分析。": "The model or analysis scope changed. Start a new analysis using the current model.",
+  "续跑记录已更新，请刷新会话后查看最新进度": "The saved progress has changed. Refresh the conversation to see the latest results.",
+  "模型连接、快照或已确认口径已变化，请根据当前模型重新分析": "The model connection, snapshot, or confirmed definitions changed. Start a new analysis using the current model.",
   "语言偏好未保存，重启后请重新选择。": "Could not save the language preference. Select it again after restarting.",
   "复制": "Copy",
   "起始需求": "Initial request",

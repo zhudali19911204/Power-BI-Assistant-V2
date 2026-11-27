@@ -5,6 +5,7 @@ import time
 from fastapi import HTTPException
 
 from .analysis_budget import evidence_context
+from .cancellation import GenerationCancelled
 from .clarifications import card_markdown
 from .database import encode
 from .engine.llm.base import ChatMessage
@@ -12,8 +13,12 @@ from .engine.llm.diagnostics import GenerationReport
 from .language import OPEN_QUESTION_LABELS, wording
 
 
+class EmptySummary(HTTPException):
+    """The provider completed without producing conclusion text."""
+
+
 def summarize(run, planner, queries):
-    successful = [record for record in run.evidence if record["ok"]]
+    successful = [record for record in run.evidence if record["ok"] and record.get("run_verified")]
     if not successful:
         text = wording(
             "### 查询未完成\n\n本轮未取得可用于分析的数据，无法据此给出数值结论。请查看下方具体失败原因；格式错误或查询错误不代表模型中没有数据。",
@@ -42,7 +47,29 @@ def summarize(run, planner, queries):
         run.display += note
         yield encode({"type": "delta", "text": note}) + "\n"
     else:
-        yield from stream_conclusion(run, planner, queries, successful)
+        try:
+            yield from stream_conclusion(run, planner, queries, successful)
+        except GenerationCancelled:
+            raise
+        except Exception as exc:
+            if not (planner.format_detail or run.checkpoint):
+                raise
+            sources = wording("、", ", ").join(
+                f"[{q['label']}] {q['title']} ({q['row_count']})" for q in successful
+            )
+            text = (
+                wording(
+                    "\n\n模型总结未完成，以下查询已取得实际结果（括号内为保留行数）：",
+                    "\n\nThe summary could not finish. Saved results (row counts): ",
+                )
+                + sources
+            )
+            if queries.unanswered:
+                text += wording("。待完成：", ". Remaining: ") + wording("、", ", ").join(queries.unanswered)
+            run.display += text
+            yield encode({"type": "delta", "text": text}) + "\n"
+            if not isinstance(exc, EmptySummary):
+                raise
     if not successful and queries.stop_reason:
         note = "\n\n" + queries.stop_reason + wording("。", ".")
         run.display += note
@@ -55,7 +82,7 @@ def summarize(run, planner, queries):
 
 def stream_conclusion(run, planner, queries, successful):
     yield run.status("已取得真实数据，正在形成分析结论")
-    summary_evidence = evidence_context(run.evidence)
+    summary_evidence = evidence_context([r for r in run.evidence if not r["ok"] or r.get("run_verified")])
     summary = run.messages[:] + [
         ChatMessage(
             "user",
@@ -76,6 +103,7 @@ def stream_conclusion(run, planner, queries, successful):
                         "stop_reason": queries.stop_reason,
                         "remaining_questions": queries.unanswered,
                         "clarification": queries.pending_card,
+                        "minimal_step": planner.minimal_used,
                     },
                 }
             ),
@@ -135,7 +163,8 @@ def stream_conclusion(run, planner, queries, successful):
                 if summary_attempt
                 else ""
             )
-            raise HTTPException(
+            error_type = EmptySummary if retryable else HTTPException
+            raise error_type(
                 422,
                 report.empty_message()
                 + retried

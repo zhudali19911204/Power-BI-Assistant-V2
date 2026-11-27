@@ -157,6 +157,8 @@ export function createMessageRenderer({ root, scroll, label, content, artifacts,
           clarification: message.clarification,
           clarificationDraft: message.clarificationDraft,
           clarificationLocked: message.clarificationLocked,
+          showResume: message.showResume,
+          resumeScopeChanged: message.resume_scope_changed,
         });
         if (record.artifactSource !== artifactSource) {
           patchHtml(record.cards, artifacts(message));

@@ -20,11 +20,13 @@ export function createWorkspacePanels(state, workspace, renderBusy) {
               pending = last?.status === 'complete' && last.clarification && !last.clarification.answered;
             const badge = busy
               ? `<small class="history-task running">${tr('生成中')}</small>`
-              : pending
-                ? `<small class="history-task clarification">${tr('待确认')}</small>`
-                : view?.attention
-                  ? `<small class="history-task ${view.attention}">${view.attention === 'error' ? tr('查看错误') : view.attention === 'cancelled' ? tr('已中止') : tr('已完成')}</small>`
-                  : '';
+              : last?.analysis_resume
+                ? `<small class="history-task clarification">${tr('待继续')}</small>`
+                : pending
+                  ? `<small class="history-task clarification">${tr('待确认')}</small>`
+                  : view?.attention
+                    ? `<small class="history-task ${view.attention}">${view.attention === 'error' ? tr('查看错误') : view.attention === 'cancelled' ? tr('已中止') : tr('已完成')}</small>`
+                    : '';
             return `<div class="history-item ${current ? 'active' : ''}"><button class="history-name" data-conversation="${c.id}"${current ? ' aria-current="true"' : ''} title="${esc(c.title)}">${icon(MODES[c.mode]?.historyIcon || 'chat')}<span>${esc(c.title)}</span>${badge}</button><button class="icon-button" data-delete-conversation="${c.id}" aria-label="${tr('删除 {0}', esc(c.title))}" ${busy || view?.preparing ? `disabled title="${tr('发送或生成完成后可删除')}"` : ''}>${icon('trash')}</button></div>`;
           })
           .join('')

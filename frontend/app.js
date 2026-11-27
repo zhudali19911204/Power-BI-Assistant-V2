@@ -165,7 +165,7 @@ const generation = createGenerationManager({
       messagePaint.flush();
     } else
       toast(
-        `“${view.conversation?.title || tr('后台会话')}”${view.cancelled ? tr('已中止生成') : failed ? tr('生成未完成，请查看原因') : view.messages.at(-1)?.clarification ? tr('有一项口径待确认') : tr('已生成完成')}`,
+        `“${view.conversation?.title || tr('后台会话')}”${view.cancelled ? tr('已中止生成') : failed ? tr('生成未完成，请查看原因') : view.messages.at(-1)?.analysis_resume ? tr('已保留进度，可继续') : view.messages.at(-1)?.clarification ? tr('有一项口径待确认') : tr('已生成完成')}`,
         failed
       );
     void reloadHistory().catch((error) => toast(error.message, true));
@@ -633,6 +633,17 @@ document.addEventListener(
         el.dataset.previewTable,
         el.dataset.previewColumn,
         el.dataset.previewModel || state.view.model?.id
+      );
+      return;
+    }
+    if (el.dataset.resumeAnalysis) {
+      const view = state.view,
+        message = view.messages.at(-1);
+      if (!available() || message?.id !== el.dataset.resumeAnalysis || !message.showResume) return;
+      await generation.send(
+        view,
+        { language, llm_profile_id: state.settings.active_profile_id || null },
+        { resume: message }
       );
       return;
     }

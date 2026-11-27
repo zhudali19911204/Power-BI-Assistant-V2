@@ -91,12 +91,68 @@ def test_repeated_omission_stops_before_execution(setup, monkeypatch):
     app, client, model, ctx, conv = setup
     ready(app, model, ctx)
     client.post(url(model, '/items'), json=convention())
-    provider = Provider([plan(TOTAL), plan(TOTAL)])
+    provider = Provider([plan(TOTAL)] * 3)
     monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
     monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda *args: pytest.fail('Unchecked query ran'))
     events = send(client, conv, '汇总费用')
-    assert events[-1]['type'] == 'error' and '分析约定' in events[-1]['text']
-    assert len(provider.calls) == 2
+    assert events[-1] == {'type': 'done', 'partial': True}
+    record = client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert '分析约定' in record['content'] and record['analysis_resume']
+    assert len(provider.calls) == 3 and not record['analysis']
+
+
+@pytest.mark.parametrize('failed_rule', [1, 2])
+def test_two_rejections_execute_only_queries_with_all_confirmed_filters(setup, monkeypatch, failed_rule):
+    app, client, model, ctx, conv = setup
+    ready(app, model, ctx)
+    other = object_id('column', 'Dim Material', 'Material Code')
+    for body in (convention(), convention(title='默认材料', filters=[{'object_id':other,'operator':'in','values':['P01']}])):
+        assert client.post(url(model, '/items'), json=body).is_success
+    material = 'TREATAS({"P01"},\'Dim Material\'[Material Code])'
+    full = FULL.replace('[Actual Amount],', '[Actual Amount],'+material+',')
+    bad = FULL if failed_rule==2 else f'EVALUATE ROW("金额",CALCULATE([Actual Amount],{material}))'
+    plans = encode({'queries':[{'title':'基础', 'dax':full}, {'title':'分项', 'dax':bad}]})
+    provider = Provider([plans, plans, '基础结果 [Q1]'])
+    executed = []
+    monkeypatch.setattr(app.state.settings, 'provider', lambda: provider)
+    monkeypatch.setattr(app.state.chat.analysis, 'execute', lambda _, dax: (executed.append(dax), result())[1])
+    assert send(client, conv, '分析 P01 费用')[-1]['partial']
+    assert executed==[full] and len(provider.calls)==3
+    record=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert record['analysis_resume'] and '分项' in record['content']
+
+
+def test_same_convention_and_unchanged_filter_evidence_do_not_spend_another_correction(setup, monkeypatch):
+    from tests.test_field_discovery import profile
+    app, client, model, ctx, conv = setup
+    ready(app, model, ctx)
+    client.post(url(model, '/items'), json=convention())
+    field=encode({'field_checks':[{'table':'Dim Material', 'column':'Material Code'}]})
+    provider=Provider([plan(TOTAL), field, plan(TOTAL), plan(FULL), '结果 [Q1]'])
+    monkeypatch.setattr(app.state.settings,'provider',lambda:provider)
+    monkeypatch.setattr(app.state.chat.analysis.fields,'preview',lambda *a,**k:profile())
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda *a:result())
+    assert send(client,conv,'汇总费用')[-1]=={'type':'done'}
+    record=client.get(f"/api/conversations/{conv['id']}/messages").json()[-1]
+    assert [g['stage'] for g in record['generations']]==['analysis_plan']*3+['analysis_minimal','analysis_summary']
+    assert sum(g['diagnostic'].get('format_validation',{}).get('correction_attempt',0) for g in record['generations'])==1
+
+
+def test_auto_column_uses_verified_text_type_for_quoted_filters(setup, monkeypatch):
+    app, client, model, ctx, conv = setup
+    ctx.tables['Dim Cost Center'][0].dtype = 'auto'
+    profile = ready(app, model, ctx)
+    profile['metadata_status'] = 'read'
+    next(e for e in profile['entries'] if e['id'] == FIELD)['facts']['actual_dtype'] = 'string'
+    app.state.semantics._store(model['id'], profile)
+    client.post(url(model, '/items'), json=convention(filters=[{'object_id':FIELD, 'operator':'in', 'values':['2026']}]))
+    dax = FULL.replace('"0257","0810"', '"2026"')
+    provider = Provider([plan(dax.replace('"2026"', '2026')), plan(dax), '费用来自 [Q1]'])
+    executed = []
+    monkeypatch.setattr(app.state.settings,'provider',lambda: provider)
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda _, q: (executed.append(q),result())[1])
+    assert send(client,conv,'汇总费用')[-1]=={'type':'done'} and executed == [dax]
+    assert '经本模型元数据核对的实际类型' in provider.calls[0][0]
 
 
 def test_repair_rechecks_the_filter_and_only_runs_the_corrected_query(setup, monkeypatch):

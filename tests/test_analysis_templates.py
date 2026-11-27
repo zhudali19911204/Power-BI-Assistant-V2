@@ -106,6 +106,62 @@ def test_repeated_runs_query_fresh_data_and_preserve_parameters_and_old_results(
     assert all(r['status'] == 'complete' for r in runs)
 
 
+def test_partial_first_definition_resumes_with_original_template_parameters(setup, monkeypatch):
+    from tests.test_analysis import Provider as Scripted
+    app, client, model, original, totals = setup
+    template = create(client, model)
+    first = {'title': '基础', 'dax': 'EVALUATE ROW("Month",{{月份}})'}
+    malformed = encode({'queries': [first, {'title': '分项'}]})
+    provider = Scripted([malformed, malformed, encode({'queries':[first]})])
+    monkeypatch.setattr(app.state.settings,'provider',lambda *args:provider)
+    response, request = run(client, template, model)
+    row = finish(app,request['request_id'])
+    cid = response.json()['conversation']['id']
+    assert row['status']=='partial' and not json.loads(row['snapshot'])['queries']
+    message = client.get(f'/api/conversations/{cid}/messages').json()[-1]
+    assert not message['analysis'] and message['analysis_resume']
+    monkeypatch.setattr(app.state.settings,'provider',lambda *args:original)
+    resumed = client.post(f"/api/conversations/{cid}/messages/{message['id']}/resume",
+                          json={'version':message['analysis_resume']})
+    assert resumed.is_success and json.loads(resumed.text.splitlines()[-1])=={'type':'done'}
+    record = client.get(f'/api/conversations/{cid}/messages').json()[-1]
+    assert record['analysis'][0]['parameters']=={'P1':'2026-10'} and record['id']==message['id']
+    assert finish(app,request['request_id'])['status']=='finished'
+
+
+def test_interrupted_template_resume_skips_the_completed_bound_command(setup, monkeypatch):
+    from backend.cancellation import GenerationCancelled
+    from tests.test_analysis import Provider as Scripted, result
+    app, client, model, _, _ = setup
+    template = create(client,model)
+    provider = Scripted(['{}']*3)
+    monkeypatch.setattr(app.state.settings,'provider',lambda *args:provider)
+    response, request=run(client,template,model)
+    cid=response.json()['conversation']['id']
+    assert finish(app,request['request_id'])['status']=='partial'
+    base=f'/api/conversations/{cid}/messages'
+    def resume_current():
+        last=client.get(base).json()[-1]
+        return client.post(f"{base}/{last['id']}/resume",json={'version':last['analysis_resume']})
+    queries=[{'title':name,'dax':'EVALUATE ROW("'+name+'",{{月份}})'} for name in ('总额','明细')]
+    provider=Scripted([encode({'queries':queries})])
+    completed=[]
+    def interrupt_after_first(model,dax,parameters):
+        if completed:raise GenerationCancelled()
+        completed.append((dax,parameters))
+        return result()
+    monkeypatch.setattr(app.state.chat.analysis,'execute',interrupt_after_first)
+    assert json.loads(resume_current().text.splitlines()[-1])['type']=='cancelled'
+    first=client.get(base).json()[-1]['analysis']
+    assert len(first)==1 and first[0]['parameters']=={'P1':'2026-10'}
+    provider=Scripted(['见 [Q1]、[Q2]'])
+    monkeypatch.setattr(app.state.chat.analysis,'execute',lambda m,q,p:(completed.append((q,p)),result())[1])
+    assert json.loads(resume_current().text.splitlines()[-1])=={'type':'done'}
+    records=client.get(base).json()[-1]['analysis']
+    assert records[0]==first[0] and [q['template_dax'] for q in records]==[q['dax'] for q in queries]
+    assert completed==[(r['dax'],{'P1':'2026-10'}) for r in records]
+
+
 def test_duplicate_run_request_does_not_repeat_generation_even_while_active(setup, monkeypatch):
     app, client, model, provider, totals = setup
     entered, release = threading.Event(), threading.Event()

@@ -7,6 +7,7 @@ from .cancellation import GenerationCancelled, check_cancelled
 from .clarifications import ClarificationQuestion, make_card, save_card
 from .database import encode, now, uid
 from .field_discovery import (
+    MAX_FIELD_SEARCHES,
     cached_check,
     check_key,
     clarification_field_sources,
@@ -42,6 +43,7 @@ class AnalysisFields:
         self.dictionary = None
         self.bindings = []
         self.rounds = 0
+        self.unread_searches = []
 
     def grouped_scopes(self):
         groups = scope_evidence(self.records)
@@ -242,6 +244,8 @@ class AnalysisFields:
             if not r.get("scope_term")
         ]
         feedback = {"scope_evidence": list(self.grouped_scopes().values()), "field_observations": profiles}
+        if self.unread_searches:
+            feedback["unread_field_searches"] = self.unread_searches
         if self.reused:
             feedback["prior_field_profiles"] = [
                 {
@@ -284,12 +288,19 @@ class AnalysisFields:
     def read_profiles(self, pending):
         run = self.run
         reason = ""
+        skipped_reason = ""
         self.rounds += 1
-        for key, check in pending:
+        for index, (key, check) in enumerate(pending):
             if cached_check(check, self.records) is not None:
                 continue
-            reason = field_stop_reason(check, self.profile_records(), run.budget)
+            profiles = self.profile_records()
+            reason = field_stop_reason(check, profiles, run.budget)
             if reason:
+                if sum((r["table"], r["column"]) == key[:2] for r in profiles) >= MAX_FIELD_SEARCHES:
+                    self.unread_searches.append(check.model_dump())
+                    skipped_reason, reason = reason, ""
+                    continue
+                self.unread_searches.extend(c.model_dump() for _, c in pending[index:])
                 break
             field_timeout = run.remaining(30)
             label = f"F{len(self.records) + 1}"
@@ -344,5 +355,6 @@ class AnalysisFields:
             if record.get("connection_error"):
                 raise HTTPException(409, record["error"])
             if reason:
+                self.unread_searches.extend(c.model_dump() for _, c in pending[index + 1 :])
                 break
-        return reason
+        return reason or skipped_reason

@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .database import encode, now
 from .engine.context.live_source import _LiveSession, find_adomd_dll, find_instances
 
+MAX_SEARCH_TERMS = 3
+
 
 class FieldPreviewInput(BaseModel):
     table: str = Field(min_length=1, max_length=300)
@@ -29,7 +31,7 @@ class CandidateField(BaseModel):
 
 
 class FieldCheck(CandidateField):
-    search_terms: list[str] = Field(default_factory=list, max_length=3)
+    search_terms: list[str] = Field(default_factory=list, max_length=MAX_SEARCH_TERMS)
     reason: str = Field(default='', max_length=240)
     related_term: str = Field(default='', max_length=120)
 

@@ -73,6 +73,10 @@ def query_key(dax):
     return "".join(parts)
 
 
+def execution_key(dax, parameters=None):
+    return query_key(dax), tuple(sorted((parameters or {}).items()))
+
+
 def _prompt_rows(rows, columns):
     """Omit repeated keys only when each displayed row can be reconstructed exactly."""
     if not rows or not isinstance(columns, list) or not columns:

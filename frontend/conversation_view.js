@@ -27,6 +27,12 @@ export function createConversationView(getView) {
       fieldEvidence(m.field_previews || []) +
       clarificationCard(m) +
       analysisEvidence(m.analysis || []) +
+      (m.resume_scope_changed
+        ? `<p class="notice">${tr('模型或口径已变化，请按当前模型重新分析。')}</p>`
+        : '') +
+      (m.showResume
+        ? `<button type="button" class="secondary-button" data-resume-analysis="${esc(m.id)}">${tr('继续未完成部分')}</button>`
+        : '') +
       (m.artifacts || []).map(artifactCard).join('') +
       saveTemplateButton(m),
     status: streamStatus,
@@ -59,7 +65,16 @@ export function createConversationView(getView) {
       !view.preparing &&
       !view.syncing;
     $('#prompt-actions').hidden = !showWelcome;
-    for (const message of view.messages)
+    for (const message of view.messages) {
+      message.showResume = !!(
+        message.analysis_resume &&
+        message === view.messages.at(-1) &&
+        !message.model_stale &&
+        !view.busy &&
+        !view.loading &&
+        !view.preparing &&
+        !view.syncing
+      );
       if (message.clarification) {
         message.clarificationDraft = view.clarificationDrafts[message.id] || {};
         message.clarificationLocked = !!(
@@ -73,6 +88,7 @@ export function createConversationView(getView) {
           message !== view.messages.at(-1)
         );
       }
+    }
     messageRenderer.render(view.messages, {
       conversation: view.key,
       language,

@@ -16,6 +16,7 @@ const states = { confirmed: '用户已确认', candidate: '候选含义 · 待�
 const kinds = { table: '表', column: '字段', measure: '度量值' };
 export function semanticSummary(p) {
   const confirmed = p.entries.filter((entry) => entry.state === 'confirmed');
+  const remaining = new Set(p.rebuild_remaining || []);
   return {
     status: p.status,
     stage: p.stage,
@@ -36,7 +37,7 @@ export function semanticSummary(p) {
       p.status === 'ready' ||
       !!p.has_history ||
       p.entries.some((e) => ['candidate', 'confirmed'].includes(e.state) || e.previous_definition),
-    pending: p.entries.filter((e) => e.state === 'unresolved').length,
+    pending: p.entries.filter((e) => e.state === 'unresolved' || remaining.has(e.id)).length,
     ...(p.dictionary_notice ? { dictionary_notice: p.dictionary_notice } : {}),
   };
 }

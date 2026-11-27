@@ -75,13 +75,15 @@ def test_initial_plan_correction_uses_field_feedback_and_records_safe_diagnostic
     assert not app.state.chat.locks[conv['id']].locked()
 
 
-def test_invalid_initial_plan_stops_after_one_correction_without_running_queries(setup, monkeypatch):
-    app, client, conv, provider, queries = wire(setup, monkeypatch, ['bad json', 'still bad'])
+def test_invalid_initial_plan_preserves_progress_after_one_correction_and_one_minimal_step(setup, monkeypatch):
+    app, client, conv, provider, queries = wire(setup, monkeypatch, ['bad json', 'still bad', '{}'])
     events = send(client, conv)
-    assert events[-1]['type'] == 'error'
-    assert len(provider.calls) == 2 and queries == []
-    assert '查询规划回复格式不符合要求' in events[-1]['text'] and '已纠正一次' in events[-1]['text']
-    assert 'ValidationError' not in saved(client, conv)['content']
+    assert events[-1] == {'type': 'done', 'partial': True}
+    record = saved(client, conv)
+    assert len(provider.calls) == 3 and queries == [] and record['analysis_resume'] and not record['clarification']
+    assert record['status'] == 'partial' and '查询规划回复格式不符合要求' in record['content']
+    assert '0 项成功查询' in record['content'] and 'ValidationError' not in record['content']
+    assert 'still bad' not in provider.calls[2][1][-1].content
 
 
 def test_dax_repair_gets_the_same_format_correction_then_reexecutes_in_engine(setup, monkeypatch):

@@ -1,9 +1,16 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from ..analysis_checkpoint import load_checkpoint, original_request
 from ..database import now, uid
 from ..powerbi import context_from_dict
-from ..schemas import CancelGenerationInput, ContextPreference, ConversationInput, MessageInput
+from ..schemas import (
+    AnalysisResumeInput,
+    CancelGenerationInput,
+    ContextPreference,
+    ConversationInput,
+    MessageInput,
+)
 from ..streaming import BackgroundStream
 
 
@@ -86,6 +93,21 @@ def conversation_routes(db, chat, powerbi, settings, templates):
         task = BackgroundStream(source)
         return StreamingResponse(
             task.events(), media_type="application/x-ndjson", headers={"X-Accel-Buffering": "no"}
+        )
+
+    @router.post("/conversations/{conversation_id}/messages/{message_id}/resume")
+    def resume_analysis(conversation_id: str, message_id: str, body: AnalysisResumeInput):
+        saved = load_checkpoint(db, conversation_id, message_id, body.version)
+        request = original_request(saved, body)
+        source = (
+            templates.resume_analysis(conversation_id, request, saved)
+            if saved["template"]
+            else chat.begin(conversation_id, request, settings, checkpoint=saved)
+        )
+        return StreamingResponse(
+            BackgroundStream(source).events(),
+            media_type="application/x-ndjson",
+            headers={"X-Accel-Buffering": "no"},
         )
 
     @router.post("/messages/{message_id}/validate")

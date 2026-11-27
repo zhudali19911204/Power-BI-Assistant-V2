@@ -341,6 +341,15 @@ test('actual app navigation keeps background streams, drafts and independent sen
       record.emit({type:'cancelled',text:'已中止'});record.controller.close();return json({running:false});
     }
     if(path.endsWith('/generation'))return json({running:false});
+    if(path.endsWith('/messages/partial-ui/resume')&&opts.method==='POST'){
+      const body=JSON.parse(opts.body), partial=messages.get(id).at(-1);
+      assert.equal(body.version,partial.analysis_resume);
+      assert.equal(body.content,undefined);
+      delete partial.analysis_resume;
+      Object.assign(partial,{content:'已补齐分月明细 [Q2]',status:'complete'});
+      return new Response([{type:'start',message_id:partial.id},{type:'delta',text:partial.content},{type:'done'}]
+        .map(event=>JSON.stringify(event)+'\n').join(''));
+    }
     if(path.endsWith('/messages')&&opts.method==='POST') {
       const body=JSON.parse(opts.body);let controller;
       const response=new Response(new ReadableStream({start(value){controller=value;}}));
@@ -841,6 +850,17 @@ test('actual app navigation keeps background streams, drafts and independent sen
     assert.equal($('[data-template-editor-preview]').textContent,'分析 2026-11 的金额');
     await click('#modal-close');await click('#template-return');
     assert.equal($('#prompt').value,'尚未发送的草稿');
+    const previous=messages.get('c1');
+    previous.push({id:'partial-ui',role:'assistant',content:'已保留总额 [Q1]',status:'partial',analysis_resume:'checkpoint1'});
+    const savedCount=previous.length;
+    await click('[data-conversation="c1"]');
+    assert.equal($('[data-resume-analysis="partial-ui"]').textContent,'继续未完成部分');
+    draft('留给下一题的草稿');
+    await click('[data-resume-analysis="partial-ui"]');await tick();await tick();
+    assert.equal(messages.get('c1').length,savedCount);
+    assert.ok($('#messages').textContent.includes('已补齐分月明细 [Q2]'));
+    assert.equal($('[data-resume-analysis]'),null);
+    assert.equal($('#prompt').value,'留给下一题的草稿');
   } finally {
     Object.defineProperty(selectProto,'value',valueDescriptor);
     for(const [key,descriptor] of Object.entries(savedGlobals)){

@@ -18,6 +18,7 @@ from .reconnection import RELEASED_DETAIL
 from .validation import candidates, validate
 from .streaming import completion_events
 from .analysis import AnalysisService
+from .analysis_checkpoint import claim_checkpoint, scope_stamp
 from .clarifications import QUESTION_RULES, resolve_answer
 from .language import language_scope, reply_instruction, wording
 from .images import ImageStore, IMAGE_RULES, multimodal_error
@@ -140,7 +141,7 @@ class ChatService:
                         self.cancellations.pop(conv['id'], None)
 
     def messages(self, conversation_id):
-        self.conversation(conversation_id)
+        conv = self.conversation(conversation_id)
         rows = self.db.all("SELECT rowid AS message_rowid,* FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (conversation_id,))
         sync=self.model_sync(conversation_id)
         for message in rows:
@@ -149,6 +150,8 @@ class ChatService:
         lock = self.locks.get(conversation_id)
         active = bool(lock and lock.locked())
         last_user = max((i for i, m in enumerate(rows) if m['role'] == 'user'), default=-1)
+        checkpoint = self.db.one("SELECT version,json_extract(payload,'$.source') AS source "
+                                 "FROM analysis_checkpoints WHERE message_id=?", (rows[-1]['id'],)) if rows else None
         for index, message in enumerate(rows):
             if message['status'] == 'streaming':
                 if not active or self.active_messages.get(conversation_id) != message['id']:
@@ -165,14 +168,21 @@ class ChatService:
             message['images']=self.images.metadata(message['id'])
             message['generations']=generation_records(self.db,message['id'])
             message['field_previews']=self.analysis.field_records(message['id'])
+            if checkpoint and index == len(rows)-1 and message['status'] != 'streaming':
+                model = self.powerbi.get(conv['model_id'])
+                if message['model_stale'] or model.get('snapshot_released') or json.loads(checkpoint['source']) != scope_stamp(self.db,conversation_id,model):
+                    message['resume_scope_changed'] = True
+                else:
+                    message['analysis_resume'] = checkpoint['version']
             record=self.db.one('SELECT payload FROM message_clarifications WHERE message_id=?',(message['id'],))
             message['clarification']=(json.loads(record['payload']) | {'answered':index<last_user}) if record else None
             if record:message['clarification'].pop('_field_sources',None)
         return rows
 
-    def begin(self, conversation_id, body, settings, *, template=None):
+    def begin(self, conversation_id, body, settings, *, template=None, checkpoint=None):
         conv = self.conversation(conversation_id)
-        self.images.ensure_available(body.image_ids)
+        if not checkpoint:
+            self.images.ensure_available(body.image_ids)
         model = self.powerbi.get(conv["model_id"])
         if conv['mode']=='analysis' and model['source']!='desktop':
             raise HTTPException(409,'数据分析需要连接真实的 Power BI Desktop 模型，示例或离线结构不能用于取数')
@@ -207,6 +217,13 @@ class ChatService:
                 with self.powerbi.lock:
                     if self.db.one('SELECT 1 FROM released_snapshots WHERE model_id=?',(model['id'],)):
                         raise HTTPException(409,RELEASED_DETAIL)
+            if checkpoint:
+                if self.semantics:
+                    self.semantics.require_ready(model,ctx)
+                claim_checkpoint(self.db,conversation_id,model,checkpoint)
+                provider = settings.provider(body.llm_profile_id) if body.llm_profile_id else settings.provider()
+                source = self.analysis.stream(conv,model,ctx,body,provider,lock,template,checkpoint)
+                return self.cancellable_stream(conv,token,source,body.language)
             if body.clarification_reply:
                 sync=self.model_sync(conversation_id)
                 question=self.db.one('SELECT rowid AS message_rowid FROM messages WHERE id=? AND conversation_id=?',

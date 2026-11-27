@@ -415,6 +415,21 @@ class AnalysisTemplates:
     def execution(self, snapshot):
         return TemplateExecution(snapshot, lambda queries: self.pin_queries(snapshot, queries))
 
+    def resume_analysis(self, conversation_id, body, saved):
+        with self.lock:
+            row = self.db.one('SELECT * FROM analysis_template_runs WHERE conversation_id=?', (conversation_id,))
+            if not row:
+                raise HTTPException(409, '原模板运行记录不可用，请重新运行模板')
+            snapshot = json.loads(row['snapshot'])
+            if not snapshot['queries']:
+                current = self.db.one('SELECT queries_json FROM analysis_templates WHERE id=? AND revision=?',
+                                      (row['template_id'], snapshot['revision']))
+                if current and current['queries_json']:
+                    self.pin_queries(snapshot,json.loads(current['queries_json']))
+            source = self.chat.begin(conversation_id, body, self.settings, checkpoint=saved, template=self.execution(snapshot))
+            self.db.execute("UPDATE analysis_template_runs SET status='running',error='' WHERE id=?", (row['id'],))
+            return self.track(row, source)
+
     def continue_preparation(self, conversation_id, body):
         # Only an answer to an outstanding clarification can continue preparing
         # the first definition. Later, ordinary follow-ups are free-form analysis.
@@ -493,16 +508,19 @@ class AnalysisTemplates:
 
     def track(self, row, source):
         error = None
+        status = 'finished'
         try:
             for line in source:
                 event = json.loads(line)
                 if event['type'] == 'error':
                     error = HTTPException(409, event['text'])
+                if event['type'] == 'done' and event.get('partial'):
+                    status = 'partial'
                 yield line
             if error:
                 self.failed(row, error)
             else:
-                self.db.execute("UPDATE analysis_template_runs SET status='finished' WHERE id=?", (row['id'],))
+                self.db.execute("UPDATE analysis_template_runs SET status=? WHERE id=?", (status,row['id']))
         except Exception as exc:
             self.failed(row, exc)
         finally:
@@ -524,6 +542,8 @@ class AnalysisTemplates:
                 status = last['status']
             elif last.get('clarification') and not last['clarification']['answered']:
                 status = 'clarification'
+            elif last.get('analysis_resume'):
+                status = 'partial'
             elif last.get('status') == 'complete':
                 status = 'complete'
             else:

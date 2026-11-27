@@ -1,6 +1,5 @@
 """Validate analysis replies without guessing business values or rewriting DAX."""
 import json
-import re
 from typing import Annotated
 
 from fastapi import HTTPException
@@ -8,8 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 
 from .analysis_budget import MAX_BATCH_QUERIES
 from .clarifications import ClarificationQuestion
-from .fields import FieldCheck
+from .fields import MAX_SEARCH_TERMS, FieldCheck
 from .scope_checks import ScopeCheck, ScopeResolution
+from .structured_reply import ReplyFormatError as PlanFormatError
+from .structured_reply import decode_reply_object, issue
 
 MAX_SEMANTIC_QUERIES = 6
 PLAN_ACTION_RULE = ('需要查询或核对时，业务查询（queries）、字段取样或模糊搜索（field_checks）、语义与取值核对'
@@ -21,8 +22,14 @@ class QueryPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=160)
     dax: str = Field(min_length=1, max_length=16000)
+    resolves: list[Annotated[str, StringConstraints(pattern=r'^P[1-9]\d*$')]] = Field(default_factory=list, max_length=12)
     convention_exceptions: dict[str, Annotated[str, StringConstraints(
         strip_whitespace=True, min_length=1, max_length=400)]] = Field(default_factory=dict)
+
+    @field_validator('convention_exceptions', mode='before')
+    @classmethod
+    def empty_exceptions(cls, value):
+        return {} if value is None or value == [] else value
 
     @field_validator('title', 'dax')
     @classmethod
@@ -53,6 +60,27 @@ class AnalysisPlan(BaseModel):
     remaining_questions: list[str] = Field(default_factory=list, max_length=8)
     assessment: str = Field(default='', max_length=1500)
 
+    @field_validator('scope_resolutions', mode='before')
+    @classmethod
+    def single_resolution(cls, value):
+        return [value] if isinstance(value, dict) else value
+
+    @field_validator('field_checks', mode='before')
+    @classmethod
+    def group_searches(cls, checks):
+        if not isinstance(checks, list):
+            return checks
+        grouped = []
+        for check in checks:
+            terms = check.get('search_terms') if isinstance(check, dict) else None
+            if isinstance(terms, list) and len(terms) > MAX_SEARCH_TERMS and all(isinstance(t, str) for t in terms):
+                terms = list(dict.fromkeys(t.strip() for t in terms if t.strip()))
+                grouped.extend({**check, 'search_terms': terms[i:i+MAX_SEARCH_TERMS]}
+                               for i in range(0, max(1,len(terms)), MAX_SEARCH_TERMS))
+            else:
+                grouped.append(check)
+        return grouped
+
     @field_validator('remaining_questions', 'semantic_queries')
     @classmethod
     def bounded_questions(cls, values):
@@ -61,39 +89,16 @@ class AnalysisPlan(BaseModel):
         return [value.strip() for value in values]
 
 
-class PlanFormatError(ValueError):
-    def __init__(self, issues):
-        self.issues = issues[:5]
-        super().__init__('；'.join(f'{item["path"]}：{item["message"]}' for item in self.issues))
-
-
 class PlanResponseError(HTTPException):
     """A bounded format correction failed; independent query results remain usable."""
     def __init__(self, detail):
         super().__init__(422, detail)
 
 
-def issue(path, code, message):
-    return PlanFormatError([{'path': path, 'type': code, 'message': message}])
-
-
-def _unique_object(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise issue('$', 'duplicate_key', 'JSON 对象含有重复字段，请只保留一个明确的值')
-        result[key] = value
-    return result
-
-
-def _invalid_constant(value):
-    raise issue('$', 'json_constant', 'JSON 不能包含 NaN 或 Infinity')
-
-
 def _validation_issues(error):
     # Never include rejected values, query text, or model-generated unknown key names.
     fields = {'scope', 'convention_exceptions', 'clarification', 'semantic_queries', 'field_checks', 'queries', 'needs_more', 'remaining_questions',
-              'assessment', 'title', 'dax', 'table', 'column', 'search_terms', 'reason',
+              'assessment', 'title', 'dax', 'resolves', 'table', 'column', 'search_terms', 'reason',
               'topic', 'question', 'context', 'options', 'label', 'value', 'detail',
               'scope_checks', 'scope_resolutions', 'term', 'members', 'related_term', 'aliases', 'candidates', 'field', 'basis',
               'recovery', 'for_query', 'missing'}
@@ -114,26 +119,15 @@ def _validation_issues(error):
     return result
 
 
-def parse_plan(text):
-    # Only remove an outer wrapper. Never extract arbitrary braces from prose, coerce
-    # business values, repair quotes inside DAX, or accept the last duplicate key.
-    text = text.strip().lstrip('\ufeff').strip()
-    fence = re.fullmatch(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', text, re.I)
-    source = (fence[1] if fence else text).strip().lstrip('\ufeff').strip()
-    try:
-        data = json.loads(source, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
-    except PlanFormatError:
-        raise
-    except json.JSONDecodeError as exc:
-        raise issue('$', 'json_invalid', f'JSON 语法不合法（第 {exc.lineno} 行，第 {exc.colno} 列）') from exc
-    except ValueError as exc:
-        raise issue('$', 'json_invalid', 'JSON 含有无法解析的值，请使用规定的字段和类型') from exc
-    except RecursionError as exc:
-        raise issue('$', 'json_depth', 'JSON 嵌套过深，请使用规定的对象结构') from exc
+def validate_object(data):
     try:
         return AnalysisPlan.model_validate(data, strict=True)
     except ValidationError as exc:
         raise PlanFormatError(_validation_issues(exc)) from exc
+
+
+def parse_plan(text):
+    return validate_object(decode_reply_object(text))
 
 
 def validate_action(plan, stage):

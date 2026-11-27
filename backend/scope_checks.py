@@ -517,11 +517,16 @@ def repeats_confirmed_choice(plan, choice, members=()):
         return False
     decision = plan.scope_resolutions[0]
     value = choice['value'].casefold()
-    literals = {'"' + v.casefold().replace('"', '""') + '"' for v in (members or [value])}
     return (decision.field == choice['field'] and decision.value.casefold() == value
-            and all(_filter_literals(query_key(q.dax).casefold(), choice['table'], choice['column'],
-                                     keep_quotes=True, variables=bool(members), exclusions=bool(members)) == literals
-                    for q in plan.queries))
+            and applies_selected_values(plan.queries, choice['table'], choice['column'], members or [value],
+                                        exclusions=bool(members)))
+
+
+def applies_selected_values(queries, table, column, values, *, exclusions=False):
+    literals = {'"' + v.casefold().replace('"', '""') + '"' for v in values}
+    return all(_filter_literals(query_key(q.dax).casefold(), table, column, keep_quotes=True,
+                                variables=True, exclusions=exclusions, positive_only=not exclusions) == literals
+               for q in queries)
 
 
 def filter_conflict(records, groups, plan):

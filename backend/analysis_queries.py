@@ -26,7 +26,12 @@ class AnalysisQueries:
         self.run = run
         self.planner = planner
         self.initial_scope = initial_scope
-        self.executed = set()
+        self.executed = {
+            query_key(q["dax"])
+            for q in run.evidence
+            if q["ok"] and q.get("run_verified") and not q.get("parameters")
+        }
+        self.new_result = False
         self.planned_labels = {}
         self.stop_reason = ""
         self.unanswered = []
@@ -43,14 +48,14 @@ class AnalysisQueries:
             "title": title,
             "dax": query.dax,
             "attempt": attempt,
-            "batch": run.batch_count,
+            "batch": run.batch_count + run.batch_offset,
             "scope": plan.scope or self.initial_scope,
             "created_at": now(),
         }
         if run.commands:
             record["parameters"] = run.commands[run.query_count - 1].parameters
-            record["template_dax"] = run.template.queries[run.query_count - 1]["dax"]
-            record["template_title"] = run.template.queries[run.query_count - 1]["title"]
+            record["template_dax"] = run.command_definitions[run.query_count - 1]["dax"]
+            record["template_title"] = run.command_definitions[run.query_count - 1]["title"]
         if query.convention_exceptions:
             record["convention_exceptions"] = {
                 ref: {"title": self.planner.conventions[ref]["title"], "reason": reason}
@@ -58,6 +63,8 @@ class AnalysisQueries:
             }
         if plan.recovery:
             record["recovery"] = plan.recovery.model_dump()
+        if result["ok"] and query.resolves:
+            record["resolved_tasks"] = [run.resume_items[ref] for ref in query.resolves]
         run.db.execute(
             "INSERT INTO analysis_queries VALUES (?,?,?,?,?,?,?)",
             (
@@ -71,6 +78,8 @@ class AnalysisQueries:
             ),
         )
         run.evidence.append(record)
+        if result["ok"] and result.get("run_verified"):
+            self.new_result = True
 
     def work_error(self, exc):
         run = self.run
@@ -205,6 +214,7 @@ class AnalysisQueries:
                 # A malformed repair must not discard other independent queries.
                 note = f"{label}：{exc.detail}"
                 self.format_failures.append(note)
+                self.planner.pending.append(planned.title)
                 record = run.evidence[-1]
                 record.setdefault("warnings", []).append(note)
                 run.db.execute(
@@ -245,6 +255,7 @@ class AnalysisQueries:
         while plan.queries:
             check_cancelled()
             self.unanswered = plan.remaining_questions[:]
+            run.open_questions = self.unanswered or run.open_questions
             batch = []
             scheduled = set()
             for planned in plan.queries:
@@ -255,7 +266,7 @@ class AnalysisQueries:
                 if run.query_count + len(batch) >= limits.MAX_QUERIES:
                     self.unanswered.append(planned.title)
                     continue
-                label = f"Q{run.query_count + len(batch) + 1}"
+                label = f"Q{run.query_offset + run.query_count + len(batch) + 1}"
                 self.planned_labels[label] = planned.title
                 batch.append((label, planned))
             if not batch:
@@ -372,6 +383,9 @@ class AnalysisQueries:
                     )
             except GenerationCancelled:
                 raise
+            except PlanResponseError as exc:
+                self.format_failures.append(exc.detail)
+                break
             except Exception as exc:
                 self.stop_reason = self.work_error(exc)
                 break

@@ -39,13 +39,13 @@ def _objects_accounted_for(rule, expressions, description):
             or any(targets & objects for objects, _ in expressions))
 
 
-def convention_issues(plan, rules, ctx):
+def convention_issues(plan, rules, ctx, verified_text_fields=()):
     if not rules and not any(q.convention_exceptions for q in plan.queries):
         return []
 
     measures = {m.name.casefold(): m.expression for m in ctx.measures if m.expression}
     text_fields = {(table.casefold(), c.name.casefold()) for table, columns in ctx.tables.items()
-                   for c in columns if c.dtype == 'string'}
+                   for c in columns if c.dtype == 'string'} | set(verified_text_fields)
     facts = {}
 
     def sources(dax):
