@@ -13,7 +13,10 @@ from .language import Language, SAVED_QUERY_SCOPE, wording
 from .schemas import MessageInput
 from .streaming import BackgroundStream
 from .template_parameters import PARAMETER, PARAMETER_LIMIT, parameter_names, recognize_parameters
-from .template_queries import SavedQuery, compile_queries, prepare_queries, query_parameter_names, query_suggestions
+from .template_queries import (
+    SavedQuery, binding_field, compile_queries, prepare_queries, query_columns, query_parameter_names,
+    query_suggestions,
+)
 from .analysis_budget import MAX_QUERIES
 
 
@@ -63,6 +66,7 @@ class TemplateScan(BaseModel):
     model_id: str
     source_message_id: str | None = None
     queries: list[SavedQuery] = Field(default_factory=list,max_length=MAX_QUERIES)
+    samples: dict[str, Value] = Field(default_factory=dict, max_length=PARAMETER_LIMIT)
 
 
 class TemplateRun(BaseModel):
@@ -290,16 +294,31 @@ class AnalysisTemplates:
         source_terms = {value.casefold() for value, _ in source_values}
         field_values = source_values + [(row['literal'], row['column_name']) for row in checked if row['literal'] not in source_terms]
         try:
-            candidates = recognize_parameters(body.prompt,json.loads(model['measures']),field_values)
             queries = [q.model_dump() for q in body.queries]
+            declared = set(query_parameter_names(queries))
+            names = parameter_names(body.prompt, declared)
+            samples = {name: body.samples[name] for name in names if body.samples.get(name)}
+            columns = (self.chat.semantics.summary(body.model_id, model['fingerprint'])['search_names']
+                       if self.chat.semantics else ())
+            candidates = recognize_parameters(body.prompt, json.loads(model['measures']), field_values,
+                                              columns=columns, query_fields=query_columns(queries), samples=samples)
             if queries and candidates:
                 _, options, automatic = query_suggestions(queries,{c['name']:c['value'] for c in candidates})
-                declared = set(query_parameter_names(queries))
                 for candidate in candidates:
                     name = candidate['name']
-                    candidate['bindable'] = name in automatic or name in declared
-                    if name in options and not candidate['bindable']:
-                        candidate['options'] = options[name]
+                    roles = options.get(name, {})
+                    bindable = name in automatic
+                    field = candidate.get('field')
+                    if field and roles:
+                        key = binding_field(*field).casefold()
+                        if key in roles:
+                            candidate['binding'] = key
+                            bindable = True
+                        elif any(role.endswith(']') for role in roles):
+                            bindable = False
+                    candidate['bindable'] = bindable or name in declared
+                    if roles and not candidate['bindable']:
+                        candidate['options'] = roles
             return {'candidates':candidates}
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc

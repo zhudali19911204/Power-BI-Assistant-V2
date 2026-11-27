@@ -345,9 +345,46 @@ test('bulk recognition on a saved analysis applies checked literals at their Uni
   assert.equal(f.$('[data-template-parameter-count]').textContent,'2 个可填写参数');
   await f.submit();
   const scan=f.calls[0],saved=f.calls.find(call=>call.path==='/analysis-templates'&&call.method==='POST').body;
-  assert.deepEqual(scan.body,{prompt,model_id:'model',source_message_id:'answer'});
+  assert.deepEqual(scan.body,{prompt,model_id:'model',source_message_id:'answer',samples:{指标:'实际费用'}});
   assert.equal(saved.prompt,'💡工厂{{工厂}}在2026-5的费用，口径{{工厂}}。按{{指标}}汇总');
   assert.deepEqual(saved.defaults,{工厂:'0810',指标:'实际费用'});
+});
+
+test('recognized year aliases share one field from the editor through rerun', async()=>{
+  const prompt='分析 {{Year}}。口径 Fact_MB51[Year]=2026。';
+  const start=prompt.indexOf('2026');
+  const seed={name:'发料',model_id:'model',source_message_id:'answer',prompt,defaults:{Year:'2026'},
+    queries:[{title:'发料',dax:'EVALUATE FILTER(Fact_MB51,Fact_MB51[Year]=2026)'}]};
+  const f=await fixture({seed,candidates:[{name:'Year',value:'2026',spans:[[start,start+4]],
+    bindable:true,binding:'fact_mb51[year]'}],
+    review:({queries})=>({queries:queries.map(q=>({...q,dax:q.dax.replace('2026','VALUE({{Year}})')})),unresolved:[]})});
+  assert.equal(f.root.querySelectorAll('[data-parameter-row]').length,1);
+  assert.deepEqual(f.calls[0].body.samples,{Year:'2026'});
+  f.input('[data-template-default="Year"]','2027');
+  assert.equal(f.$('[data-template-editor-preview]').textContent,'分析 2027。口径 Fact_MB51[Year]=2027。');
+  await f.submit();
+  const preview=f.calls.find(c=>c.path.endsWith('/queries/preview')).body;
+  assert.deepEqual(preview.samples,{Year:'2026'});assert.deepEqual(preview.choices,{Year:'fact_mb51[year]'});
+  await f.click('[data-template-run="new"]');
+  assert.equal(f.root.querySelectorAll('[data-template-value]').length,1);
+  f.input('[data-template-value="Year"]','2028');
+  assert.equal(f.$('[data-template-preview]').textContent,'分析 2028。口径 Fact_MB51[Year]=2028。');
+  await f.submit();
+  assert.deepEqual(f.calls.find(c=>c.path.endsWith('/runs')).body.values,{Year:'2028'});
+});
+
+test('recognition can reuse a parameter at the limit using its last run value',async()=>{
+  const marked=Array.from({length:11},(_,i)=>'{{p'+i+'}}').join(' ');
+  const prompt=marked+' {{Year}}，口径 [Year]=2026';
+  const f=await fixture({seed:{name:'已有模板',model_id:'model',source_message_id:'answer',prompt,
+    defaults:{},last_values:{Year:'2026'}},
+    candidates:[{name:'Year',value:'2026',spans:[[prompt.length-4,prompt.length]]},
+      {name:'额外参数',value:'2026',spans:[]}]});
+  assert.deepEqual(f.calls[0].body.samples,{Year:'2026'});
+  assert.equal(f.$('[name="prompt"]').value,marked+' {{Year}}，口径 [Year]={{Year}}');
+  assert.equal(f.$('[data-template-default="Year"]').value,'');
+  assert.equal(f.root.querySelectorAll('[data-parameter-row]').length,12);
+  assert.equal(f.$('[data-template-default="额外参数"]'),null);
 });
 
 test('changing text invalidates bulk suggestions and an existing fixed template can adopt all in one edit',async()=>{

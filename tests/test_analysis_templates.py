@@ -370,6 +370,91 @@ def test_recognition_keeps_identifiers_and_existing_parameters_and_separates_rol
     assert [(v['name'], v['value']) for v in scoped] == [('CC Number', '0887'), ('Legal Entity', '0887')]
 
 
+def test_one_recognized_year_updates_the_task_scope_and_all_saved_queries(setup):
+    app, client, model, _, _ = setup
+    prompt = '📊 分析2026年发料。\n分析口径：Fact_MB51[Year]=2026，按2026年汇总。'
+    queries = [
+        {'title': '2026年发料', 'dax': 'EVALUATE FILTER(Fact_MB51, Fact_MB51[Year]=2026)'},
+        {'title': '2026年汇总', 'dax': '''EVALUATE CALCULATETABLE(ROW("合计",1), TREATAS({2026},'Fact_MB51'[Year]))'''},
+    ]
+    response = client.post('/api/analysis-templates/parameters/recognize',
+                           json={'model_id': model['id'], 'prompt': prompt, 'queries': queries})
+    assert response.is_success
+    candidates = response.json()['candidates']
+    assert [(c['name'], c['value'], c['bindable']) for c in candidates] == [('年份', '2026', True)]
+    year = candidates[0]
+    assert [prompt[a:b] for a, b in year['spans']] == ['2026'] * 3
+    for start, end in reversed(year['spans']):
+        prompt = prompt[:start] + '{{年份}}' + prompt[end:]
+    samples = {'年份': '2026'}
+    review = client.post('/api/analysis-templates/queries/preview',
+                         json={'prompt': prompt, 'samples': samples, 'queries': queries}).json()
+    assert not review['unresolved']
+    template = create(client, model, prompt=prompt, defaults=samples, queries=review['queries'])
+    assert template['parameters'] == ['年份']
+    started, body = run(client, template, model, values={'年份': '2027'})
+    assert started.is_success and finish(app, body['request_id'])['status'] == 'finished'
+    messages = app.state.chat.messages(started.json()['conversation']['id'])
+    assert messages[0]['content'] == prompt.replace('{{年份}}', '2027')
+    assert [q['parameters'] for q in messages[-1]['analysis']] == [{'P1': '2027'}] * 2
+    assert all('2027年' in q['title'] and '2026' not in q['dax'] for q in messages[-1]['analysis'])
+    unrelated = client.post('/api/analysis-templates/parameters/recognize', json={
+        'model_id': model['id'], 'prompt': '取2026年。口径 Fact_MB51[Year]=2026。',
+        'queries': [{'title': '数量', 'dax': 'EVALUATE FILTER(T,T[Quantity]=2026)'}]})
+    [year] = unrelated.json()['candidates']
+    assert not year['bindable'] and 'binding' not in year
+
+
+def test_recognition_groups_aliases_by_role_and_preserves_independent_filters():
+    prompt = ('工厂0087，成本中心0087。T[Plant]="0087"，T[Cost Center]="0087"。'
+              '比较2025年和2026年，T[Year]=2025，T[Year]=2026，T[Fiscal Year]=2026。')
+    candidates = recognize_parameters(prompt)
+    assert [(c['name'], c['value'], len(c['spans'])) for c in candidates] == [
+        ('工厂', '0087', 2), ('成本中心', '0087', 2), ('年份', '2025', 2),
+        ('年份2', '2026', 2), ('Fiscal Year', '2026', 1),
+    ]
+    candidates = recognize_parameters('Orders[Year]=2026，Postings[Year]=2026。')
+    assert len(candidates) == 2 and all(len(c['spans']) == 1 for c in candidates)
+    assert [c['name'] for c in recognize_parameters('比较2026年和财年2026。')] == ['年份', '财年']
+    columns = [dict(kind='column', table=t, name='Year', business_name='年份', aliases=[])
+               for t in ('Orders', 'Postings')]
+    options = recognize_parameters('分析2026年，[Year]=2026。', columns=columns,
+                                   query_fields={('orders', 'year')})
+    assert len(options) == 1 and len(options[0]['spans']) == 2
+    month = dict(kind='column', table='Calendar', name='PeriodKey', business_name='月份', aliases=[])
+    [item] = recognize_parameters('分析2026年5月，Calendar[PeriodKey]="2026-05"。', columns=[month])
+    assert item['name'] == '月份' and len(item['spans']) == 2
+
+
+def test_confirmed_alias_reuses_an_existing_parameter_and_only_updates_its_field(setup):
+    app, client, model, _, _ = setup
+    dictionary = app.state.semantics.ensure(model)
+    column = next(c for c in dictionary['entries'] if c['kind'] == 'column' and c['name'] == '产品ID'
+                  and c['table'] == '产品')
+    column.update(state='confirmed', business_name='物料', aliases=['SKU'])
+    app.state.semantics._store(model['id'], dictionary)
+    prompt = '''物料XR40007，口径 '产品'[产品ID]="XR40007"。'''
+    queries = [
+        {'title': '已绑定', 'dax': "EVALUATE FILTER('产品','产品'[产品ID]={{SKU}})"},
+        {'title': '待绑定', 'dax': '''EVALUATE FILTER('产品','产品'[产品ID]="XR40007" && '产品'[产品名称]="XR40007")'''},
+    ]
+    samples = {'SKU': 'XR40007'}
+    response = client.post('/api/analysis-templates/parameters/recognize', json={
+        'model_id': model['id'], 'prompt': prompt, 'queries': queries, 'samples': samples})
+    assert response.is_success
+    [item] = response.json()['candidates']
+    assert item['name'] == 'SKU' and item['bindable'] and len(item['spans']) == 2
+    assert [prompt[a:b] for a, b in item['spans']] == ['XR40007'] * 2
+    for a, b in reversed(item['spans']):
+        prompt = prompt[:a] + '{{SKU}}' + prompt[b:]
+    review = client.post('/api/analysis-templates/queries/preview', json={
+        'prompt': prompt, 'samples': samples, 'queries': queries, 'choices': {'SKU': item['binding']}}).json()
+    assert not review['unresolved']
+    commands = compile_queries(review['queries'], ['SKU'], {'SKU': 'XR40099'})
+    assert [q.parameters for q in commands] == [{'P1': 'XR40099'}] * 2
+    assert commands[1].dax == queries[1]['dax'].replace('"XR40007"', '@P1', 1)
+
+
 def test_placeholders_are_validated_and_values_are_not_recursively_interpreted(setup):
     app, client, model, _, _ = setup
     bad = client.post('/api/analysis-templates', json={

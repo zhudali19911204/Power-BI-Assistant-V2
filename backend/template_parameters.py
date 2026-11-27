@@ -32,12 +32,17 @@ PERIODS = [(name, re.compile(LEFT + pattern + RIGHT, re.I)) for name, pattern in
     ('季度', rf'(?:{YEAR}[ \t]*(?:年[ \t]*)?)?(?:Q[1-4]|第?[1-4一二三四]季度)'))]
 SIMPLE_PERIODS = [(name, re.compile(LEFT + pattern + RIGHT)) for name, pattern in (
     ('预测年份', rf'{YEAR}(?=[ \t]*年?[ \t]*预测)'),
+    ('财年', rf'{YEAR}(?=[ \t]*(?:财年|财务年度|会计年度))'),
     ('年份', YEAR), ('月份', rf'{MONTH}(?=[ \t]*月)'))]
+NAMED_YEAR = re.compile(rf'(?P<label>财年|财务年度|会计年度|预测年份|fiscal year|forecast year)'
+                        rf'[ \t]*[：:=]?[ \t]*(?P<value>{YEAR}){RIGHT}', re.I)
 
 DIMENSION = r'成本中心|公司代码|公司|工厂|部门|区域|地区|城市|物料|产品线|产品|品牌|客户|供应商|渠道|费用类别|类别|品类|科目|版本'
 CODE = r'[A-Za-z0-9]+(?:[-_+./][A-Za-z0-9]+)*'
 QUOTED = r"""“([^”\n]{1,120})”|「([^」\n]{1,120})」|"([^"\n]{1,120})"|‘([^’\n]{1,120})’|'([^'\n]{1,120})'"""
-COLUMN_FILTER = re.compile(rf'\[(?P<label>(?:\]\]|[^\[\]\n])+)\][ \t]*(?:={{1,2}}|为|等于)[ \t]*(?:{QUOTED}|({CODE}){RIGHT})')
+COLUMN_FILTER = re.compile(
+    rf"(?:(?P<table>'(?:''|[^'\n])+'|(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*)[ \t]*)?"
+    rf'\[(?P<label>(?:\]\]|[^\[\]\n])+)\][ \t]*(?:={{1,2}}|为|等于)[ \t]*(?:{QUOTED}|({CODE}){RIGHT})')
 QUALIFIED = re.compile(
     rf'(?P<label>{DIMENSION})(?:编号|编码|代码|名称)?[ \t]*(?:[：:=]|为|是|等于)?[ \t]*'
     rf'(?:{QUOTED}|({CODE}){RIGHT})', re.I)
@@ -57,37 +62,97 @@ def field_label(column):
     return re.sub(r'[^\w -]+', ' ', column).strip(' -')[:40].rstrip()
 
 
-def recognize_parameters(prompt, measures=(), field_values=()):
+_ROLE_NAMES = {
+    '年份': ('年', '年度', 'year', 'calendar year', '日历年'),
+    '财年': ('财务年度', '会计年度', 'fiscal year'),
+    '预测年份': ('forecast year',),
+    '月份': ('月', 'month', 'month number', 'month no'),
+    '季度': ('quarter',), '日期': ('date',),
+    '工厂': ('plant', 'factory', 'plant code', '工厂代码'),
+    '成本中心': ('cost center', 'cost centre', 'CC Number', '成本中心编号'),
+    '物料': ('material', 'material number', 'material code', '物料编码'),
+    '产品': ('product',), '产品线': ('product line',),
+    '公司': ('company',), '公司代码': ('company code',), '部门': ('department',),
+    '客户': ('customer',), '供应商': ('supplier', 'vendor'), '品牌': ('brand',),
+    '渠道': ('channel',), '城市': ('city',), '版本': ('version',),
+}
+
+
+def _label_key(label):
+    return re.sub(r'[\s_-]+', '', label.casefold())
+
+
+_ROLES = {_label_key(label): role for role, aliases in _ROLE_NAMES.items() for label in (role, *aliases)}
+
+
+def _meaning(label):
+    return _ROLES.get(_label_key(label), label.casefold())
+
+
+def _value_key(value, meaning):
+    if meaning in ('月份', '日期') and re.fullmatch(r'[\d年月日 ./-]+', value):
+        parts = re.findall(r'\d+', value)
+        if len(parts) > 1:
+            return tuple(map(int, parts))
+    return value.casefold()
+
+
+def recognize_parameters(prompt, measures=(), field_values=(), *, columns=(), query_fields=frozenset(), samples=None):
     """Offsets refer to Unicode code points in the exact, untrimmed editor text."""
-    used_names = set(parameter_names(prompt))
+    samples = samples or {}
+    used_names = set(parameter_names(prompt)) | samples.keys()
     occupied = bytearray(len(prompt))
     for match in PROTECTED.finditer(prompt):
         occupied[match.start():match.end()] = b'\x01' * len(match[0])
     hits = []
 
-    def add(start, end, label, key=None):
+    # Use confirmed model aliases, and prefer the explicitly named column for this
+    # particular value. Two tables can each have a Year column with a different job.
+    column_roles = defaultdict(set)
+    period_fields = set()
+    for column in columns:
+        if column['kind'] == 'column':
+            field = (column['table'].casefold(), column['name'].casefold())
+            for label in (column['name'], column['business_name'], *column['aliases']):
+                if label:
+                    meaning = _meaning(label)
+                    column_roles[meaning].add(field)
+                    if meaning in ('日期', '月份'):
+                        period_fields.add(field)
+    query_roles = defaultdict(set)
+    for field in query_fields:
+        query_roles[_meaning(field[1])].add(field)
+    source_fields = defaultdict(set)
+
+    def add(start, end, label, field=None):
         if not label or not 0 < end - start <= 500 or any(occupied[start:end]):
             return False
         value = prompt[start:end]
         if value != value.strip():
             return False
         occupied[start:end] = b'\x01' * (end - start)
-        hits.append((start, end, label, key or value.casefold()))
+        meaning = _meaning(label)
+        key = _value_key(value, meaning)
+        if field:
+            source_fields[meaning, key].add(field)
+        hits.append((start, end, label, meaning, key, field))
         return True
 
     def periods(patterns):
         for label, pattern in patterns:
             for match in pattern.finditer(prompt):
-                # Keep the question and its saved scope in sync across calendar spellings.
-                key = tuple(map(int, re.findall(r'[0-9]+', match[0]))) if label in ('日期', '月份') else None
-                add(*match.span(), label, key)
+                add(*match.span(), label)
 
     explicit = defaultdict(set)
     # A literal after a real field reference can have the same spelling as a
     # date or another field's value. Keep the field and only select its value.
     for match in COLUMN_FILTER.finditer(prompt):
         label = field_label(match['label'])
-        if add(*match.span(match.lastindex), label):
+        table = match['table']
+        if table and table.startswith("'"):
+            table = table[1:-1].replace("''", "'")
+        field = (table.casefold(), match['label'].replace(']]', ']').casefold()) if table else None
+        if add(*match.span(match.lastindex), label, field):
             explicit[match[match.lastindex].casefold()].add(label)
     periods(PERIODS)
     for match in RANK.finditer(prompt):
@@ -104,6 +169,8 @@ def recognize_parameters(prompt, measures=(), field_values=()):
             if add(start, end, match['label']):
                 explicit[value.casefold()].add(match['label'])
 
+    for match in NAMED_YEAR.finditer(prompt):
+        add(*match.span('value'), match['label'])
     periods(SIMPLE_PERIODS)
 
     known_fields = defaultdict(set)
@@ -143,16 +210,40 @@ def recognize_parameters(prompt, measures=(), field_values=()):
                 continue
             add(*match.span(), '业务词')
 
-    candidates, suffixes = {}, defaultdict(lambda: 1)
-    for start, end, label, key in sorted(hits):
-        identity = (label, key)
-        if identity not in candidates:
-            name = label
-            while name in used_names:
-                suffixes[label] += 1
-                suffix = str(suffixes[label])
-                name = label[:40-len(suffix)] + suffix
-            used_names.add(name)
-            candidates[identity] = {'name': name, 'value': prompt[start:end], 'spans': []}
-        candidates[identity]['spans'].append((start, end))
-    return list(candidates.values())
+    def identity(label, meaning, key, field=None):
+        model_fields = column_roles[meaning]
+        in_queries = (model_fields & query_fields) | query_roles[meaning]
+        fields = source_fields.get((meaning, key)) or in_queries or model_fields
+        if not field and len(fields) == 1:
+            field = next(iter(fields))
+        if field in period_fields and isinstance(key, str):
+            key = _value_key(key, '日期')
+        return (field or (label.casefold() if len(fields) > 1 else meaning), key)
+
+    grouped = {}
+    for start, end, label, meaning, key, field in sorted(hits):
+        group = identity(label, meaning, key, field)
+        candidate = grouped.setdefault(group, {'name': label, 'value': prompt[start:end], 'spans': []})
+        if label == meaning:
+            candidate['name'] = label
+        candidate['spans'].append((start, end))
+
+    existing = defaultdict(list)
+    for name, value in samples.items():
+        meaning = _meaning(name)
+        existing[identity(name, meaning, _value_key(value, meaning))].append(name)
+    suffixes = defaultdict(lambda: 1)
+    for group, candidate in grouped.items():
+        if isinstance(group[0], tuple):
+            candidate['field'] = group[0]
+        if len(existing[group]) == 1:
+            candidate['name'] = existing[group][0]
+            continue
+        label = name = candidate['name']
+        while name in used_names:
+            suffixes[label] += 1
+            suffix = str(suffixes[label])
+            name = label[:40-len(suffix)] + suffix
+        candidate['name'] = name
+        used_names.add(name)
+    return list(grouped.values())

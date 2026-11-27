@@ -132,6 +132,13 @@ export async function mountAnalysisTemplates(
     notice.hidden = !message;
     notice.classList.toggle('error', error);
   }
+  function sourceSample(name) {
+    return (
+      sourceValues.get(name)?.trim() ||
+      draftDefaults.get(name)?.trim() ||
+      parameterValue(selected.last_values, name).trim()
+    );
+  }
   function editorPreview() {
     const prompt = $('[name="prompt"]').value;
     try {
@@ -201,7 +208,8 @@ export async function mountAnalysisTemplates(
       $('[data-template-parameter-count]').textContent = names.length
         ? tr('{0} 个可填写参数', names.length)
         : '';
-      $('[data-template-recognize]').hidden = !!recognition || names.length >= parameterLimit;
+      $('[data-template-recognize]').hidden =
+        !!recognition || (names.length >= parameterLimit && !names.some(sourceSample));
       input.setCustomValidity?.('');
       input.removeAttribute('aria-invalid');
     } catch (error) {
@@ -245,23 +253,33 @@ export async function mountAnalysisTemplates(
     const declared = new Set(templateParameters(prompt, queries)),
       room = parameterLimit - declared.size;
     if (!prompt.trim()) throw new Error(tr('请先填写分析任务。'));
-    if (!room) return;
+    const samples = Object.fromEntries(
+      [...declared].map((name) => [name, sourceSample(name)]).filter(([, value]) => value)
+    );
+    if (!room && !Object.keys(samples).length) return;
     const result = await request('/analysis-templates/parameters/recognize', 'POST', {
       prompt,
       model_id: selected.model_id,
       source_message_id: selected.source_message_id || null,
       ...(queries.length ? { queries } : {}),
+      ...(Object.keys(samples).length ? { samples } : {}),
     });
     if (disposed || screen !== 'edit' || $('[name="prompt"]').value !== prompt) return;
+    for (const item of result.candidates) {
+      if (item.binding) bindingChoices.set(item.name, item.binding);
+    }
     // Offer values that can affect these queries. Measures and function names stay in the task.
     const existing = result.candidates.filter((item) => declared.has(item.name));
     for (const item of existing) {
-      if (!draftDefaults.has(item.name)) draftDefaults.set(item.name, item.value);
+      if (!draftDefaults.has(item.name) && !parameterValue(selected.last_values, item.name).trim())
+        draftDefaults.set(item.name, item.value);
       sourceValues.set(item.name, item.value);
     }
     const candidates = result.candidates.filter(
       (item) =>
-        !declared.has(item.name) && (item.bindable !== false || Object.keys(item.options || {}).length)
+        room > 0 &&
+        !declared.has(item.name) &&
+        (item.bindable !== false || Object.keys(item.options || {}).length)
     );
     let remaining = room;
     recognition = {
@@ -600,7 +618,7 @@ export async function mountAnalysisTemplates(
             prompt,
             queries,
             samples,
-            choices: Object.fromEntries(bindingChoices),
+            choices: Object.fromEntries([...bindingChoices].filter(([name]) => names.includes(name))),
           });
           if (disposed) return;
           if (review.unresolved?.length) {

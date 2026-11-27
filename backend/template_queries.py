@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .analysis import readonly_query
 from .analysis_budget import MAX_QUERIES
+from .fields import field_ref
 from .language import wording
 from .template_parameters import PARAMETER, parameter_names
 
@@ -54,6 +55,24 @@ def _tokens(dax):
 def query_parameter_names(queries):
     return list(dict.fromkeys(token['name'].strip() for query in queries if '{{' in query['dax']
                               for token in _TOKENS.finditer(query['dax']) if token['name']))
+
+
+def query_columns(queries):
+    """Qualified references in the commands disambiguate aliases shared by several model tables."""
+    fields = set()
+    for query in queries:
+        tokens = _tokens(query['dax'])
+        for table, column in zip(tokens, tokens[1:]):
+            if not column[0].startswith('['):
+                continue
+            if table[0].startswith("'"):
+                name = table[0][1:-1].replace("''", "'")
+            elif table.lastgroup == 'word' and table.end() == column.start():
+                name = table[0]
+            else:
+                continue
+            fields.add((name.casefold(), column[0][1:-1].replace(']]', ']').casefold()))
+    return fields
 
 
 def _replace(text, replacements):
@@ -105,11 +124,22 @@ def _date_value(name, sample, tokens, i):
     return _date_expression(name, sample, year, month, day, i > 0 and tokens[i-1][0] == '<')
 
 
+def binding_field(table, column):
+    if table.isidentifier():
+        return table + '[' + column.replace(']', ']]') + ']'
+    return field_ref(table, column)
+
+
 def _field_before(tokens, index):
     if index < 0 or not tokens[index][0].startswith('['):
         return ''
     table = tokens[index-1][0] if index and tokens[index-1].lastgroup in ('identifier', 'word') else ''
-    return table + tokens[index][0]
+    column = tokens[index][0]
+    if not table:
+        return column
+    if table.startswith("'"):
+        table = table[1:-1].replace("''", "'")
+    return binding_field(table, column[1:-1].replace(']]', ']'))
 
 
 def _role(tokens, i, stack):
@@ -271,7 +301,10 @@ def review_bindings(queries, prompt, samples, choices=None):
         fail(f'模板需要 1～{MAX_QUERIES} 条查询', f'A template needs 1–{MAX_QUERIES} queries.')
     marked = query_parameter_names(queries)
     names = parameter_names(prompt, marked)
-    candidates = {name: samples[name] for name in names if name not in marked and samples.get(name)}
+    # Recognition may link a literal to a field that another saved query already
+    # parameterizes. Extend that explicit binding only to the selected field.
+    candidates = {name: samples[name] for name in names if samples.get(name)
+                  and (name not in marked or name in (choices or {}))}
     locations, options, automatic = query_suggestions(queries, candidates)
     selections = {**automatic, **(choices or {})}
     bound = set(marked)
